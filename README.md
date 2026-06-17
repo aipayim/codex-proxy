@@ -1,0 +1,381 @@
+# Codex Multi-Key Proxy
+
+多 API Key 代理 + 实时监控面板。支持智能调度（按 Key 优先级+冷却状态轮询）、自动容灾切换（遇到 401/402/403/429/5xx 自动尝试下一个 Key）、滑动窗口成功率（5 分钟 / 1 小时）、延迟百分位 P50/P95/P99、请求队列缓冲（最长 30 秒）、WebSocket 实时推送、Prometheus `/metrics`、Webhook/桌面通知/声音告警、完整前后端管理面板。
+
+## 目录结构
+
+```
+codex-proxy/
+├── proxy.js              # 核心代理服务器（含内嵌完整监控面板）
+├── keys.json             # API Key 列表（每个 key 可独立配置 url/reset/status/remark）
+├── config.json           # 系统配置（prices、webhookUrl、notifications）
+├── state.json            # 自动生成，持久化统计数据与冷却/废弃状态
+├── state.json.bak        # 每小时自动备份
+├── dashboard.html        # 独立监控面板文件（file:// 打开会有引导提示）
+├── codex-proxy.service   # systemd 服务模板（含 {{PROXY_DIR}} 占位符）
+├── install.sh            # 一键安装脚本（自动读取自身路径，替换 {{PROXY_DIR}}）
+├── edit-keys.sh          # 命令行快速编辑 keys.json 的辅助脚本
+├── package.json          # npm 依赖（仅 ws）
+└── README.md             # 本文件
+```
+
+## AI Agent 一键安装
+
+以下步骤可完全由 AI 或用户手动逐条执行：
+
+### 1. 环境准备
+
+```bash
+# 检查 Node.js 版本（需要 ≥ 16）
+node -v
+
+# 克隆或复制本项目到任意目录
+# cd /path/to/codex-proxy
+```
+
+### 2. 安装依赖 + 配置 Key
+
+```bash
+cd /path/to/codex-proxy
+
+# 安装 npm 依赖（仅 ws）
+npm install
+
+# 编辑 keys.json，填入你的 API Key
+#   key:    API 密钥，必须以 sk- 开头
+#   url:    中转地址（http/https，每个 key 可不同）
+#   reset:  额度重置周期 daily / weekly / never
+#   remark: 备注（可选）
+#   status: 可选字段，active / shielded / deleted
+#
+# 示例：
+# [
+#   {"key": "sk-xxx...", "url": "https://api.fenno.ai",   "reset": "weekly", "remark": "主力 Key"},
+#   {"key": "sk-yyy...", "url": "https://apikey.tech/v1",  "reset": "daily",  "remark": "备用额度卡"},
+#   {"key": "sk-zzz...", "url": "http://199.115.228.60:8080", "reset": "never", "remark": "一次性", "status": "shielded"}
+# ]
+```
+
+> 💡 推荐中转代理（注册送额度）：[https://api.fenno.ai/register?aff=PG29S7V2J2ZT](https://api.fenno.ai/register?aff=PG29S7V2J2ZT)
+
+### 3. 启动代理
+
+```bash
+# 方式 A：手动启动（前台）
+node proxy.js
+
+# 方式 B：后台运行
+nohup node proxy.js > proxy.log 2>&1 &
+
+# 方式 C：systemd 开机自启（推荐）
+# install.sh 会自动：
+#   1. 检测自身路径作为 PROXY_DIR
+#   2. 用 sed 替换 codex-proxy.service 中的 {{PROXY_DIR}}
+#   3. 复制到 /etc/systemd/system/ 并 enable + start
+#   4. 在 $HOME/bin 创建 codex 包装脚本（可选）
+bash install.sh
+```
+
+### 4. 验证代理运行
+
+```bash
+# 检查状态
+curl http://localhost:3456/__status
+
+# 打开监控面板
+# 浏览器访问 http://localhost:3456/
+```
+
+### 5. 配置 Codex CLI 使用本地代理
+
+```bash
+# 创建或编辑 ~/.codex/config.toml
+mkdir -p ~/.codex
+cat > ~/.codex/config.toml << 'EOF'
+base_url = "http://localhost:3456"
+EOF
+```
+
+### 6. 创建包装脚本（实现 codex 自动启动代理）
+
+`install.sh` 默认在第 5 步创建包装脚本到 `$HOME/bin/codex`，
+确保 `$HOME/bin` 在 PATH 中且优先于系统 codex 即可。
+
+手动创建包装脚本：
+
+```bash
+mkdir -p ~/bin
+cat > ~/bin/codex << 'WRAPPER'
+#!/bin/bash
+PROXY_DIR="/path/to/codex-proxy"   # ← 替换为你的实际路径
+if ! curl -sf http://localhost:3456/__status > /dev/null 2>&1; then
+  echo "[codex] Starting proxy..." >&2
+  nohup node "$PROXY_DIR/proxy.js" > "$PROXY_DIR/proxy.log" 2>&1 &
+  sleep 2
+fi
+exec /usr/lib/node_modules/@openai/codex/bin/codex.js "$@"
+WRAPPER
+chmod +x ~/bin/codex
+
+# 确认 ~/bin 在 PATH 中（写入 ~/.bashrc 或 ~/.zshrc 等）
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+```
+
+包装脚本逻辑：
+1. 请求 `http://localhost:3456/__status` 检测代理是否运行
+2. 如未运行 → `nohup node proxy.js` 后台启动
+3. 等待 2 秒后 `exec` 真正的 Codex CLI 二进制
+
+之后运行 `codex` 即可自动启动代理。
+
+### 7. 搞定
+
+```bash
+codex
+# 代理自动启动（如未运行）→ Codex CLI 正常使用
+```
+
+## Key 调度顺序
+
+每次请求，`pickKey()` 按以下优先级选取：
+
+1. **daily 类型** 中不在冷却的 Key（按 keys.json 顺序）
+2. **weekly 类型** 中不在冷却的 Key
+3. **never 类型** 中不在冷却的 Key
+4. **兜底**：同类型中第一个 Key（无视冷却，但 `inCooldown()` 会立即标记失败）
+
+可用 Key 数（`activeCount`）仅统计 `status === "active"` 的 Key，
+屏蔽（shielded）和软删除（deleted）不计入。
+
+## 自动切换故障 Key
+
+`forwardRequest()` 在以下情况自动切换到下一个 Key：
+
+| 上游状态码 | 处理方式 |
+|---|---|
+| 401 Unauthorized | `markFailure` → 切换 |
+| 402 Payment Required | `markFailure` → 切换 |
+| 403 Forbidden | `markFailure` → 切换 |
+| 429 Too Many Requests | `markFailure` → 切换 |
+| 5xx Server Error | `markFailure` → 切换 |
+| 连接超时 / DNS 错误 / TLS 错误 | `markFailure` → 切换 |
+| 流传输中断 | `markFailure` → 切换 |
+| 2xx / 3xx 成功 | `markSuccess` → 响应原路返回 |
+| 其他 4xx | 透传给 Codex（不切换） |
+
+全部 Key 切换失败后返回 `502 {"error": "All keys exhausted"}`。
+
+## 冷却与废弃
+
+- Key 返回 401/402/403/429/5xx → `failCode` + `failPeriod` 写入 `state.json` → 该周期内 `inCooldown()` 返回 true → 不再被 `pickKey()` 选中
+- 同 Key **连续两个周期**（天/周）都失败 → 自动标记 `status: "discarded"` → 永久跳过（直到手动重置）
+- `reset: "never"` 的 Key 一次失败即永久冷却
+
+## 管理 Key 状态重置
+
+面板「管理 Key」模态框每行提供 🔄 按钮，调用 `POST /__reset-key`。
+
+后端处理：
+- 清除 `failCode` / `failTime` / `failPeriod`
+- 如 Key 之前被自动标记为 `discarded`，恢复为 `active`
+- 保存 `state.json` + 广播 WebSocket 更新
+- 不重启代理，下次轮询到该 Key 即正常尝试
+
+可用于充值后快速恢复冷却/废弃 Key。
+
+## 监控面板
+
+`http://localhost:3456/` 内嵌完整监控面板：
+
+### 顶部摘要
+可用数/总数、冷却中、并发请求、总流量、总请求、健康评分、预估费用
+
+### 排序/筛选/搜索
+- 排序：默认 / 健康评分 / 平均延迟 / 5 分钟成功率
+- 筛选：全部 / 可用 / 冷却中 / 废弃
+- 搜索：ID / 备注 / 地址
+
+### 流量趋势图
+24 小时 / 7 天 / 30 天切换，每小时柱状图
+
+### Key 卡片
+脱敏显示（点击明文切换）、重置类型徽章、并发徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、日/小时明细
+
+### 日志查看器
+最近 500 条请求记录，WebSocket 实时推送，时间/Key/方法/路径/状态码/流量/延迟
+
+### Key 管理
+增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态
+
+### 系统配置
+Webhook URL、价格参数、桌面通知/声音开关
+
+## API 接口
+
+| 接口 | 方法 | 说明 |
+|---|---|---|
+| `/` 或 `/dashboard` | GET | 监控面板 HTML |
+| `/__status` | GET | JSON 状态（所有 Key 的完整指标） |
+| `/__keys` | GET | 读取 keys.json |
+| `/__keys` | PUT | 写入 keys.json（自动重载） |
+| `/__config` | GET | 读取 config.json |
+| `/__config` | PUT | 写入 config.json（自动重载） |
+| `/__reset-key` | POST | 重置指定 Key 的冷却/废弃状态（`{"idx": 1}`） |
+| `/__logs` | GET | 最近请求日志（`?limit=N`） |
+| `/__export` | GET | CSV 导出统计报表 |
+| `/__pathstats` | GET | 按路径/模型的请求分布 |
+| `/metrics` | GET | Prometheus 格式指标 |
+| `ws://localhost:3456/` | WS | WebSocket 实时推送 |
+
+### /__status 字段说明
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `idx` | int | Key 序号 |
+| `key` | string | 脱敏显示（前 6 + ... + 后 4） |
+| `url` | string | 中转地址 |
+| `reset` | string | daily / weekly / never |
+| `remark` | string | 备注 |
+| `available` | bool | 当前可用（`!inCooldown()`） |
+| `status` | string | active / discarded |
+| `failCode` | int/null | 上次失败码 |
+| `failTime` | int/null | 上次失败时间戳 |
+| `failPeriod` | string/null | 失效周期标识 |
+| `active` | bool | 当前是否有请求在处理 |
+| `activeRequests` | int | 当前并发请求数 |
+| `healthScore` | int | 0-100 |
+| `avgDuration` | int | 平均延迟 (ms) |
+| `avgTtfb` | int | 平均首字节 (ms) |
+| `p50` / `p95` / `p99` | int/null | 延迟百分位 (ms) |
+| `sliding5mRate` | float/null | 5 分钟滑动成功率 |
+| `sliding1hRate` | float/null | 1 小时滑动成功率 |
+| `totalCost` | float | 累计估算费用 (USD) |
+| `totalRequests` / `successRequests` / `failRequests` | int | 请求计数 |
+| `inputBytes` / `outputBytes` | int | 累计流量 |
+| `lastUsed` | int/null | 最后使用时间戳 |
+| `daily` | object | 按日统计 `{"YYYY-MM-DD": {...}}` |
+| `hourly` | object | 按小时统计 `{"YYYY-MM-DD-HH": {...}}` |
+
+### /metrics Prometheus
+
+| 指标名 | 类型 | 标签 | 说明 |
+|---|---|---|---|
+| `codex_proxy_accounts_total` | gauge | — | 总 Key 数 |
+| `codex_proxy_keys_active` | gauge | — | 当前可用 Key 数 |
+| `codex_proxy_queue_depth` | gauge | — | 请求队列深度 |
+| `codex_proxy_key_requests_total` | counter | key, url | 累计请求数 |
+| `codex_proxy_key_bytes_total` | counter | key, type(input/output) | 累计字节 |
+| `codex_proxy_key_health_score` | gauge | key | 健康评分 |
+| `codex_proxy_request_queue_max_wait_seconds` | gauge | — | 队列超时设置 |
+
+### WebSocket 协议
+
+连接后自动推送：
+
+```json
+{"type": "status", "data": [...]}
+{"type": "notification", "notificationType": "all_keys_failed", "time": "..."}
+```
+
+WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
+
+## config.json 系统配置
+
+```json
+{
+  "webhookUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx",
+  "prices": { "inputPer1M": 5, "outputPer1M": 15 },
+  "bytesPerToken": 3,
+  "notifications": { "sound": true, "desktop": true }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `webhookUrl` | 全部 Key 失效时 POST JSON 告警（兼容企业微信/钉钉/Telegram） |
+| `prices.inputPer1M` | 输入价格（$/百万 token） |
+| `prices.outputPer1M` | 输出价格（$/百万 token） |
+| `bytesPerToken` | 每 token 近似字节数（默认 3，中文约 1.5-2，英文约 4） |
+| `notifications.sound` | 是否播放声音提醒 |
+| `notifications.desktop` | 是否发送桌面通知 |
+
+## 费用估算
+
+```
+tokens ≈ bytes / bytesPerToken
+费用 = (inputTokens / 1_000_000) × inputPer1M + (outputTokens / 1_000_000) × outputPer1M
+```
+
+> ⚠️ 精确 token 追踪不可用（上游中转不返回 `usage` 字段），此为字节->token 估算。
+
+## Webhook 告警格式
+
+```json
+{
+  "event": "all_keys_failed",
+  "time": "2026-06-17T12:00:00.000Z",
+  "accounts": 5,
+  "proxy": { "accounts": 5, "queueDepth": 3 }
+}
+```
+
+## 请求队列
+
+所有可用 Key 均冷却时，新请求进入缓冲区：
+- 队列内请求在 Key 恢复时自动处理
+- 最长等待 30 秒 → 超时返回 `503`
+- 请求端主动断开 → 自动移除
+
+## systemd 服务管理
+
+```bash
+# 安装
+bash install.sh
+
+# 管理
+systemctl status codex-proxy    # 状态
+journalctl -u codex-proxy -f    # 实时日志
+systemctl restart codex-proxy   # 重启
+systemctl stop codex-proxy      # 停止
+systemctl disable codex-proxy   # 取消开机自启
+```
+
+## install.sh 工作原理
+
+1. 用 `readlink -f "$0"` 获取脚本所在目录作为 `PROXY_DIR`
+2. `npm install` 安装 `ws` 依赖
+3. 创建默认 `config.json` 和 `state.json`（如不存在）
+4. 用 `sed "s|{{PROXY_DIR}}|$PROXY_DIR|g"` 替换服务模板中的占位符 → 复制到 `/etc/systemd/system/` → `systemctl daemon-reload` `enable` `restart`
+5. 在 `${WRAPPER_DIR:-$HOME/bin}` 创建 `codex` 包装脚本（`CODEX_BIN` 环境变量可指定 codex.js 路径）
+
+环境变量覆盖：
+```bash
+WRAPPER_DIR=/custom/bin CODEX_BIN=/opt/codex/bin/codex.js bash install.sh
+```
+
+## 常见问题
+
+**Q: 启动后 `http://localhost:3456/` 没反应？**
+A: 代理是否运行？检查 `ps aux | grep proxy.js`。没运行则 `node proxy.js &`。
+
+**Q: WSL2 中面板打不开？**
+A: 用 `localhost` 而非 `127.0.0.1`。WSL2 的 `127.0.0.1` 指向 Windows 自身回环。
+
+**Q: 双击 dashboard.html 无法连接？**
+A: 独立面板需要代理运行中。使用 `http://localhost:3456/` 获取完整功能。
+
+**Q: 如何屏蔽 Key 又不删除？**
+A: 管理界面点击 🔇，或 keys.json 设 `"status": "shielded"`。
+
+**Q: 删除的 Key 怎么恢复？**
+A: 前端删除是软删除（设 `status="deleted"`），Key 仍在 keys.json。编辑 keys.json 删除 `status` 字段或改回 `"active"` 即可。
+
+**Q: 费用估算不准？**
+A: 调整 `config.json` 中 `bytesPerToken` 和 `prices`。不同模型 token 密度不同。
+
+**Q: 面板显示「加载中」？**
+A: 检查代理日志是否有 `ReferenceError: queueProcessing is not defined`。如有则升级到最新版（已修复）。
+
+## License
+
+MIT

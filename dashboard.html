@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex 代理监控</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;padding:clamp(8px,2vw,20px)}
+h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
+.sub{color:#94a3b8;font-size:clamp(10px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px)}
+.top-row{display:flex;gap:clamp(6px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px);flex-wrap:wrap}
+.sum-item{background:#1e293b;border-radius:8px;padding:clamp(6px,1.5vw,10px) clamp(8px,2vw,16px);text-align:center;border:1px solid #334155;min-width:60px;flex:1}
+.sum-num{font-size:clamp(16px,3vw,22px);font-weight:700}
+.sum-label{font-size:clamp(8px,1.2vw,10px);color:#94a3b8;margin-top:1px}
+.s-ok .sum-num{color:#4ade80}
+.s-fail .sum-num{color:#f87171}
+.s-active .sum-num{color:#60a5fa}
+.s-token .sum-num{color:#fbbf24}
+.s-score .sum-num{color:#c084fc}
+.controls{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
+.controls select,.controls input{background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 6px;border-radius:4px;font-size:11px}
+.controls label{color:#94a3b8;font-size:11px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(clamp(280px,40vw,320px),1fr));gap:clamp(6px,1vw,10px)}
+.card{background:#1e293b;border-radius:8px;padding:clamp(8px,1.5vw,12px);border:1px solid #334155;transition:border-color .2s}
+.card.active{border-color:#3b82f6;box-shadow:0 0 8px #3b82f644}
+.card.failed{border-color:#ef4444;background:#1e1b1b}
+.card-ok{border-color:#22c55e}
+.card .toggle-body{cursor:pointer;-webkit-user-select:none;user-select:none}
+.card .cbody.collapsed{display:none}
+.ctop{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:4px}
+.idx{font-weight:700;font-size:clamp(12px,2vw,14px);color:#94a3b8}
+.idx.active-idx{color:#60a5fa}
+.badge{font-size:clamp(9px,1.2vw,10px);padding:1px 5px;border-radius:3px;font-weight:600;white-space:nowrap}
+.bd-daily{background:#1e3a5f;color:#60a5fa}
+.bd-weekly{background:#3b1f5e;color:#c084fc}
+.bd-never{background:#3b2f1e;color:#fbbf24}
+.bd-active{background:#1e3a5f;color:#93c5fd}
+.bd-score{background:#2d1f3f;color:#c084fc;border:1px solid #a855f7}
+.cbody{font-size:clamp(11px,1.5vw,12px)}
+.row{display:flex;justify-content:space-between;padding:2px 0;gap:4px}
+.label{color:#94a3b8;flex-shrink:0}
+.val{color:#e2e8f0;text-align:right;word-break:break-all;max-width:60%}
+.sbar{margin-top:6px;padding-top:6px;border-top:1px solid #334155;display:flex;justify-content:space-between;align-items:center;font-size:clamp(10px,1.3vw,12px)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px;flex-shrink:0}
+.d-ok{background:#22c55e;box-shadow:0 0 4px #22c55e66}
+.d-fail{background:#ef4444;box-shadow:0 0 4px #ef444466}
+.d-pending{background:#f59e0b;box-shadow:0 0 4px #f59e0b66}
+.cooldown{color:#f87171;font-size:clamp(10px,1.3vw,11px)}
+.rem{color:#38bdf8;font-size:clamp(10px,1.3vw,11px)}
+.uurl{color:#64748b;font-size:clamp(9px,1.2vw,10px);word-break:break-all}
+.hist{padding:2px 0;font-size:clamp(10px,1.3vw,11px);color:#94a3b8;display:flex;justify-content:space-between}
+.hist-bar{height:4px;background:#334155;border-radius:2px;margin:2px 0;overflow:hidden}
+.hist-fill{height:100%;background:#3b82f6;border-radius:2px}
+.tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.tab{padding:3px 8px;border-radius:4px;font-size:clamp(10px,1.3vw,11px);cursor:pointer;background:#334155;color:#94a3b8;border:1px solid transparent;white-space:nowrap}
+.tab.on{background:#1e3a5f;color:#60a5fa;border-color:#3b82f6}
+.tab:hover{background:#475569}
+.btn{background:#334155;border:1px solid #475569;color:#e2e8f0;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:clamp(11px,1.4vw,12px);white-space:nowrap}
+.btn:hover{background:#475569}
+.btn-p{background:#1e3a5f;border-color:#3b82f6}
+.btn-p:hover{background:#1e4a7f}
+.btn-d{background:#3b1f1e;border-color:#7f3f3e}
+.btn-d:hover{background:#5f2f2e}
+.btn-s{background:#1e3b1e;border-color:#22c55e}
+.btn-s:hover{background:#2d5f2d}
+.meter{height:4px;background:#334155;border-radius:2px;overflow:hidden;margin:4px 0}
+.meter-fill{height:100%;border-radius:2px;transition:width .3s}
+.modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:100;padding:clamp(8px,2vw,20px)}
+.modal.on{display:flex;align-items:flex-start;justify-content:center}
+.mcontent{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:clamp(10px,2vw,16px);max-width:960px;width:100%;max-height:90vh;overflow-y:auto;margin-top:10px}
+.mtitle{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:clamp(14px,2vw,16px);font-weight:700}
+.mtable{width:100%;border-collapse:collapse;font-size:clamp(11px,1.4vw,12px)}
+.mtable th,.mtable td{padding:4px 6px;text-align:left;border-bottom:1px solid #334155}
+.mtable th{color:#94a3b8;font-weight:600;position:sticky;top:0;background:#1e293b}
+.mtable input,.mtable select{background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:3px;width:100%;font-size:clamp(11px,1.4vw,12px);box-sizing:border-box}
+.mtable input:focus,.mtable select:focus{outline:none;border-color:#3b82f6}
+.mtable .del{color:#f87171;cursor:pointer;text-align:center;font-size:14px}
+.mtable .del:hover{color:#ef4444}
+.mfoot{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}
+.key-mask{color:#94a3b8;font-size:clamp(10px,1.3vw,11px);cursor:pointer;font-family:monospace}
+.key-mask:hover{color:#e2e8f0;text-decoration:underline}
+.alert{background:#3b1f1e;border:1px solid #ef4444;border-radius:8px;padding:clamp(8px,1.5vw,10px) clamp(10px,2vw,14px);margin-bottom:clamp(8px,2vw,12px);font-size:clamp(12px,1.8vw,13px);color:#f87171;display:none;align-items:center;gap:8px}
+.alert svg{flex-shrink:0}
+.trend-wrap{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:clamp(8px,1.5vw,12px);margin-bottom:12px}
+.trend-title{font-size:clamp(12px,1.5vw,13px);color:#94a3b8;margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.trend-bars{display:flex;align-items:flex-end;gap:2px;height:clamp(60px,10vw,80px);padding:4px 0}
+.trend-bar{flex:1;background:#3b82f6;border-radius:2px 2px 0 0;position:relative;min-width:4px;transition:height .3s}
+.trend-bar:hover{background:#60a5fa}
+.trend-labels{display:flex;gap:2px;margin-top:4px}
+.trend-label{flex:1;font-size:clamp(7px,1vw,8px);color:#64748b;text-align:center;min-width:4px;overflow:hidden;white-space:nowrap}
+.log-table{width:100%;border-collapse:collapse;font-size:clamp(10px,1.3vw,11px)}
+.log-table th,.log-table td{padding:2px 4px;text-align:left;border-bottom:1px solid #334155;white-space:nowrap}
+.log-table th{color:#94a3b8;font-weight:600;position:sticky;top:0;background:#1e293b}
+.log-status{font-weight:600}
+.log-s200{color:#4ade80}
+.log-s401{color:#f59e0b}
+.log-s429{color:#f87171}
+.log-s0{color:#ef4444}
+.log-time{color:#64748b;font-size:clamp(9px,1.2vw,10px)}
+.log-dur{color:#94a3b8}
+.file-banner{display:none;background:#1e3a5f;border:1px solid #3b82f6;border-radius:8px;padding:clamp(8px,1.5vw,10px) clamp(10px,2vw,14px);margin-bottom:clamp(8px,2vw,12px);font-size:clamp(12px,1.8vw,13px);color:#93c5fd;align-items:center;gap:10px}
+.file-banner.on{display:flex}
+@media(max-width:600px){
+  .controls{flex-direction:column;align-items:stretch}
+  .controls select,.controls input{width:100%}
+  .top-row .sum-item{min-width:45%}
+  .grid{grid-template-columns:1fr}
+  .mtable{font-size:10px}
+  .mtable input,.mtable select{font-size:10px}
+  .modal{padding:4px}
+  .row{flex-direction:column;align-items:flex-start;gap:0}
+  .val{text-align:left;max-width:100%}
+}
+</style>
+</head>
+<body>
+<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+<h1>Codex 多 Key 代理监控</h1>
+<div class="file-banner" id="fileBanner">
+  <span>⚠ 当前为离线文件，部分功能不可用</span>
+  <button class="btn" onclick="location.href='http://localhost:3456/'">打开在线面板</button>
+</div>
+<div style="display:flex;gap:6px;flex-wrap:wrap">
+<button class="btn" onclick="openLogs()">📋 日志</button>
+<button class="btn" onclick="exportCSV()">⬇ 导出 CSV</button>
+<button class="btn btn-p" onclick="openMgr()">⚙ 管理 Key</button>
+<button class="btn btn-s" onclick="openConfig()">⚙ 配置</button>
+</div>
+</div>
+<div class="sub" id="sub">加载中...</div>
+<div id="alert" class="alert">⚠️ 所有 Key 均不可用，请求将全部失败！</div>
+<div class="top-row" id="summary"></div>
+<div class="controls" id="controls">
+  <label>排序</label>
+  <select id="sortBy"><option value="idx">默认顺序</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
+  <label>筛选</label>
+  <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option></select>
+  <label>趋势</label>
+  <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
+  <label>搜索</label>
+  <input id="searchBox" placeholder="搜索 ID/备注/地址..." style="width:140px">
+</div>
+<div id="trend" class="trend-wrap" style="display:none">
+<div class="trend-title"><span>流量趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
+<div class="trend-bars" id="trendBars"></div>
+<div class="trend-labels" id="trendLabels"></div>
+</div>
+<div class="tabs" id="tabs"></div>
+<div class="grid" id="grid"></div>
+
+<div class="modal" id="mgrModal">
+<div class="mcontent">
+<div class="mtitle"><span>Key 管理</span><button class="btn" onclick="closeMgr()">✕</button></div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">修改后点击保存，代理自动重载配置</div>
+<table class="mtable"><thead><tr>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:60px">重置</th><th style="min-width:100px">备注</th><th style="width:30px"></th>
+</tr></thead><tbody id="mgrBody"></tbody></table>
+<div class="mfoot">
+<button class="btn" onclick="addKeyRow()">+ 添加一行</button>
+<div style="flex:1"></div>
+<button class="btn" onclick="closeMgr()">取消</button>
+<button class="btn btn-p" onclick="saveKeys()">保存</button>
+</div>
+</div></div>
+
+<div class="modal" id="configModal">
+<div class="mcontent">
+<div class="mtitle"><span>系统配置</span><button class="btn" onclick="closeConfig()">✕</button></div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:12px" id="configStatus">修改后自动保存</div>
+<div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;font-size:12px">
+  <div style="color:#94a3b8;padding:4px 0">💰 输入价格（每百万token）</div>
+  <div><input id="cfgPriceIn" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0"></div>
+  <div style="color:#94a3b8;padding:4px 0">💰 输出价格（每百万token）</div>
+  <div><input id="cfgPriceOut" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0"></div>
+  <div style="color:#94a3b8;padding:4px 0">🔤 每 token 字节数</div>
+  <div><input id="cfgBpt" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" value="3" placeholder="3"></div>
+  <div style="color:#94a3b8;padding:4px 0">🔔 桌面通知</div>
+  <div><label><input type="checkbox" id="cfgDesktop"> 全部 Key 失效时通知</label></div>
+  <div style="color:#94a3b8;padding:4px 0">🔊 声音提醒</div>
+  <div><label><input type="checkbox" id="cfgSound"> 全部 Key 失效时响铃</label></div>
+  <div style="color:#94a3b8;padding:4px 0">🌐 Webhook URL</div>
+  <div><input id="cfgWebhook" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="https://qyapi.weixin.qq.com/..."></div>
+</div>
+<div class="mfoot"><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
+</div></div>
+
+<div class="modal" id="logModal">
+<div class="mcontent">
+<div class="mtitle"><span>实时请求日志</span><button class="btn" onclick="closeLogs()">✕</button></div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">最近 500 条请求记录，实时推送</div>
+<div style="overflow-x:auto"><table class="log-table"><thead><tr>
+<th>时间</th><th>#</th><th>方法</th><th>路径</th><th>状态</th><th>↑B</th><th>↓B</th><th>耗时</th><th>首字节</th>
+</tr></thead><tbody id="logBody"></tbody></table></div>
+</div></div>
+
+<script>
+if(location.protocol==="file:"){document.getElementById("fileBanner").classList.add("on")}
+const L={"daily":"每日","weekly":"每周","never":"永久"};
+const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never"};
+let data=[],curDate="",fullKeys={};
+let sortBy="idx",filterBy="all",trendRange="24h",searchQ="";
+let ws=null,wsReconnectTimer=null,pollTimer=null;
+let wsFailed=false;
+
+async function httpLoad(){
+  try{
+    const r=await fetch("http://localhost:3456/__status");
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    data=await r.json();render();
+  }catch(e){
+    if(!wsFailed)document.getElementById("sub").textContent="连接失败，正在重试...";
+  }
+}
+
+function connectWS(){
+  wsFailed=false;
+  ws=new WebSocket("ws://localhost:3456");
+  ws.onmessage=function(e){
+    try{
+      const msg=JSON.parse(e.data);
+      if(msg.type==="status"){data=msg.data;render()}
+      if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
+    }catch(e){}
+  };
+  ws.onclose=function(){
+    wsFailed=true;
+    if(pollTimer)clearInterval(pollTimer);
+    pollTimer=setInterval(httpLoad,5000);
+    httpLoad();
+    wsReconnectTimer=setTimeout(connectWS,5000);
+  };
+  ws.onerror=function(){ws.close()};
+}
+
+function playAlert(){try{var a=new AudioContext(),o=a.createOscillator(),g=a.createGain();o.type="sine";o.frequency.value=880;g.gain.value=.3;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+.3)}catch(e){}}
+function sendDesktop(){try{if(config.notifications.desktop!==false&&Notification.permission==="granted")new Notification("Codex Proxy",{body:"所有 Key 已不可用！",icon:""})}catch(e){}}
+
+async function loadKeys(){
+  try{
+    const r=await fetch("http://localhost:3456/__keys");
+    if(r.ok){const arr=await r.json();arr.forEach((k,i)=>{fullKeys[i+1]=k.key})}
+  }catch(e){}
+}
+
+async function loadConfigUI(){
+  try{
+    const r=await fetch("http://localhost:3456/__config");
+    if(!r.ok)return;
+    const c=await r.json();
+    document.getElementById("cfgPriceIn").value=c.prices?.inputPer1M||"";
+    document.getElementById("cfgPriceOut").value=c.prices?.outputPer1M||"";
+    document.getElementById("cfgBpt").value=c.bytesPerToken||3;
+    document.getElementById("cfgWebhook").value=c.webhookUrl||"";
+    document.getElementById("cfgDesktop").checked=c.notifications?.desktop!==false;
+    document.getElementById("cfgSound").checked=c.notifications?.sound!==false;
+  }catch(e){}
+}
+
+function renderTrend(){
+  const now=new Date();
+  const hours=trendRange==="7d"?168:(trendRange==="30d"?720:24);
+  const hMap={};
+  for(let i=hours-1;i>=0;i--){
+    const d=new Date(now-i*3600000);
+    const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0"),hh=String(d.getHours()).padStart(2,"0");
+    hMap[y+"-"+m+"-"+dd+"-"+hh]=0;
+  }
+  for(const a of data){
+    if(!a.hourly)continue;
+    for(const [hk,v] of Object.entries(a.hourly)){
+      if(hMap[hk]!==undefined)hMap[hk]+=(v.inputBytes||0)+(v.outputBytes||0);
+    }
+  }
+  const keys=Object.keys(hMap),vals=Object.values(hMap);
+  const max=Math.max(...vals,1);
+  const bars=document.getElementById("trendBars");
+  const labels=document.getElementById("trendLabels");
+  bars.innerHTML=vals.map(v=>'<div class="trend-bar" style="height:'+Math.max(2,v/max*80)+'px" title="'+fmtBytes(v)+'"></div>').join("");
+  labels.innerHTML=keys.map(k=>'<div class="trend-label">'+k.slice(-5).replace("-",":")+'</div>').join("");
+  document.getElementById("trend").style.display=vals.some(v=>v>0)?"block":"none";
+  document.getElementById("trendRangeLabel").textContent={"24h":"24小时","7d":"7天","30d":"30天"}[trendRange];
+}
+
+function render(){
+  const now=Date.now();
+  const tot=data.length,ok=data.filter(x=>x.available).length,fail=tot-ok;
+  const concurrent=data.reduce((s,x)=>s+(x.activeRequests||0),0);
+  const allBytes=data.reduce((s,x)=>s+(x.inputBytes||0)+(x.outputBytes||0),0);
+  const allReq=data.reduce((s,x)=>s+(x.totalRequests||0),0);
+  const avgScore=tot>0?Math.round(data.reduce((s,x)=>s+(x.healthScore||100),0)/tot):100;
+  const totalCost=data.reduce((s,x)=>s+(x.totalCost||0),0);
+
+  document.getElementById("sub").textContent="最后更新: "+new Date().toLocaleString("zh-CN")+" | 实时推送";
+
+  document.getElementById("alert").style.display=(tot>0&&ok===0)?"flex":"none";
+
+  document.getElementById("summary").innerHTML=
+    '<div class="sum-item s-ok"><div class="sum-num">'+ok+'/'+tot+'</div><div class="sum-label">可用</div></div>'+
+    '<div class="sum-item s-fail"><div class="sum-num">'+fail+'</div><div class="sum-label">冷却中</div></div>'+
+    '<div class="sum-item s-active"><div class="sum-num">'+concurrent+'</div><div class="sum-label">并发请求</div></div>'+
+    '<div class="sum-item s-token"><div class="sum-num">'+fmtBytes(allBytes)+'</div><div class="sum-label">总流量</div></div>'+
+    '<div class="sum-item s-token"><div class="sum-num">'+allReq+'</div><div class="sum-label">总请求</div></div>'+
+    '<div class="sum-item s-score"><div class="sum-num">'+avgScore+'</div><div class="sum-label">健康评分</div></div>'+
+    (totalCost>0?'<div class="sum-item s-token"><div class="sum-num">$'+totalCost.toFixed(4)+'</div><div class="sum-label">预估费用</div></div>':'');
+
+  renderTrend();
+
+  const dates=new Set();
+  data.forEach(x=>{if(x.daily)Object.keys(x.daily).forEach(d=>dates.add(d))});
+  const sorted=[...dates].sort().reverse();
+  curDate=sorted.includes(curDate)?curDate:(sorted[0]||todayStr());
+  const tabsHtml=sorted.map(d=>'<span class="tab'+(d===curDate?' on':'')+'" onclick="curDate=\''+d+'\';render()">'+d+'</span>').join("");
+  document.getElementById("tabs").innerHTML='<span class="tab'+(curDate==='all'?' on':'')+'" onclick="curDate=\'all\';render()">全部</span>'+tabsHtml;
+
+  let filtered=data;
+  if(filterBy==="available")filtered=filtered.filter(x=>x.available);
+  else if(filterBy==="cooldown")filtered=filtered.filter(x=>!x.available&&x.status!=="discarded");
+  else if(filterBy==="discarded")filtered=filtered.filter(x=>x.status==="discarded");
+  if(searchQ){const q=searchQ.toLowerCase();filtered=filtered.filter(x=>String(x.idx).includes(q)||(x.remark||"").toLowerCase().includes(q)||x.url.toLowerCase().includes(q))}
+  if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
+  else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
+  else if(sortBy==="rate5m"){
+    filtered.sort((a,b)=>{
+      const ra=a.sliding5mRate!==null?a.sliding5mRate:-1;
+      const rb=b.sliding5mRate!==null?b.sliding5mRate:-1;
+      return rb-ra;
+    });
+  }
+
+  let html="";
+  for(const a of filtered){
+    const isDiscard=a.status==="discarded";
+    const isActive=a.active,isFail=a.failCode&&!a.available&&!isDiscard,isOk=a.available&&!a.failCode;
+    const c=isDiscard?"failed":(isFail?"failed":(isActive?"active":(isOk?"card-ok":"")));
+    const dot=isDiscard?"d-fail":(a.available?(a.failCode?"d-pending":"d-ok"):"d-fail");
+    const st=isDiscard?"已废弃":(a.available?(a.failCode?"待恢复":"可用"):"冷却中");
+    let cd="";
+    if(isDiscard){cd="已被标记废弃"}
+    else if(a.failCode&&a.failPeriod&&!a.available){
+      const r=a.reset;
+      if(r==="never"){cd="永久失效"}
+      else if(r==="daily"){cd="本日已用完，明天0点重置"}
+      else{cd="本周已用完，下周一0点重置"}
+    }
+    const rg=a.remark?'<div class="rem">📝 '+esc(a.remark)+'</div>':"";
+    const req=a.totalRequests||0,suc=a.successRequests||0;
+    const ib=a.inputBytes||0,ob=a.outputBytes||0;
+    const daily=curDate==='all'?null:(a.daily||{})[curDate];
+    const score=a.healthScore||100;
+    const avgD=a.avgDuration?fmtDur(a.avgDuration):"";
+    const avgT=a.avgTtfb?fmtDur(a.avgTtfb):"";
+    const p50=a.p50!==null?fmtDur(a.p50):"-";
+    const p95=a.p95!==null?fmtDur(a.p95):"-";
+    const p99=a.p99!==null?fmtDur(a.p99):"-";
+    const r5=a.sliding5mRate!==null?(a.sliding5mRate*100).toFixed(0)+"%":"-";
+    const r1=a.sliding1hRate!==null?(a.sliding1hRate*100).toFixed(0)+"%":"-";
+    const cost=a.totalCost?("$"+a.totalCost.toFixed(6)):"";
+    const meterColor=score>=80?"#22c55e":(score>=50?"#f59e0b":"#ef4444");
+
+    html+='<div class="card '+c+'" id="card-'+a.idx+'">'+
+      '<div class="ctop"><span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
+      '<span style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">'+
+      '<span class="badge '+C[a.reset]+'">'+L[a.reset]+'</span>'+
+      (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
+      (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
+      ' <span class="badge bd-score">'+score+'分</span>'+
+      '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="折叠">▼</span></span></div>'+
+      '<div class="meter"><div class="meter-fill" style="width:'+score+'%;background:'+meterColor+'"></div></div>'+
+      '<div class="cbody" id="body-'+a.idx+'">'+
+      '<div class="row"><span class="label">Key</span><span class="val"><span class="key-mask" data-idx="'+a.idx+'" onclick="var i=this.dataset.idx,f=fullKeys[i];if(!f){loadKeys();var t=this;setTimeout(function(){f=fullKeys[i];if(f)t.textContent=t.textContent===maskKey(f)?f:maskKey(f)},300)}else this.textContent=this.textContent===maskKey(f)?f:maskKey(f)">'+a.key+'</span></span></div>'+
+      '<div class="row"><span class="label">地址</span><span class="val uurl">'+esc(a.url)+'</span></div>'+
+      rg+
+      (a.failCode?'<div class="row"><span class="label">失败码</span><span class="val">'+a.failCode+'</span></div>':"")+
+      (cd?'<div class="row"><span class="label">冷却剩余</span><span class="val cooldown">'+cd+'</span></div>':"")+
+      '<div class="row"><div class="label">请求</div><div class="val">'+req+'次 (成功'+suc+' 失败'+(req-suc)+')</div></div>'+
+      '<div class="row"><div class="label">流量</div><div class="val">↑'+fmtBytes(ib)+' / ↓'+fmtBytes(ob)+'</div></div>'+
+      (cost?'<div class="row"><div class="label">预估费用</div><div class="val">'+cost+'</div></div>':"")+
+      (avgD?'<div class="row"><div class="label">平均延迟</div><div class="val">'+avgD+'</div></div>':"")+
+      (avgT?'<div class="row"><div class="label">平均首字节</div><div class="val">'+avgT+'</div></div>':"")+
+      '<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px"><div class="label">P50 / P95 / P99</div><div class="val">'+p50+' / '+p95+' / '+p99+'</div></div>'+
+      '<div class="row"><div class="label">滑动成功率</div><div class="val">5分钟: '+r5+' | 1小时: '+r1+'</div></div>';
+
+    if(daily){
+      const db=daily.inputBytes||0,do_=daily.outputBytes||0;
+      html+='<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px;color:#93c5fd">'+
+        '<div class="label">'+curDate+'</div><div class="val">'+daily.requests+'次 '+fmtBytes(db+do_)+'</div></div>';
+    }else if(curDate==='all'&&a.daily){
+      const ds=Object.keys(a.daily).sort().reverse().slice(0,5);
+      const maxBytes=Math.max(...ds.map(d=>(a.daily[d].inputBytes||0)+(a.daily[d].outputBytes||0)),1);
+      for(const d of ds){
+        const dd=a.daily[d],b=(dd.inputBytes||0)+(dd.outputBytes||0);
+        html+='<div class="hist"><span>'+d+'</span><span>'+dd.requests+'次 '+fmtBytes(b)+'</span></div>'+
+          '<div class="hist-bar"><div class="hist-fill" style="width:'+(b/maxBytes*100)+'%"></div></div>';
+      }
+    }else if(curDate!=='all'&&!daily&&a.daily){
+      html+='<div class="row" style="color:#64748b"><div class="label">'+curDate+'</div><div class="val">无记录</div></div>';
+    }
+
+    html+='</div><div class="sbar"><span><span class="dot '+dot+'"></span>'+st+'</span></div></div>';
+  }
+  document.getElementById("grid").innerHTML=html;
+}
+
+function toggleCollapse(idx){
+  const body=document.getElementById("body-"+idx);
+  if(body)body.classList.toggle("collapsed");
+}
+
+function todayStr(){return new Date().toISOString().slice(0,10)}
+function fmtBytes(n){if(!n)return"0B";if(n>=1048576)return(n/1048576).toFixed(1)+"MB";if(n>=1024)return(n/1024).toFixed(1)+"KB";return n+"B"}
+function fmtDur(ms){if(ms>=1000)return(ms/1000).toFixed(2)+"s";return ms+"ms"}
+function maskKey(k){return k&&k.length>12?k.slice(0,6)+'...'+k.slice(-4):(k||'')}
+function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML}
+function showAlert(txt){document.getElementById("sub").textContent=txt}
+loadKeys();connectWS();if(Notification.permission==="default")Notification.requestPermission();
+setTimeout(function(){if(!data.length)httpLoad()},3000);
+
+document.getElementById("sortBy").addEventListener("change",function(){sortBy=this.value;render()});
+document.getElementById("filterBy").addEventListener("change",function(){filterBy=this.value;render()});
+document.getElementById("trendRange").addEventListener("change",function(){trendRange=this.value;render()});
+document.getElementById("searchBox").addEventListener("input",function(){searchQ=this.value;render()});
+
+let mgrKeys=[];
+let logInterval=null;
+
+async function openMgr(){
+  try{
+    const r=await fetch("http://localhost:3456/__keys");
+    mgrKeys=(await r.json()).filter(k=>k.status!=="deleted");
+  }catch(e){
+    mgrKeys=[{key:"",url:"",reset:"weekly",remark:""}];
+  }
+  if(!mgrKeys.length)mgrKeys=[{key:"",url:"",reset:"weekly",remark:""}];
+  renderMgr();
+  document.getElementById("mgrModal").classList.add("on");
+}
+function closeMgr(){document.getElementById("mgrModal").classList.remove("on")}
+function renderMgr(){
+  const tbody=document.getElementById("mgrBody");
+  tbody.innerHTML="";
+  for(let i=0;i<mgrKeys.length;i++){
+    const k=mgrKeys[i],sh=k.status==="shielded";
+    const tr=document.createElement("tr");
+    tr.innerHTML='<td>'+(i+1)+'</td>'+
+      '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+(sh?'<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>':'')+'</td>'+
+      '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..."></td>'+
+      '<td><select class="kreset"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select></td>'+
+      '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注"></td>'+
+      '<td style="display:flex;gap:4px;align-items:center">'+
+        '<span class="del" onclick="resetKeyStatus('+i+')" title="重置状态（清除冷却/废弃）">🔄</span>'+
+        '<span class="del" onclick="toggleShield('+i+')" title="'+(sh?'恢复使用':'屏蔽')+'">'+(sh?'🔄':'🔇')+'</span>'+
+        '<span class="del" onclick="delKeyRow('+i+')">✕</span></td>';
+    tbody.appendChild(tr);
+  }
+}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:""});renderMgr()}
+function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
+async function resetKeyStatus(i){
+  try{
+    const r=await fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})});
+    const j=await r.json();
+    if(j.ok)loadKeys();
+  }catch(e){}
+}
+function delKeyRow(i){
+  if(!confirm('确定要删除 Key #'+(i+1)+'？\n删除后不再显示和调用，可在 keys.json 中恢复。'))return;
+  mgrKeys[i].status="deleted";renderMgr();
+  setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
+}
+function collectMgr(){
+  const rows=document.getElementById("mgrBody").children;
+  const arr=[];
+  for(let i=0;i<rows.length;i++){
+    const r=rows[i];
+    const key=r.querySelector(".kkey").value.trim();
+    const url=r.querySelector(".kurl").value.trim();
+    if(!key||!url)continue;
+    arr.push({key,url,reset:r.querySelector(".kreset").value,remark:r.querySelector(".kremark").value.trim(),status:mgrKeys[i].status&&mgrKeys[i].status!=="active"?mgrKeys[i].status:void 0});
+  }
+  return arr;
+}
+async function saveKeys(){
+  const arr=collectMgr();
+  if(!arr.length){alert("至少需要一个有效的 Key");return}
+  try{
+    const r=await fetch("http://localhost:3456/__keys",{
+      method:"PUT",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify(arr,null,2)
+    });
+    const j=await r.json();
+    if(j.error){alert("保存失败: "+j.error);return}
+    closeMgr();loadKeys();
+  }catch(e){alert("保存失败: "+e.message)}
+}
+
+function exportCSV(){window.open("http://localhost:3456/__export")}
+
+async function openLogs(){
+  document.getElementById("logModal").classList.add("on");
+  await loadLogs();
+}
+function closeLogs(){
+  document.getElementById("logModal").classList.remove("on");
+}
+async function loadLogs(){
+  try{
+    const r=await fetch("http://localhost:3456/__logs?limit=200");
+    if(!r.ok)return;
+    const logs=await r.json();
+    const tbody=document.getElementById("logBody");
+    tbody.innerHTML=logs.slice().reverse().map(e=>{
+      const s=e.status||0;
+      const sc="log-s"+s;
+      const tm=new Date(e.time);
+      const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
+      return '<tr><td class="log-time">'+ts+'</td><td>#'+e.idx+'</td><td>'+e.method+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td><td class="log-status '+sc+'">'+s+'</td><td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td><td class="log-dur">'+fmtDur(e.duration||0)+'</td><td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td></tr>';
+    }).join("")||'<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">暂无请求记录</td></tr>';
+  }catch(e){}
+}
+
+function openConfig(){loadConfigUI();document.getElementById("configModal").classList.add("on")}
+function closeConfig(){document.getElementById("configModal").classList.remove("on")}
+async function saveConfig(){
+  const c={
+    prices:{inputPer1M:parseFloat(document.getElementById("cfgPriceIn").value)||0,outputPer1M:parseFloat(document.getElementById("cfgPriceOut").value)||0},
+    bytesPerToken:parseInt(document.getElementById("cfgBpt").value)||3,
+    webhookUrl:document.getElementById("cfgWebhook").value.trim(),
+    notifications:{desktop:document.getElementById("cfgDesktop").checked,sound:document.getElementById("cfgSound").checked}
+  };
+  try{
+    const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
+    const j=await r.json();
+    document.getElementById("configStatus").textContent=j.ok?"已保存":"保存失败";
+  }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+[Unit]
+Description=Codex Multi-Key Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{PROXY_DIR}}
+ExecStart=/usr/bin/node {{PROXY_DIR}}/proxy.js
+Restart=always
+RestartSec=5
+StandardOutput=append:{{PROXY_DIR}}/proxy.log
+StandardError=append:{{PROXY_DIR}}/proxy.log
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
