@@ -82,7 +82,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .key-mask:hover{color:#e2e8f0;text-decoration:underline}
 .alert{background:#3b1f1e;border:1px solid #ef4444;border-radius:8px;padding:clamp(8px,1.5vw,10px) clamp(10px,2vw,14px);margin-bottom:clamp(8px,2vw,12px);font-size:clamp(12px,1.8vw,13px);color:#f87171;display:none;align-items:center;gap:8px}
 .alert svg{flex-shrink:0}
-.trend-wrap{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:clamp(8px,1.5vw,12px);margin-bottom:12px}
+.trend-wrap{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:clamp(8px,1.5vw,12px);margin-bottom:12px;overflow-x:auto}
 .trend-title{font-size:clamp(12px,1.5vw,13px);color:#94a3b8;margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .trend-bars{display:flex;align-items:flex-end;gap:2px;height:clamp(60px,10vw,80px);padding:4px 0}
 .trend-bar{flex:1;background:#3b82f6;border-radius:2px 2px 0 0;position:relative;min-width:4px;transition:height .3s}
@@ -277,7 +277,14 @@ function renderTrend(){
   const bars=document.getElementById("trendBars");
   const labels=document.getElementById("trendLabels");
   bars.innerHTML=vals.map(v=>'<div class="trend-bar" style="height:'+Math.max(2,v/max*80)+'px" title="'+fmtBytes(v)+'"></div>').join("");
-  labels.innerHTML=keys.map(k=>'<div class="trend-label">'+k.slice(-5).replace("-",":")+'</div>').join("");
+  const labelStep=trendRange==="30d"?24:(trendRange==="7d"?12:1);
+  labels.innerHTML=keys.map((k,i)=>{
+    const hh=k.slice(-2);
+    const mmdd=k.slice(5,10);
+    let text=trendRange==="30d"?mmdd:(trendRange==="7d"?mmdd+" "+hh+":00":hh+":00");
+    const vis=i%labelStep===0;
+    return '<div class="trend-label" style="'+(vis?"":"visibility:hidden;font-size:0")+'">'+text+'</div>';
+  }).join("");
   document.getElementById("trend").style.display=vals.some(v=>v>0)?"block":"none";
   document.getElementById("trendRangeLabel").textContent={"24h":"24小时","7d":"7天","30d":"30天"}[trendRange];
 }
