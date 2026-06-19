@@ -687,7 +687,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .controls label{color:#94a3b8;font-size:11px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(clamp(280px,40vw,320px),1fr));gap:clamp(6px,1vw,10px)}
 .card{background:#1e293b;border-radius:8px;padding:clamp(8px,1.5vw,12px);border:1px solid #334155;transition:border-color .2s}
-.card.active{border-color:#3b82f6;box-shadow:0 0 8px #3b82f644}
+.card.active{border-color:#3b82f6;box-shadow:0 0 12px #3b82f688}
 .card.failed{border-color:#ef4444;background:#1e1b1b}
 .card-ok{border-color:#22c55e}
 .card .toggle-body{cursor:pointer;-webkit-user-select:none;user-select:none}
@@ -706,6 +706,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .label{color:#94a3b8;flex-shrink:0}
 .val{color:#e2e8f0;text-align:right;word-break:break-all;max-width:60%}
 .sbar{margin-top:6px;padding-top:6px;border-top:1px solid #334155;display:flex;justify-content:space-between;align-items:center;font-size:clamp(10px,1.3vw,12px)}
+.btn-act{color:#94a3b8;cursor:pointer;padding:2px 4px;border-radius:4px;font-size:12px;line-height:1}
+.btn-act:hover{background:#334155;color:#e2e8f0}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px;flex-shrink:0}
 .d-ok{background:#22c55e;box-shadow:0 0 4px #22c55e66}
 .d-fail{background:#ef4444;box-shadow:0 0 4px #ef444466}
@@ -800,6 +802,12 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
   <label>搜索</label>
   <input id="searchBox" placeholder="搜索 ID/备注/地址..." style="width:140px">
+  <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
+</div>
+<div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
+  <span style="color:#94a3b8;font-size:12px" id="batchCount">已选 0 个</span>
+  <button class="btn" style="font-size:11px" onclick="batchActionCards('reset')">🔄 批量重置</button>
+  <button class="btn" style="font-size:11px;color:#f87171" onclick="batchActionCards('shield')">🔇 批量屏蔽</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
 <div class="trend-title"><span>流量趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
@@ -813,8 +821,18 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="mcontent">
 <div class="mtitle"><span>Key 管理</span><button class="btn" onclick="closeMgr()">✕</button></div>
 <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">修改后点击保存，代理自动重载配置</div>
+<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+  <input id="mgrSearch" placeholder="搜索备注/地址..." oninput="renderMgr()" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px">
+  <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)">全选</button>
+  <button class="btn" style="font-size:11px" onclick="selectAllMgr(false)">取消</button>
+  <button class="btn" style="font-size:11px" onclick="batchShieldMgr()">🔇 批量屏蔽</button>
+  <button class="btn" style="font-size:11px" onclick="batchResetMgr()">🔄 批量重置</button>
+  <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
+  <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
+</div>
 <table class="mtable"><thead><tr>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:60px">重置</th><th style="min-width:100px">备注</th><th style="width:30px"></th>
+<th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:60px">重置</th><th style="min-width:100px">备注</th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -842,7 +860,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div style="color:#94a3b8;padding:4px 0">🌐 Webhook URL</div>
   <div><input id="cfgWebhook" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="https://qyapi.weixin.qq.com/..."></div>
 </div>
-<div class="mfoot"><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
+<div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
 <div class="modal" id="logModal">
@@ -1026,7 +1044,8 @@ function render(){
     const meterColor=score>=80?"#22c55e":(score>=50?"#f59e0b":"#ef4444");
 
     html+='<div class="card '+c+'" id="card-'+a.idx+'">'+
-      '<div class="ctop"><span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
+      '<div class="ctop"><input type="checkbox" class="card-cb" data-idx="'+a.idx+'" onchange="updateBatchBar()" style="margin-right:4px;accent-color:#3b82f6">'+
+      '<span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
       '<span style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">'+
       '<span class="badge '+C[a.reset]+'">'+L[a.reset]+'</span>'+
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
@@ -1038,7 +1057,8 @@ function render(){
       '<div class="row"><span class="label">Key</span><span class="val"><span class="key-mask" data-idx="'+a.idx+'" onclick="var i=this.dataset.idx,f=fullKeys[i];if(!f){loadKeys();var t=this;setTimeout(function(){f=fullKeys[i];if(f)t.textContent=t.textContent===maskKey(f)?f:maskKey(f)},300)}else this.textContent=this.textContent===maskKey(f)?f:maskKey(f)">'+a.key+'</span></span></div>'+
       '<div class="row"><span class="label">地址</span><span class="val uurl">'+esc(a.url)+'</span></div>'+
       rg+
-      (a.failCode?'<div class="row"><span class="label">失败码</span><span class="val">'+a.failCode+'</span></div>':"")+
+      (a.failCode?'<div class="row"><span class="label">失败码</span><span class="val" title="'+(FAIL_MEAN[a.failCode]||'')+'">'+a.failCode+'</span></div>':"")+
+      (a.failTime?'<div class="row"><span class="label">最后失败</span><span class="val" style="color:#f87171">'+fmtDur(Date.now()-a.failTime)+'前</span></div>':"")+
       (cd?'<div class="row"><span class="label">冷却剩余</span><span class="val cooldown">'+cd+'</span></div>':"")+
       '<div class="row"><div class="label">请求</div><div class="val">'+req+'次 (成功'+suc+' 失败'+(req-suc)+')</div></div>'+
       '<div class="row"><div class="label">流量</div><div class="val">↑'+fmtBytes(ib)+' / ↓'+fmtBytes(ob)+'</div></div>'+
@@ -1064,9 +1084,16 @@ function render(){
       html+='<div class="row" style="color:#64748b"><div class="label">'+curDate+'</div><div class="val">无记录</div></div>';
     }
 
-    html+='</div><div class="sbar"><span><span class="dot '+dot+'"></span>'+st+'</span></div></div>';
+    html+='</div><div class="sbar"><span><span class="dot '+dot+'"></span>'+st+'</span>'+
+      '<span style="display:flex;gap:3px;align-items:center">'+
+      (!isDiscard?'<span class="btn-act" onclick="cardShield('+a.idx+')" title="屏蔽此 Key（不再参与调度）">🔇</span>':'')+
+      (isDiscard?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="重置此 Key">🔄</span>':'')+
+      (!isDiscard&&a.failCode?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="重置冷却">🔄</span>':'')+
+      '<span class="btn-act" onclick="cardTest('+a.idx+')" title="测试连通性">🔍</span>'+
+      '</span></div></div>';
   }
   document.getElementById("grid").innerHTML=html;
+  updateBatchBar();
 }
 
 function toggleCollapse(idx){
@@ -1079,7 +1106,37 @@ function fmtBytes(n){if(!n)return"0B";if(n>=1048576)return(n/1048576).toFixed(1)
 function fmtDur(ms){if(ms>=1000)return(ms/1000).toFixed(2)+"s";return ms+"ms"}
 function maskKey(k){return k&&k.length>12?k.slice(0,6)+'...'+k.slice(-4):(k||'')}
 function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML}
+const FAIL_MEAN={"401":"API Key 无效或已过期","402":"额度不足，账号已欠费","403":"权限不足，Key 无访问权限","429":"请求过频繁，触发了速率限制","500":"上游服务器内部错误","502":"上游网关错误","503":"服务暂时不可用","504":"上游超时"};
+function toggleAllCollapse(){
+  const all=document.querySelectorAll("#grid .cbody");
+  const first=all[0];
+  if(!first)return;
+  const isCollapsed=first.classList.contains("collapsed");
+  all.forEach(b=>b.classList.toggle("collapsed",!isCollapsed));
+}
 function showAlert(txt){document.getElementById("sub").textContent=txt}
+function cardReset(idx){
+  fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx})})
+    .then(r=>r.json()).then(j=>{if(j.ok)loadKeys()}).catch(()=>{});
+}
+function cardTest(idx){
+  const d=data.find(x=>x.idx===idx);
+  if(!d){alert("Key #"+idx+" 数据不可用");return}
+  const fullKey=fullKeys[idx];
+  if(!fullKey){loadKeys();alert("Key 未加载，请重试");return}
+  const btns=document.querySelectorAll("#card-"+idx+" .btn-act");
+  const btn=btns[btns.length-1];
+  if(btn)btn.textContent="⏳";
+  fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:fullKey,url:d.url})})
+    .then(r=>r.json()).then(j=>{
+      if(btn)btn.textContent="🔍";
+      if(j.ok)alert("Key #"+idx+" 测试成功！"+(j.model?" 模型: "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""));
+      else alert("Key #"+idx+" 测试失败: "+(j.error||"未知错误"));
+    }).catch(e=>{
+      if(btn)btn.textContent="🔍";
+      alert("Key #"+idx+" 测试请求失败: "+e.message);
+    });
+}
 loadKeys();connectWS();if(Notification.permission==="default")Notification.requestPermission();
 setTimeout(function(){if(!data.length)httpLoad()},3000);
 
@@ -1103,23 +1160,58 @@ async function openMgr(){
   document.getElementById("mgrModal").classList.add("on");
 }
 function closeMgr(){document.getElementById("mgrModal").classList.remove("on")}
+let mgrSearchCache=[],dragIdx=-1;
 function renderMgr(){
+  const q=(document.getElementById("mgrSearch").value||"").toLowerCase();
   const tbody=document.getElementById("mgrBody");
   tbody.innerHTML="";
+  const filtered=[];const grp={};
   for(let i=0;i<mgrKeys.length;i++){
-    const k=mgrKeys[i],sh=k.status==="shielded";
-    const tr=document.createElement("tr");
-    tr.innerHTML='<td>'+(i+1)+'</td>'+
-      '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+(sh?'<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>':'')+'</td>'+
-      '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..."></td>'+
-      '<td><select class="kreset"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select></td>'+
-      '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注"></td>'+
-      '<td style="display:flex;gap:4px;align-items:center">'+
-        '<span class="del" onclick="resetKeyStatus('+i+')" title="重置状态（清除冷却/废弃）">🔄</span>'+
-        '<span class="del" onclick="toggleShield('+i+')" title="'+(sh?'恢复使用':'屏蔽')+'">'+(sh?'🔄':'🔇')+'</span>'+
-        '<span class="del" onclick="delKeyRow('+i+')">✕</span></td>';
-    tbody.appendChild(tr);
+    const k=mgrKeys[i];
+    if(q&&!(k.remark||"").toLowerCase().includes(q)&&!(k.url||"").toLowerCase().includes(q)&&!(k.key||"").toLowerCase().includes(q))continue;
+    filtered.push(i);
+    const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
+    if(!grp[g])grp[g]=[];
+    grp[g].push(i);
   }
+  mgrSearchCache=filtered;
+  const groups=Object.keys(grp);
+  for(let gi=0;gi<groups.length;gi++){
+    const g=groups[gi],items=grp[g];
+    const hdr=document.createElement("tr");
+    hdr.style.background="#1e293b";hdr.style.color="#94a3b8";
+    hdr.innerHTML='<td colspan="7" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155">📁 '+esc(g)+' ('+items.length+')</td>';
+    tbody.appendChild(hdr);
+    for(let ii=0;ii<items.length;ii++){
+      const i=items[ii],k=mgrKeys[i],sh=k.status==="shielded";
+      const tr=document.createElement("tr");
+      tr.draggable=true;
+      tr.ondragstart=function(){dragIdx=i};
+      tr.ondragover=function(e){e.preventDefault()};
+      tr.ondrop=function(e){
+        e.preventDefault();
+        if(dragIdx<0||dragIdx===i)return;
+        const item=mgrKeys.splice(dragIdx,1)[0];
+        mgrKeys.splice(i,0,item);
+        dragIdx=-1;
+        renderMgr();
+      };
+      tr.style.cursor="grab";
+      tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
+        '<td>'+(i+1)+'</td>'+
+        '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+(sh?'<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>':'')+'</td>'+
+        '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..."></td>'+
+        '<td><select class="kreset"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select></td>'+
+        '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注"></td>'+
+        '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
+          '<span class="del" onclick="testKey('+i+')" title="测试连通性">🔍</span>'+
+          '<span class="del" onclick="resetKeyStatus('+i+')" title="重置状态（清除冷却/废弃）">🔄</span>'+
+          '<span class="del" onclick="toggleShield('+i+')" title="'+(sh?'恢复使用':'屏蔽')+'">'+(sh?'🔄':'🔇')+'</span>'+
+          '<span class="del" onclick="delKeyRow('+i+')">✕</span></td>';
+      tbody.appendChild(tr);
+    }
+  }
+  document.getElementById("mgrSelectAll").checked=false;
 }
 function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:""});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
@@ -1135,17 +1227,54 @@ function delKeyRow(i){
   mgrKeys[i].status="deleted";renderMgr();
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
+function selectAllMgr(sel){
+  document.querySelectorAll("#mgrBody .mgr-cb").forEach(c=>c.checked=sel);
+  document.getElementById("mgrSelectAll").checked=sel;
+}
+function getSelectedMgr(){
+  const cbs=document.querySelectorAll("#mgrBody .mgr-cb:checked");
+  return [...cbs].map(c=>parseInt(c.value)).filter(i=>i>=0&&i<mgrKeys.length);
+}
+function batchShieldMgr(){
+  const sel=getSelectedMgr();
+  if(!sel.length){alert("请先勾选要屏蔽的 Key");return}
+  sel.forEach(i=>{mgrKeys[i].status="shielded"});
+  renderMgr();
+}
+function batchResetMgr(){
+  const sel=getSelectedMgr();
+  if(!sel.length){alert("请先勾选要重置的 Key");return}
+  sel.forEach(i=>{
+    mgrKeys[i].status="active";
+    fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})}).catch(()=>{});
+  });
+  renderMgr();
+}
+function batchDeleteMgr(){
+  const sel=getSelectedMgr();
+  if(!sel.length){alert("请先勾选要删除的 Key");return}
+  if(!confirm('确定要删除选中的 '+sel.length+' 个 Key？\\n删除后不再显示和调用，可在 keys.json 中恢复。'))return;
+  sel.forEach(i=>{mgrKeys[i].status="deleted"});
+  renderMgr();
+  setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
+}
 function collectMgr(){
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
-  const arr=[];
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
-    const key=r.querySelector(".kkey").value.trim();
-    const url=r.querySelector(".kurl").value.trim();
-    if(!key||!url)continue;
-    arr.push({key,url,reset:r.querySelector(".kreset").value,remark:r.querySelector(".kremark").value.trim(),status:mgrKeys[i].status&&mgrKeys[i].status!=="active"?mgrKeys[i].status:void 0});
+    if(r.tagName!=="TR")continue;
+    const sidx=parseInt(r.querySelector(".mgr-cb")?.value||"-1");
+    if(sidx<0||sidx>=result.length)continue;
+    const key=r.querySelector(".kkey")?.value.trim();
+    if(!key)continue;
+    result[sidx].key=key;
+    result[sidx].url=r.querySelector(".kurl").value.trim();
+    result[sidx].reset=r.querySelector(".kreset").value;
+    result[sidx].remark=r.querySelector(".kremark").value.trim();
+    result[sidx].status=mgrKeys[sidx].status&&mgrKeys[sidx].status!=="active"?mgrKeys[sidx].status:void 0;
   }
-  return arr;
+  return result.filter(k=>k.key&&k.url);
 }
 async function saveKeys(){
   const arr=collectMgr();
@@ -1160,6 +1289,41 @@ async function saveKeys(){
     if(j.error){alert("保存失败: "+j.error);return}
     closeMgr();loadKeys();
   }catch(e){alert("保存失败: "+e.message)}
+}
+function importKeys(){
+  const txt=prompt("批量导入 Key\\n每行一个，格式：sk-xxx 或 sk-xxx https://url 或者 sk-xxx https://url 每日/每周/永久 备注\\n\\n粘贴后点击确定即可添加");
+  if(!txt)return;
+  const lines=txt.trim().split("\\n").filter(l=>l.trim());
+  let added=0;
+  for(const line of lines){
+    const parts=line.trim().split(/\s+/);
+    if(!parts[0]||!parts[0].startsWith("sk-"))continue;
+    const key=parts[0];
+    const url=parts[1]||"https://api.fenno.ai";
+    const resetMap={"daily":"每日","weekly":"每周","never":"永久","每日":"daily","每周":"weekly","永久":"never"};
+    const reset=resetMap[parts[2]]||"weekly";
+    const remark=parts.slice(3).join(" ")||"";
+    mgrKeys.push({key,url,reset,remark});
+    added++;
+  }
+  if(added)renderMgr();
+  alert("成功添加 "+added+" 个 Key"+(lines.length-added>0?"，"+(lines.length-added)+" 行被跳过（格式错误）":""));
+}
+async function testKey(i){
+  const k=mgrKeys[i];
+  if(!k||!k.key){alert("Key 为空，无法测试");return}
+  const btn=document.querySelector("#mgrBody .mgr-cb[value='"+i+"']")?.closest("tr")?.querySelector(".del");
+  if(btn)btn.textContent="⏳";
+  try{
+    const r=await fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:k.key,url:k.url})});
+    const j=await r.json();
+    if(btn)btn.textContent="🔍";
+    if(j.ok){alert("Key #"+(i+1)+" 测试成功！"+(j.model?" 模型: "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""))}
+    else{alert("Key #"+(i+1)+" 测试失败: "+(j.error||"未知错误"))}
+  }catch(e){
+    if(btn)btn.textContent="🔍";
+    alert("Key #"+(i+1)+" 测试请求失败: "+e.message)
+  }
 }
 
 function exportCSV(){window.open("http://localhost:3456/__export")}
@@ -1201,6 +1365,38 @@ async function saveConfig(){
     const j=await r.json();
     document.getElementById("configStatus").textContent=j.ok?"已保存":"保存失败";
   }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
+}
+function restartProxy(){
+  if(!confirm("确定要重启代理进程？\\n正在进行的请求可能中断，但 codex 会自动重试。"))return;
+  fetch("http://localhost:3456/__restart",{method:"POST"})
+    .then(r=>r.json()).then(j=>{if(j.ok)setTimeout(function(){location.reload()},1500)})
+    .catch(()=>{});
+}
+function selectAllCards(sel){
+  document.querySelectorAll("#grid .card-cb").forEach(c=>c.checked=sel);
+}
+function batchActionCards(action){
+  const cbs=document.querySelectorAll("#grid .card-cb:checked");
+  const sel=[...cbs].map(c=>parseInt(c.dataset.idx)).filter(i=>i>0);
+  if(!sel.length){alert("请先勾选要操作的 Key");return}
+  if(action==="shield"){
+    if(!confirm("确定屏蔽选中的 "+sel.length+" 个 Key？"))return;
+    sel.forEach(i=>fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i,status:"shielded"})}).catch(()=>{}));
+  }else if(action==="reset"){
+    sel.forEach(i=>fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i})}).catch(()=>{}));
+  }
+}
+function cardShield(idx){
+  if(!confirm("确定屏蔽 Key #"+idx+"？屏蔽后不再参与调度，可在管理弹窗恢复。"))return;
+  fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx,status:"shielded"})}).then(()=>setTimeout(loadKeys,200)).catch(()=>{});
+}
+function updateBatchBar(){
+  const cbs=document.querySelectorAll("#grid .card-cb:checked");
+  const bar=document.getElementById("batchBar");
+  const cnt=document.getElementById("batchCount");
+  if(!bar||!cnt)return;
+  if(cbs.length){bar.style.display="flex";cnt.textContent="已选 "+cbs.length+" 个"}
+  else bar.style.display="none";
 }
 </script>
 </body>
@@ -1254,6 +1450,59 @@ const server = http.createServer((req, res) => {
           loadConfig();
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__test-key") {
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", c => body += c);
+      req.on("end", () => {
+        try {
+          const { key, url } = JSON.parse(body);
+          if (!key || !url) throw new Error("key and url required");
+          const targetUrl = new URL(url);
+          const mod = HTTP_MOD[targetUrl.protocol] || https;
+          const opts = {
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (targetUrl.protocol === "http:" ? 80 : 443),
+            path: "/v1/models",
+            method: "GET",
+            headers: { authorization: "Bearer " + key, "content-type": "application/json" },
+            timeout: 15000,
+          };
+          const t0 = Date.now();
+          const testReq = mod.request(opts, testRes => {
+            const dur = Date.now() - t0;
+            let data = "";
+            testRes.on("data", c => data += c);
+            testRes.on("end", () => {
+              if (testRes.statusCode === 200) {
+                let model = "";
+                try { const j = JSON.parse(data); if (j.data && j.data.length) model = j.data[0].id; } catch (e) {}
+                res.writeHead(200, cors);
+                res.end(JSON.stringify({ ok: true, status: testRes.statusCode, duration: dur, model }));
+              } else {
+                res.writeHead(200, cors);
+                res.end(JSON.stringify({ ok: false, status: testRes.statusCode, error: "HTTP " + testRes.statusCode + ": " + data.slice(0, 200) }));
+              }
+            });
+          });
+          testReq.on("error", e => {
+            res.writeHead(200, cors);
+            res.end(JSON.stringify({ ok: false, error: "请求失败: " + e.message }));
+          });
+          testReq.on("timeout", () => { testReq.destroy(); res.writeHead(200, cors); res.end(JSON.stringify({ ok: false, error: "超时" })); });
+          testReq.end();
         } catch (e) {
           res.writeHead(400, cors);
           res.end(JSON.stringify({ error: e.message }));
@@ -1339,6 +1588,54 @@ const server = http.createServer((req, res) => {
       const last = requestLog.slice(-limit);
       res.writeHead(200, cors);
       res.end(JSON.stringify(last, null, 2));
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__patch-key-status") {
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", c => body += c);
+      req.on("end", () => {
+        try {
+          const { idx, status } = JSON.parse(body);
+          if (typeof idx !== "number" || !["active","shielded"].includes(status)) throw new Error("invalid idx or status");
+          const raw = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8"));
+          const ai = idx - 1;
+          if (ai < 0 || ai >= raw.length) throw new Error("invalid idx");
+          raw[ai].status = status;
+          fs.writeFileSync(KEYS_FILE, JSON.stringify(raw, null, 2), "utf-8");
+          loadAccounts();
+          allFailedNotified = false;
+          saveState();
+          broadcastStatus();
+          res.writeHead(200, cors);
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__restart") {
+    if (req.method === "POST") {
+      res.writeHead(200, cors);
+      res.end(JSON.stringify({ ok: true, message: "restarting" }));
+      setTimeout(() => {
+        console.log("[proxy] restarting...");
+        const child = require("child_process").spawn(process.argv[0], process.argv.slice(1), { detached: true, stdio: "inherit" });
+        child.unref();
+        process.exit(0);
+      }, 200);
       return;
     }
     res.writeHead(405, cors);
