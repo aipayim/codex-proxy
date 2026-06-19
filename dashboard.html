@@ -170,6 +170,16 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px" onclick="batchResetMgr()">🔄 批量重置</button>
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
   <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
+  <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
+</div>
+<div id="batchTestResults" style="display:none;margin-bottom:8px;padding:8px;background:#1e293b;border:1px solid #475569;border-radius:6px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace">
+  <div style="color:#94a3b8;margin-bottom:4px">批量测试结果</div>
+  <div id="batchTestList"></div>
+  <div id="batchTestSummary" style="margin-top:4px;color:#94a3b8"></div>
+  <div style="margin-top:6px;display:flex;gap:4px">
+    <button class="btn" style="font-size:11px;display:none" id="batchTestResetBtn" onclick="batchTestResetPassed()">🔄 重置通过测试的 Key</button>
+    <button class="btn" style="font-size:11px" onclick="document.getElementById('batchTestResults').style.display='none'">收起</button>
+  </div>
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
@@ -665,7 +675,57 @@ async function testKey(i){
     alert("Key #"+(i+1)+" 测试请求失败: "+e.message)
   }
 }
-
+let batchTestPassed=[];
+async function batchTestMgr(){
+  const sel=getSelectedMgr();
+  if(!sel.length){alert("请先勾选要测试的 Key");return}
+  const area=document.getElementById("batchTestResults");
+  const list=document.getElementById("batchTestList");
+  const summary=document.getElementById("batchTestSummary");
+  const resetBtn=document.getElementById("batchTestResetBtn");
+  if(!area||!list)return;
+  batchTestPassed=[];
+  area.style.display="block";
+  list.innerHTML="";
+  summary.textContent="测试中...";
+  resetBtn.style.display="none";
+  for(const i of sel){
+    const k=mgrKeys[i];
+    const line=document.createElement("div");
+    line.id="btr-"+i;
+    if(!k||!k.key){line.textContent="⏭️ #"+(i+1)+" Key 为空，跳过";list.appendChild(line);continue}
+    line.textContent="⏳ #"+(i+1)+" 测试中...";
+    list.appendChild(line);
+    try{
+      const r=await fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:k.key,url:k.url})});
+      const j=await r.json();
+      if(j.ok){
+        batchTestPassed.push(i);
+        line.textContent="✅ #"+(i+1)+" 成功"+(j.model?" 模型: "+j.model:"")+(j.duration?" ("+j.duration+"ms)":"");
+      }else{
+        line.textContent="❌ #"+(i+1)+" 失败: "+(j.error||"未知错误");
+      }
+    }catch(e){
+      line.textContent="❌ #"+(i+1)+" 请求异常: "+e.message;
+    }
+  }
+  const total=sel.length;
+  const passed=batchTestPassed.length;
+  summary.textContent="测试完成 — "+passed+" 个通过, "+(total-passed)+" 个失败";
+  if(passed>0){resetBtn.style.display="inline-block";resetBtn.textContent="🔄 重置通过测试的 Key ("+passed+"个)"}
+}
+function closeBatchTestResults(){
+  document.getElementById("batchTestResults").style.display="none";
+}
+async function batchTestResetPassed(){
+  if(!batchTestPassed.length)return;
+  for(const i of batchTestPassed){
+    try{await fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})})}catch(e){}
+  }
+  batchTestPassed=[];
+  document.getElementById("batchTestResults").style.display="none";
+  loadKeys();
+}
 function exportCSV(){window.open("http://localhost:3456/__export")}
 
 async function openLogs(){
