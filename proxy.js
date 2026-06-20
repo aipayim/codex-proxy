@@ -1541,11 +1541,14 @@ const server = http.createServer((req, res) => {
             timeout: 15000,
           };
           const t0 = Date.now();
+          let responded = false;
           const testReq = mod.request(opts, testRes => {
             const dur = Date.now() - t0;
             let data = "";
             testRes.on("data", c => data += c);
             testRes.on("end", () => {
+              if (responded) return;
+              responded = true;
               if (testRes.statusCode === 200) {
                 let model = "";
                 try {
@@ -1565,10 +1568,18 @@ const server = http.createServer((req, res) => {
             });
           });
           testReq.on("error", e => {
+            if (responded) return;
+            responded = true;
             res.writeHead(200, cors);
             res.end(JSON.stringify({ ok: false, error: "请求失败: " + e.message }));
           });
-          testReq.on("timeout", () => { testReq.destroy(); res.writeHead(200, cors); res.end(JSON.stringify({ ok: false, error: "超时" })); });
+          testReq.on("timeout", () => {
+            if (responded) return;
+            responded = true;
+            testReq.destroy();
+            res.writeHead(200, cors);
+            res.end(JSON.stringify({ ok: false, error: "超时" }));
+          });
           testReq.end();
         } catch (e) {
           res.writeHead(400, cors);
