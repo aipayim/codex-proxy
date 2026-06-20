@@ -66,6 +66,7 @@ function autoRecover(){
   const toCheck = [];
   for (let i = 0; i < accounts.length; i++) {
     const ks = getKeyState(i);
+    if (ks.status === "shielded") continue;
     if (!ks.failCode && ks.status !== "discarded") continue;
     if (ks.status === "discarded" && !checkDiscarded) continue;
     if (ks.failCode && !codes.includes(ks.failCode)) continue;
