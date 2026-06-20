@@ -6,7 +6,20 @@
   },
   "bytesPerToken": 3,
   "notifications": {
-    "sound": true,
-    "desktop": true
-  }
+    "desktop": true,
+    "sound": true
+  },
+  "autoRecover": true,
+  "autoRecoverInterval": 24,
+  "autoRecoverCodes": [
+    401,
+    402,
+    403,
+    429,
+    500,
+    502,
+    503,
+    504
+  ],
+  "autoRecoverDiscarded": false
 }

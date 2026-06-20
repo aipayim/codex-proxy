@@ -30,6 +30,8 @@ let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
 let allFailedNotified = false;
+let autoRecoverTimer = null;
+let autoRecoverNextTime = 0;
 
 function loadConfig() {
   try {
@@ -39,7 +41,72 @@ function loadConfig() {
     if (c.prices) { config.prices.inputPer1M = c.prices.inputPer1M || 0; config.prices.outputPer1M = c.prices.outputPer1M || 0; }
     if (c.bytesPerToken) config.bytesPerToken = c.bytesPerToken;
     if (c.notifications) { config.notifications.sound = c.notifications.sound !== false; config.notifications.desktop = c.notifications.desktop !== false; }
+    config.autoRecover = c.autoRecover !== false;
+    config.autoRecoverInterval = Math.max(0.5, c.autoRecoverInterval || 1);
+    config.autoRecoverCodes = Array.isArray(c.autoRecoverCodes) ? c.autoRecoverCodes : [401,402,403,429,500,502,503,504];
+    config.autoRecoverDiscarded = c.autoRecoverDiscarded === true;
   } catch { /* defaults */ }
+  if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
+  if (config.autoRecover) {
+    const ms = config.autoRecoverInterval * 3600000;
+    autoRecoverNextTime = Date.now() + Math.max(60000, ms);
+    autoRecoverTimer = setInterval(() => {
+      autoRecoverNextTime = Date.now() + Math.max(60000, config.autoRecoverInterval * 3600000);
+      autoRecover();
+    }, Math.max(60000, ms));
+  } else {
+    autoRecoverNextTime = 0;
+  }
+}
+
+function autoRecover(){
+  if (!config.autoRecover) return;
+  const codes = config.autoRecoverCodes || [];
+  const checkDiscarded = config.autoRecoverDiscarded === true;
+  const toCheck = [];
+  for (let i = 0; i < accounts.length; i++) {
+    const ks = getKeyState(i);
+    if (!ks.failCode && ks.status !== "discarded") continue;
+    if (ks.status === "discarded" && !checkDiscarded) continue;
+    if (ks.failCode && !codes.includes(ks.failCode)) continue;
+    toCheck.push(i);
+  }
+  if (!toCheck.length) return;
+  console.log(`[proxy] auto-recover: checking ${toCheck.length} key(s)...`);
+  toCheck.forEach(i => {
+    const acct = accounts[i];
+    if (!acct) return;
+    const targetUrl = new URL(acct.url);
+    const mod = HTTP_MOD[targetUrl.protocol] || https;
+    const opts = {
+      hostname: targetUrl.hostname,
+      port: targetUrl.port || (targetUrl.protocol === "http:" ? 80 : 443),
+      path: "/v1/models",
+      method: "GET",
+      headers: { authorization: "Bearer " + acct.key, "content-type": "application/json" },
+      timeout: 15000,
+    };
+    const testReq = mod.request(opts, testRes => {
+      let data = "";
+      testRes.on("data", c => data += c);
+      testRes.on("end", () => {
+        if (testRes.statusCode === 200) {
+          const ks = getKeyState(i);
+          ks.failCode = null;
+          ks.failTime = null;
+          ks.failPeriod = "";
+          if (ks.status === "discarded") ks.status = "active";
+          allFailedNotified = false;
+          saveState();
+          broadcastStatus();
+          console.log(`[proxy] auto-recover: #${i+1} recovered (was ${ks.status||"cooled"})`);
+        }
+      });
+    });
+    testReq.on("error", () => {});
+    testReq.on("timeout", () => { testReq.destroy(); });
+    testReq.end();
+  });
 }
 
 function addLog(entry) {
@@ -869,7 +936,16 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><label><input type="checkbox" id="cfgSound"> 全部 Key 失效时响铃</label></div>
   <div style="color:#94a3b8;padding:4px 0">🌐 Webhook URL</div>
   <div><input id="cfgWebhook" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="https://qyapi.weixin.qq.com/..."></div>
+  <div style="color:#94a3b8;padding:4px 0">🔄 自动恢复冷却 Key</div>
+  <div><label><input type="checkbox" id="cfgAutoRecover"> 定时检测并恢复</label></div>
+  <div style="color:#94a3b8;padding:4px 0">⏱ 探测间隔（小时）</div>
+  <div><input id="cfgAutoInterval" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:80px" placeholder="1" title="最小 0.5 小时"></div>
+  <div style="color:#94a3b8;padding:4px 0">🔢 检测的失败码</div>
+  <div><input id="cfgAutoCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="401,402,403,429,500,502,503,504" title="401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时"></div>
+  <div style="color:#94a3b8;padding:4px 0">🚫 包含 discarded Key</div>
+  <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
 </div>
+<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
@@ -889,6 +965,7 @@ let data=[],curDate="",fullKeys={};
 let sortBy="idx",filterBy="all",trendRange="24h",searchQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
+let autoRecoverNextTime=0;
 
 async function httpLoad(){
   try{
@@ -941,7 +1018,23 @@ async function loadConfigUI(){
     document.getElementById("cfgWebhook").value=c.webhookUrl||"";
     document.getElementById("cfgDesktop").checked=c.notifications?.desktop!==false;
     document.getElementById("cfgSound").checked=c.notifications?.sound!==false;
+    document.getElementById("cfgAutoRecover").checked=c.autoRecover!==false;
+    document.getElementById("cfgAutoInterval").value=c.autoRecoverInterval||1;
+    document.getElementById("cfgAutoCodes").value=(c.autoRecoverCodes||[401,402,403,429,500,502,503,504]).join(",");
+    document.getElementById("cfgAutoDiscarded").checked=c.autoRecoverDiscarded===true;
+    if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
+    if(window.autoCountTimer)clearInterval(window.autoCountTimer);
+    window.autoCountTimer=setInterval(updateAutoCountdown,1000);
+    updateAutoCountdown();
   }catch(e){}
+}
+function updateAutoCountdown(){
+  const el=document.getElementById("cfgAutoCountdown");
+  if(!el)return;
+  if(!autoRecoverNextTime||autoRecoverNextTime<=Date.now()){el.textContent="⏳ 下次检测: --";return;}
+  const diff=Math.ceil((autoRecoverNextTime-Date.now())/1000);
+  const h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;
+  el.textContent="⏳ 下次检测: "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";
 }
 
 function renderTrend(){
@@ -1418,7 +1511,11 @@ async function saveConfig(){
     prices:{inputPer1M:parseFloat(document.getElementById("cfgPriceIn").value)||0,outputPer1M:parseFloat(document.getElementById("cfgPriceOut").value)||0},
     bytesPerToken:parseInt(document.getElementById("cfgBpt").value)||3,
     webhookUrl:document.getElementById("cfgWebhook").value.trim(),
-    notifications:{desktop:document.getElementById("cfgDesktop").checked,sound:document.getElementById("cfgSound").checked}
+    notifications:{desktop:document.getElementById("cfgDesktop").checked,sound:document.getElementById("cfgSound").checked},
+    autoRecover:document.getElementById("cfgAutoRecover").checked,
+    autoRecoverInterval:parseFloat(document.getElementById("cfgAutoInterval").value)||1,
+    autoRecoverCodes:(document.getElementById("cfgAutoCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
+    autoRecoverDiscarded:document.getElementById("cfgAutoDiscarded").checked
   };
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
@@ -1495,7 +1592,7 @@ const server = http.createServer((req, res) => {
   if (pathname === "/__config") {
     if (req.method === "GET") {
       res.writeHead(200, cors);
-      res.end(JSON.stringify(config, null, 2));
+      res.end(JSON.stringify({ ...config, autoRecoverNextTime }, null, 2));
       return;
     }
     if (req.method === "PUT") {

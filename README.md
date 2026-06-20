@@ -352,6 +352,22 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `bytesPerToken` | 每 token 近似字节数（默认 3，中文约 1.5-2，英文约 4） |
 | `notifications.sound` | 是否播放声音提醒 |
 | `notifications.desktop` | 是否发送桌面通知 |
+| `autoRecover` | 是否启用自动恢复冷却 Key |
+| `autoRecoverInterval` | 探测间隔（小时，最小 0.5） |
+| `autoRecoverCodes` | 需要检测的失败码数组，如 `[401,429,500]` |
+| `autoRecoverDiscarded` | 是否也检测 `discarded` 状态的 Key |
+
+## 自动恢复冷却 Key
+
+后台定时检测冷却中的 Key，通过 `GET /v1/models` 探测连通性，恢复成功后自动清除冷却/废弃状态。
+
+### 行为
+
+- 跳过不在 `autoRecoverCodes` 列表中的失败码
+- `discarded` 状态仅在 `autoRecoverDiscarded=true` 时检测
+- 探测成功（200 OK）→ 自动清除 `failCode`/`failTime`/`failPeriod`，若 `discarded` 恢复 `active`
+- 日志输出 `[proxy] auto-recover: #N recovered`
+- 配置保存后立即生效，无需重启（定时器自动重置）
 
 ## 费用估算
 
