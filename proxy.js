@@ -25,13 +25,15 @@ const slidingWindows = {};
 const pathStats = {};
 let requestQueue = [];
 let queueProcessing = false;
-let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true } };
+let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
 let allFailedNotified = false;
 let autoRecoverTimer = null;
 let autoRecoverNextTime = 0;
+let _rrCursor = 0;
+let _boostKey = -1;
 
 process.on("uncaughtException", err => {
   console.error("[proxy] UNCAUGHT EXCEPTION:", err.stack || err.message);
@@ -66,6 +68,7 @@ function loadConfig() {
     config.autoRecoverInterval = Math.max(0.5, c.autoRecoverInterval || 1);
     config.autoRecoverCodes = Array.isArray(c.autoRecoverCodes) ? c.autoRecoverCodes : [401,402,403,429,500,502,503,504];
     config.autoRecoverDiscarded = c.autoRecoverDiscarded === true;
+    config.roundRobin = c.roundRobin === true;
   } catch { /* defaults */ }
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
@@ -378,6 +381,33 @@ function inCooldown(idx) {
 }
 
 function pickKey() {
+  // Boost: 持续高优
+  if (_boostKey >= 0 && _boostKey < accounts.length) {
+    if (accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
+      return _boostKey;
+    }
+    // boosted key no longer available, auto-clear
+    _boostKey = -1;
+    broadcastStatus();
+  }
+
+  if (config.roundRobin) {
+    const all = [];
+    for (let i = 0; i < accounts.length; i++) {
+      if (accounts[i].status !== "active") continue;
+      const ks = getKeyState(i);
+      if (ks.status === "discarded") continue;
+      all.push({ i, priority: accounts[i].priority || 0 });
+    }
+    // Sort by priority desc, then idx asc
+    all.sort((a, b) => b.priority - a.priority || a.i - b.i);
+    const available = all.filter(x => !inCooldown(x.i));
+    const pool = available.length ? available : all;
+    if (!pool.length) return -1;
+    if (_rrCursor >= pool.length) _rrCursor = 0;
+    return pool[_rrCursor++].i;
+  }
+
   const groups = [[], [], []];
   for (let i = 0; i < accounts.length; i++) {
     if (accounts[i].status !== "active") continue;
@@ -431,6 +461,7 @@ function processQueue() {
 }
 
 function loadAccounts() {
+  _boostKey = -1; // clear boost on key reload
   const raw = fs.readFileSync(KEYS_FILE, "utf-8");
   const parsed = JSON.parse(raw);
   const oldAccounts = accounts;
@@ -440,6 +471,7 @@ function loadAccounts() {
     reset: a.reset || "daily",
     remark: a.remark || "",
     status: a.status || "active",
+    priority: a.priority || 0,
   }));
   if (!accounts.length) { console.error("[proxy] No valid accounts, reverting"); accounts = oldAccounts; return; }
   loadState();
@@ -656,7 +688,7 @@ function setupWebSocket(server) {
   wss.on("connection", (ws) => {
     wsClients.add(ws);
     const data = buildStatusData();
-    const msg = JSON.stringify({ type: "status", data });
+    const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1 });
     ws.send(msg);
     ws.on("close", () => wsClients.delete(ws));
     ws.on("error", () => wsClients.delete(ws));
@@ -665,7 +697,7 @@ function setupWebSocket(server) {
 
 function broadcastStatus() {
   const data = buildStatusData();
-  const msg = JSON.stringify({ type: "status", data });
+  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1 });
   lastBroadcast = msg;
   for (const ws of wsClients) {
     if (ws.readyState === 1) ws.send(msg);
@@ -811,6 +843,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .sbar{margin-top:6px;padding-top:6px;border-top:1px solid #334155;display:flex;justify-content:space-between;align-items:center;font-size:clamp(10px,1.3vw,12px)}
 .btn-act{color:#94a3b8;cursor:pointer;padding:2px 4px;border-radius:4px;font-size:12px;line-height:1}
 .btn-act:hover{background:#334155;color:#e2e8f0}
+.btn-act.boost-on{color:#4ade80;background:#1a3a2e}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px;flex-shrink:0}
 .d-ok{background:#22c55e;box-shadow:0 0 4px #22c55e66}
 .d-fail{background:#ef4444;box-shadow:0 0 4px #ef444466}
@@ -945,7 +978,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:60px">重置</th><th style="min-width:100px">备注</th><th style="width:80px"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:60px">重置</th><th style="width:55px">优先</th><th style="min-width:100px">备注</th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -980,6 +1013,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgAutoCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="401,402,403,429,500,502,503,504" title="401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时"></div>
   <div style="color:#94a3b8;padding:4px 0">🚫 包含 discarded Key</div>
   <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
+  <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
+  <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
@@ -1002,12 +1037,13 @@ let sortBy="idx",filterBy="all",trendRange="24h",searchQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0;
+let boostedIdx=-1;
 
 async function httpLoad(){
   try{
     const r=await fetch("http://localhost:3456/__status");
     if(!r.ok)throw new Error("HTTP "+r.status);
-    data=await r.json();render();
+    const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;render();
   }catch(e){
     if(!wsFailed)document.getElementById("sub").textContent="连接失败，正在重试...";
   }
@@ -1019,7 +1055,7 @@ function connectWS(){
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
-      if(msg.type==="status"){data=msg.data;render()}
+      if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
     }catch(e){}
   };
@@ -1058,6 +1094,7 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoInterval").value=c.autoRecoverInterval||1;
     document.getElementById("cfgAutoCodes").value=(c.autoRecoverCodes||[401,402,403,429,500,502,503,504]).join(",");
     document.getElementById("cfgAutoDiscarded").checked=c.autoRecoverDiscarded===true;
+    document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
@@ -1155,6 +1192,7 @@ function render(){
   let html="";
   for(const a of filtered){
     const isDiscard=a.status==="discarded";
+    const isBoosted=boostedIdx===a.idx;
     const isActive=a.active,isFail=a.failCode&&!a.available&&!isDiscard,isOk=a.available&&!a.failCode;
     const c=isDiscard?"failed":(isFail?"failed":(isActive?"active":(isOk?"card-ok":"")));
     const dot=isDiscard?"d-fail":(a.available?(a.failCode?"d-pending":"d-ok"):"d-fail");
@@ -1189,6 +1227,7 @@ function render(){
       '<span class="badge '+C[a.reset]+'">'+L[a.reset]+'</span>'+
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
+      (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
       ' <span class="badge bd-score">'+score+'分</span>'+
       '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="折叠">▼</span></span></div>'+
       '<div class="meter"><div class="meter-fill" style="width:'+score+'%;background:'+meterColor+'"></div></div>'+
@@ -1228,6 +1267,7 @@ function render(){
       (!isDiscard?'<span class="btn-act" onclick="cardShield('+a.idx+')" title="屏蔽此 Key（不再参与调度）">🔇</span>':'')+
       (isDiscard?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="重置此 Key">🔄</span>':'')+
       (!isDiscard&&a.failCode?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="重置冷却">🔄</span>':'')+
+      (a.available&&!isDiscard?'<span class="btn-act'+(isBoosted?' boost-on':'')+'" onclick="boostKey('+a.idx+')" title="'+(isBoosted?'点击取消优先':'下一个请求优先使用此 Key')+'">'+(isBoosted?'✅':'⚡')+'</span>':'')+
       '<span class="btn-act" onclick="cardTest('+a.idx+')" title="测试连通性">🔍</span>'+
       '</span></div></div>';
   }
@@ -1276,6 +1316,10 @@ function cardTest(idx){
       alert("Key #"+idx+" 测试请求失败: "+e.message);
     });
 }
+function boostKey(idx){
+  fetch("http://localhost:3456/__boost-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx})})
+    .then(r=>r.json()).catch(()=>{});
+}
 loadKeys();connectWS();if(Notification.permission==="default")Notification.requestPermission();
 setTimeout(function(){if(!data.length)httpLoad()},3000);
 
@@ -1319,7 +1363,7 @@ function renderMgr(){
     const g=groups[gi],items=grp[g];
     const hdr=document.createElement("tr");
     hdr.style.background="#1e293b";hdr.style.color="#94a3b8";
-    hdr.innerHTML='<td colspan="7" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155">📁 '+esc(g)+' ('+items.length+')</td>';
+    hdr.innerHTML='<td colspan="8" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155">📁 '+esc(g)+' ('+items.length+')</td>';
     tbody.appendChild(hdr);
     for(let ii=0;ii<items.length;ii++){
       const i=items[ii],k=mgrKeys[i],sh=k.status==="shielded";
@@ -1341,6 +1385,7 @@ function renderMgr(){
         '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+(sh?'<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>':'')+'</td>'+
         '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..."></td>'+
         '<td><select class="kreset"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select></td>'+
+        '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
         '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注"></td>'+
         '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
           '<span class="del" onclick="testKey('+i+')" title="测试连通性">🔍</span>'+
@@ -1352,7 +1397,7 @@ function renderMgr(){
   }
   document.getElementById("mgrSelectAll").checked=false;
 }
-function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:""});renderMgr()}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
 async function resetKeyStatus(i){
   try{
@@ -1398,7 +1443,7 @@ function batchDeleteMgr(){
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -1410,6 +1455,8 @@ function collectMgr(){
     result[sidx].key=key;
     result[sidx].url=r.querySelector(".kurl").value.trim();
     result[sidx].reset=r.querySelector(".kreset").value;
+    const prioEl=r.querySelector(".kprio");
+    result[sidx].priority=prioEl?parseInt(prioEl.value)||0:result[sidx].priority;
     result[sidx].remark=r.querySelector(".kremark").value.trim();
     result[sidx].status=mgrKeys[sidx].status&&mgrKeys[sidx].status!=="active"?mgrKeys[sidx].status:void 0;
   }
@@ -1551,7 +1598,8 @@ async function saveConfig(){
     autoRecover:document.getElementById("cfgAutoRecover").checked,
     autoRecoverInterval:parseFloat(document.getElementById("cfgAutoInterval").value)||1,
     autoRecoverCodes:(document.getElementById("cfgAutoCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
-    autoRecoverDiscarded:document.getElementById("cfgAutoDiscarded").checked
+    autoRecoverDiscarded:document.getElementById("cfgAutoDiscarded").checked,
+    roundRobin:document.getElementById("cfgRoundRobin").checked
   };
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
@@ -1619,7 +1667,8 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && pathname === "/__status") {
     res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
-    res.end(JSON.stringify(buildStatusData(), null, 2));
+    const data = buildStatusData();
+    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1 }, null, 2));
     return;
   }
 
@@ -1825,6 +1874,38 @@ const server = http.createServer((req, res) => {
           broadcastStatus();
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__boost-key") {
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", c => body += c);
+      req.on("end", () => {
+        try {
+          const { idx } = JSON.parse(body);
+          if (typeof idx !== "number" || idx < 1 || idx > accounts.length) throw new Error("invalid idx");
+          const ai = idx - 1;
+          // Toggle: same idx → clear, different idx → set
+          if (_boostKey === ai) {
+            _boostKey = -1;
+            console.log(`[proxy] #${idx} boost cancelled`);
+          } else {
+            _boostKey = ai;
+            console.log(`[proxy] #${idx} boosted`);
+          }
+          broadcastStatus();
+          res.writeHead(200, cors);
+          res.end(JSON.stringify({ ok: true, boosted: _boostKey >= 0 }));
         } catch (e) {
           res.writeHead(400, cors);
           res.end(JSON.stringify({ error: e.message }));

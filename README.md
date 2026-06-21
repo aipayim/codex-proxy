@@ -1,6 +1,6 @@
 # Codex Multi-Key Proxy
 
-多 API Key 代理 + 实时监控面板。支持智能调度（按 Key 优先级+冷却状态轮询）、自动容灾切换（遇到 401/402/403/429/5xx 自动尝试下一个 Key）、滑动窗口成功率（5 分钟 / 1 小时）、延迟百分位 P50/P95/P99、请求队列缓冲（最长 30 秒）、WebSocket 实时推送、Prometheus `/metrics`、Webhook/桌面通知/声音告警、完整前后端管理面板。
+多 API Key 代理 + 实时监控面板。支持智能调度（按 Key 优先级+冷却状态轮询，可选轮询均摊模式）、自动容灾切换（遇到 401/402/403/429/5xx 自动尝试下一个 Key）、滑动窗口成功率（5 分钟 / 1 小时）、延迟百分位 P50/P95/P99、请求队列缓冲（最长 30 秒）、WebSocket 实时推送、Prometheus `/metrics`、Webhook/桌面通知/声音告警、完整前后端管理面板。
 
 ## 目录结构
 
@@ -47,6 +47,7 @@ npm install
 #   reset:  额度重置周期 daily / weekly / never
 #   remark: 备注（可选）
 #   status: 可选字段，active / shielded / deleted
+#   priority: 可选字段，整数（默认 0），数值越大调度优先级越高（仅轮询均摊模式下生效）
 #
 # 示例：
 # [
@@ -137,6 +138,10 @@ codex
 
 ## Key 调度顺序
 
+有两种调度模式，通过 `config.json` 的 `roundRobin` 字段切换：
+
+### 默认模式（`roundRobin: false`）
+
 每次请求，`pickKey()` 按以下优先级选取：
 
 1. **daily 类型** 中不在冷却的 Key（按 keys.json 顺序）
@@ -144,7 +149,19 @@ codex
 3. **never 类型** 中不在冷却的 Key
 4. **兜底**：同类型中第一个 Key（无视冷却，但 `inCooldown()` 会立即标记失败）
 
-可用 Key 数（`activeCount`）仅统计 `status === "active"` 的 Key，
+### 轮询均摊模式（`roundRobin: true`）
+
+启用后，所有可用 Key 按 `priority` 字段降序分组，同组内轮询（Round-Robin）使用：
+
+| priority 值 | 调度顺序 |
+|---|---|
+| 10（新增临时 Key） | 最优先使用，独享流量直到冷却 |
+| 0（默认值） | 后续轮询均摊 |
+| 1~N | 数值越大越优先，同数值均摊 |
+
+例：`priority: 10` 的 Key 先用完（独享全部请求），冷却后自动切换到 `priority: 0` 的 Key 轮询。
+
+两种模式中，可用 Key 数（`activeCount`）仅统计 `status === "active"` 的 Key，
 屏蔽（shielded）和软删除（deleted）不计入。
 
 ## 自动切换故障 Key
@@ -194,6 +211,7 @@ codex
 - **搜索过滤**：实时搜索 ID/备注/地址
 - **自动分组**：按备注前缀（中文逗号/英文逗号/空格分割的第一段）自动分组折叠
 - **拖拽排序**：拖动行调整顺序，自动保存到 keys.json
+- **优先级设置**：每行「优先」数字输入框，数值越大调度越优先（仅轮询均摊模式生效）
 - **全选 + 批量操作**：批量重置 / 批量屏蔽 / 批量删除
 - **批量导入**：📋 粘贴多行 `sk-xxx url 周期 备注` 快速导入
 - **单 Key 测试**：🔍 调用 `GET /v1/models` 测试连通性，返回模型名 + 耗时
@@ -356,6 +374,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoRecoverInterval` | 探测间隔（小时，最小 0.5） |
 | `autoRecoverCodes` | 需要检测的失败码数组，如 `[401,429,500]` |
 | `autoRecoverDiscarded` | 是否也检测 `discarded` 状态的 Key |
+| `roundRobin` | 是否启用轮询均摊模式（见「Key 调度顺序」） |
 
 ## 自动恢复冷却 Key
 
