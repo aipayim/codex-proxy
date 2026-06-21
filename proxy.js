@@ -33,6 +33,27 @@ let allFailedNotified = false;
 let autoRecoverTimer = null;
 let autoRecoverNextTime = 0;
 
+process.on("uncaughtException", err => {
+  console.error("[proxy] UNCAUGHT EXCEPTION:", err.stack || err.message);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[proxy] UNHANDLED REJECTION:", reason instanceof Error ? reason.stack : reason);
+});
+
+// Periodic cleanup to prevent memory leaks
+setInterval(() => {
+  const cutoff = Date.now() - 3600000;
+  for (const idx in slidingWindows) {
+    slidingWindows[idx] = slidingWindows[idx].filter(e => e.time > cutoff);
+  }
+  for (const p in pathStats) {
+    if (pathStats[p].requests === 0) delete pathStats[p];
+  }
+  // Trim stale queue entries
+  const qcut = Date.now() - 30000;
+  requestQueue = requestQueue.filter(r => r.time > qcut && !r.clientRes.destroyed);
+}, 600000); // every 10 minutes
+
 function loadConfig() {
   try {
     const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
@@ -218,7 +239,11 @@ function loadState() {
     state = { keys: [], activeKey: null, dailyLog: {} };
   }
 }
+let _saveThrottle = 0;
 function saveState() {
+  const now = Date.now();
+  if (now - _saveThrottle < 2000) return; // at most every 2s
+  _saveThrottle = now;
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
   } catch (e) {
@@ -585,7 +610,17 @@ function forwardWithPriority(method, headers, body, clientRes, pathname) {
   let responded = false;
   const usedKeys = new Set();
   const activeCount = accounts.filter(a => a.status === "active").length;
+  let retries = 0;
+  const MAX_RETRIES = Math.max(activeCount * 2, 10);
   function attempt() {
+    if (retries >= MAX_RETRIES) {
+      if (responded) return;
+      console.error(`[proxy] Max retries (${MAX_RETRIES}) reached, queueing`);
+      enqueueRequest(method, headers, body, clientRes, pathname);
+      responded = true;
+      return;
+    }
+    retries++;
     const idx = pickKey();
     if (responded) return;
     if (idx < 0 || (usedKeys.has(idx) && usedKeys.size >= activeCount)) {

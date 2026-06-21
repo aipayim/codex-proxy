@@ -57,7 +57,7 @@ cat > "$WRAPPER_DIR/codex" << WRAPPER
 PROXY_DIR="$PROXY_DIR"
 if ! curl -sf http://localhost:3456/__status > /dev/null 2>&1; then
   echo "[codex] Starting proxy..." >&2
-  nohup node "\$PROXY_DIR/proxy.js" > "\$PROXY_DIR/proxy.log" 2>&1 &
+  nohup node --max-old-space-size=8192 "\$PROXY_DIR/proxy.js" > "\$PROXY_DIR/proxy.log" 2>&1 &
   sleep 2
 fi
 exec $CODEX_BIN "\$@"
