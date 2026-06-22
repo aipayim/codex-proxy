@@ -1938,6 +1938,103 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (pathname === "/__verify-model") {
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", c => body += c);
+      req.on("end", () => {
+        try {
+          const { idx, key, url } = JSON.parse(body);
+          let targetKey, targetUrl;
+          if (idx !== undefined) {
+            const ai = idx - 1;
+            if (ai < 0 || ai >= accounts.length) throw new Error("invalid idx");
+            targetKey = accounts[ai].key;
+            targetUrl = new URL(accounts[ai].url);
+          } else if (key && url) {
+            targetKey = key;
+            targetUrl = new URL(url);
+          } else {
+            throw new Error("provide idx or key+url");
+          }
+          const mod = HTTP_MOD[targetUrl.protocol] || https;
+          const probeBody = JSON.stringify({
+            model: "gpt-4o",
+            messages: [{ role: "user", content: "ok" }],
+            max_tokens: 1,
+            stream: true,
+          });
+          const opts = {
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (targetUrl.protocol === "http:" ? 80 : 443),
+            path: "/v1/chat/completions",
+            method: "POST",
+            headers: {
+              authorization: "Bearer " + targetKey,
+              "content-type": "application/json",
+              "content-length": Buffer.byteLength(probeBody),
+              "user-agent": "OpenAI/Node.js",
+              accept: "text/event-stream",
+            },
+            timeout: 20000,
+          };
+          const t0 = Date.now();
+          let responded = false;
+          const probeReq = mod.request(opts, probeRes => {
+            const dur = Date.now() - t0;
+            let firstChunk = "";
+            let model = "";
+            let fullData = "";
+            probeRes.on("data", c => {
+              if (!firstChunk) {
+                firstChunk = c.toString();
+                const m = firstChunk.match(/"model"\s*:\s*"([^"]+)"/);
+                if (m) model = m[1];
+              }
+              fullData += c;
+            });
+            probeRes.on("end", () => {
+              if (responded) return;
+              responded = true;
+              if (probeRes.statusCode === 200 && model) {
+                res.writeHead(200, cors);
+                res.end(JSON.stringify({ ok: true, model, duration: dur }));
+              } else if (probeRes.statusCode === 200) {
+                res.writeHead(200, cors);
+                res.end(JSON.stringify({ ok: true, model: "unknown", duration: dur, raw: fullData.slice(0, 300) }));
+              } else {
+                res.writeHead(200, cors);
+                res.end(JSON.stringify({ ok: false, status: probeRes.statusCode, error: "HTTP " + probeRes.statusCode + ": " + fullData.slice(0, 200) }));
+              }
+            });
+          });
+          probeReq.on("error", e => {
+            if (responded) return;
+            responded = true;
+            res.writeHead(200, cors);
+            res.end(JSON.stringify({ ok: false, error: "请求失败: " + e.message }));
+          });
+          probeReq.on("timeout", () => {
+            if (responded) return;
+            responded = true;
+            probeReq.destroy();
+            res.writeHead(200, cors);
+            res.end(JSON.stringify({ ok: false, error: "超时" }));
+          });
+          probeReq.write(probeBody);
+          probeReq.end();
+        } catch (e) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
   if (pathname === "/__restart") {
     if (req.method === "POST") {
       res.writeHead(200, cors);

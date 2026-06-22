@@ -9,8 +9,8 @@
     "desktop": true,
     "sound": true
   },
-  "autoRecover": true,
-  "autoRecoverInterval": 24,
+  "autoRecover": false,
+  "autoRecoverInterval": 6,
   "autoRecoverCodes": [
     401,
     402,
@@ -22,5 +22,5 @@
     504
   ],
   "autoRecoverDiscarded": false,
-  "roundRobin": true
+  "roundRobin": false
 }
