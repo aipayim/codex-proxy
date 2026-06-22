@@ -21,5 +21,6 @@
     503,
     504
   ],
-  "autoRecoverDiscarded": false
+  "autoRecoverDiscarded": false,
+  "roundRobin": true
 }

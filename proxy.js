@@ -1624,7 +1624,7 @@ async function saveConfig(){
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
     const j=await r.json();
-    document.getElementById("configStatus").textContent=j.ok?"已保存":"保存失败";
+    if(j.ok){closeConfig()}else{document.getElementById("configStatus").textContent="保存失败"};
   }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
 }
 function restartProxy(){
