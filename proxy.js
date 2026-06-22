@@ -1117,19 +1117,39 @@ function renderTrend(){
   for(let i=hours-1;i>=0;i--){
     const d=new Date(now-i*3600000);
     const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0"),hh=String(d.getHours()).padStart(2,"0");
-    hMap[y+"-"+m+"-"+dd+"-"+hh]=0;
+    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,keys:{}};
   }
   for(const a of data){
     if(!a.hourly)continue;
+    const ai=a.idx;
     for(const [hk,v] of Object.entries(a.hourly)){
-      if(hMap[hk]!==undefined)hMap[hk]+=(v.inputBytes||0)+(v.outputBytes||0);
+      if(hMap[hk]===undefined)continue;
+      const h=hMap[hk];
+      const ib=v.inputBytes||0,ob=v.outputBytes||0;
+      h.input+=ib;h.output+=ob;h.bytes+=ib+ob;h.req+=v.requests||0;
+      if(!h.keys[ai])h.keys[ai]={bytes:0,req:0};
+      h.keys[ai].bytes+=ib+ob;
+      h.keys[ai].req+=v.requests||0;
     }
   }
-  const keys=Object.keys(hMap),vals=Object.values(hMap);
+  const keys=Object.keys(hMap);
+  const vals=keys.map(k=>hMap[k].bytes);
   const max=Math.max(...vals,1);
   const bars=document.getElementById("trendBars");
   const labels=document.getElementById("trendLabels");
-  bars.innerHTML=vals.map(v=>'<div class="trend-bar" style="height:'+Math.max(2,v/max*80)+'px" title="'+fmtBytes(v)+'"></div>').join("");
+  bars.innerHTML=keys.map((k,i)=>{
+    const h=hMap[k];
+    const lines=[];
+    const mmdd=k.slice(0,10),hh=k.slice(11);
+    lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+    lines.push("合计: ↑"+fmtBytes(h.input)+" / ↓"+fmtBytes(h.output)+" | "+h.req+"次");
+    const kidx=Object.keys(h.keys).sort((a,b)=>h.keys[b].bytes-h.keys[a].bytes);
+    for(const ki of kidx){
+      const kv=h.keys[ki];
+      lines.push("  #"+ki+"  "+fmtBytes(kv.bytes)+"  "+kv.req+"次");
+    }
+    return '<div class="trend-bar" style="height:'+Math.max(2,h.bytes/max*80)+'px" title="'+esc(lines.join("\\n"))+'"></div>';
+  }).join("");
   const labelStep=trendRange==="30d"?24:(trendRange==="7d"?12:1);
   labels.innerHTML=keys.map((k,i)=>{
     const hh=k.slice(-2);

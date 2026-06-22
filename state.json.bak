@@ -2,14 +2,14 @@
   "keys": [
     {
       "failCode": 429,
-      "failTime": 1781992754139,
+      "failTime": 1782058259957,
       "stats": {
-        "totalRequests": 10976,
+        "totalRequests": 15961,
         "successRequests": 0,
-        "failRequests": 10976,
+        "failRequests": 15961,
         "inputTokens": 0,
         "outputTokens": 0,
-        "lastUsed": 1781992754167,
+        "lastUsed": 1782058259964,
         "daily": {
           "2026-06-17": {
             "requests": 4,
@@ -42,19 +42,29 @@
             "totalCost": 0
           },
           "2026-06-21": {
-            "requests": 8401,
+            "requests": 13385,
             "inputTokens": 0,
             "outputTokens": 0,
             "inputBytes": 0,
             "outputBytes": 0,
-            "totalDuration": 7995526,
+            "totalDuration": 12712235,
+            "totalTtfb": 0,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 564,
             "totalTtfb": 0,
             "totalCost": 0
           }
         },
         "inputBytes": 0,
         "outputBytes": 0,
-        "totalDuration": 13856017,
+        "totalDuration": 18573290,
         "totalTtfb": 0,
         "hourly": {
           "2026-06-17-15": {
@@ -98,26 +108,36 @@
             "outputBytes": 0
           },
           "2026-06-21-05": {
-            "requests": 7352,
+            "requests": 7391,
+            "inputBytes": 0,
+            "outputBytes": 0
+          },
+          "2026-06-21-06": {
+            "requests": 4945,
+            "inputBytes": 0,
+            "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
           }
         },
         "totalCost": 0
       },
-      "status": "active",
-      "failPeriod": "2026-W24"
+      "status": "discarded",
+      "failPeriod": "2026-W25"
     },
     {
       "failCode": 429,
-      "failTime": 1781701994353,
+      "failTime": 1782058260822,
       "stats": {
-        "totalRequests": 265,
+        "totalRequests": 266,
         "successRequests": 261,
-        "failRequests": 4,
+        "failRequests": 5,
         "inputTokens": 0,
         "outputTokens": 0,
-        "lastUsed": 1781701994355,
+        "lastUsed": 1782058260827,
         "daily": {
           "2026-06-17": {
             "requests": 265,
@@ -128,11 +148,21 @@
             "totalDuration": 3858191,
             "totalTtfb": 923812,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 842,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "inputBytes": 119846702,
         "outputBytes": 36196393,
-        "totalDuration": 3858191,
+        "totalDuration": 3859033,
         "totalTtfb": 923812,
         "hourly": {
           "2026-06-17-15": {
@@ -154,23 +184,28 @@
             "requests": 2,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
         "totalCost": 0
       },
-      "status": "active",
-      "failPeriod": "2026-W24"
+      "status": "discarded",
+      "failPeriod": "2026-W25"
     },
     {
       "failCode": 429,
-      "failTime": 1781708198144,
+      "failTime": 1782058262251,
       "stats": {
-        "totalRequests": 248,
+        "totalRequests": 249,
         "successRequests": 240,
-        "failRequests": 8,
+        "failRequests": 9,
         "inputTokens": 0,
         "outputTokens": 0,
-        "lastUsed": 1781708198146,
+        "lastUsed": 1782058262260,
         "daily": {
           "2026-06-17": {
             "requests": 248,
@@ -181,11 +216,21 @@
             "totalDuration": 4397790,
             "totalTtfb": 1127290,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1414,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "inputBytes": 138417015,
         "outputBytes": 41683589,
-        "totalDuration": 4397790,
+        "totalDuration": 4399204,
         "totalTtfb": 1127290,
         "hourly": {
           "2026-06-17-17": {
@@ -207,23 +252,28 @@
             "requests": 143,
             "inputBytes": 76767743,
             "outputBytes": 22897990
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
         "totalCost": 0
       },
-      "status": "active",
-      "failPeriod": "2026-W24"
+      "status": "discarded",
+      "failPeriod": "2026-W25"
     },
     {
       "failCode": 429,
-      "failTime": 1781715670052,
+      "failTime": 1782058264197,
       "stats": {
-        "totalRequests": 296,
+        "totalRequests": 297,
         "successRequests": 293,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
-        "lastUsed": 1781715670055,
+        "lastUsed": 1782058264203,
         "daily": {
           "2026-06-17": {
             "requests": 184,
@@ -244,11 +294,21 @@
             "totalDuration": 3257497,
             "totalTtfb": 437082,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1928,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "inputBytes": 138848135,
         "outputBytes": 45334270,
-        "totalDuration": 5863826,
+        "totalDuration": 5865754,
         "totalTtfb": 1196146,
         "hourly": {
           "2026-06-17-22": {
@@ -270,12 +330,17 @@
             "requests": 6,
             "inputBytes": 779334,
             "outputBytes": 614613
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
         "totalCost": 0
       },
-      "status": "active",
-      "failPeriod": "2026-W24"
+      "status": "discarded",
+      "failPeriod": "2026-W25"
     },
     {
       "failCode": 403,
@@ -389,18 +454,60 @@
       "failCode": null,
       "failTime": null,
       "stats": {
-        "totalRequests": 0,
-        "successRequests": 0,
+        "totalRequests": 376,
+        "successRequests": 376,
         "failRequests": 0,
         "inputTokens": 0,
         "outputTokens": 0,
-        "lastUsed": null,
-        "daily": {},
-        "inputBytes": 0,
-        "outputBytes": 0,
-        "totalDuration": 0,
-        "totalTtfb": 0,
-        "hourly": {},
+        "lastUsed": 1782092490940,
+        "daily": {
+          "2026-06-21": {
+            "requests": 3,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 1755352,
+            "outputBytes": 580702,
+            "totalDuration": 83220,
+            "totalTtfb": 17804,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 373,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 246543287,
+            "outputBytes": 87492572,
+            "totalDuration": 8801555,
+            "totalTtfb": 2470271,
+            "totalCost": 0
+          }
+        },
+        "inputBytes": 248298639,
+        "outputBytes": 88073274,
+        "totalDuration": 8884775,
+        "totalTtfb": 2488075,
+        "hourly": {
+          "2026-06-21-20": {
+            "requests": 3,
+            "inputBytes": 1755352,
+            "outputBytes": 580702
+          },
+          "2026-06-22-07": {
+            "requests": 123,
+            "inputBytes": 85201825,
+            "outputBytes": 26316753
+          },
+          "2026-06-22-08": {
+            "requests": 153,
+            "inputBytes": 100446134,
+            "outputBytes": 35813389
+          },
+          "2026-06-22-09": {
+            "requests": 97,
+            "inputBytes": 60895328,
+            "outputBytes": 25362430
+          }
+        },
         "totalCost": 0
       },
       "status": "active",
@@ -408,18 +515,18 @@
     },
     {
       "failCode": 429,
-      "failTime": 1781842056081,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058265631,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 268,
+        "totalRequests": 269,
         "successRequests": 265,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 132530659,
         "outputBytes": 56880555,
-        "lastUsed": 1781842056088,
+        "lastUsed": 1782058265639,
         "daily": {
           "2026-06-18": {
             "requests": 267,
@@ -438,6 +545,16 @@
             "inputBytes": 0,
             "outputBytes": 0,
             "totalDuration": 2387,
+            "totalTtfb": 0,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1421,
             "totalTtfb": 0,
             "totalCost": 0
           }
@@ -467,27 +584,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6290966,
+        "totalDuration": 6292387,
         "totalTtfb": 1075815,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781731240009,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058266450,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 334,
+        "totalRequests": 335,
         "successRequests": 333,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 151109870,
         "outputBytes": 55810293,
-        "lastUsed": 1781731240012,
+        "lastUsed": 1782058266455,
         "daily": {
           "2026-06-18": {
             "requests": 334,
@@ -497,6 +619,16 @@
             "outputBytes": 55810293,
             "totalDuration": 4350281,
             "totalTtfb": 872870,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 803,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -515,27 +647,32 @@
             "requests": 72,
             "inputBytes": 24543436,
             "outputBytes": 11124416
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4350281,
+        "totalDuration": 4351084,
         "totalTtfb": 872870,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781738133743,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058268705,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 302,
+        "totalRequests": 303,
         "successRequests": 301,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 171668595,
         "outputBytes": 55011942,
-        "lastUsed": 1781738133746,
+        "lastUsed": 1782058268714,
         "daily": {
           "2026-06-18": {
             "requests": 302,
@@ -545,6 +682,16 @@
             "outputBytes": 55011942,
             "totalDuration": 4343522,
             "totalTtfb": 927039,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2244,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -563,27 +710,32 @@
             "requests": 35,
             "inputBytes": 25876692,
             "outputBytes": 6204448
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4343522,
+        "totalDuration": 4345766,
         "totalTtfb": 927039,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781748139419,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058270089,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 244,
+        "totalRequests": 245,
         "successRequests": 242,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 171771905,
         "outputBytes": 42421169,
-        "lastUsed": 1781748139422,
+        "lastUsed": 1782058270093,
         "daily": {
           "2026-06-18": {
             "requests": 244,
@@ -593,6 +745,16 @@
             "outputBytes": 42421169,
             "totalDuration": 4262867,
             "totalTtfb": 987862,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1365,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -616,27 +778,32 @@
             "requests": 5,
             "inputBytes": 3863910,
             "outputBytes": 1363377
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4262867,
+        "totalDuration": 4264232,
         "totalTtfb": 987862,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781752969898,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058270971,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 281,
+        "totalRequests": 282,
         "successRequests": 278,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 156572339,
         "outputBytes": 52871296,
-        "lastUsed": 1781752969901,
+        "lastUsed": 1782058270980,
         "daily": {
           "2026-06-18": {
             "requests": 281,
@@ -646,6 +813,16 @@
             "outputBytes": 52871296,
             "totalDuration": 4843628,
             "totalTtfb": 1124288,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 870,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -659,27 +836,32 @@
             "requests": 71,
             "inputBytes": 38092447,
             "outputBytes": 12128339
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4843628,
+        "totalDuration": 4844498,
         "totalTtfb": 1124288,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781756448998,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058271672,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 243,
+        "totalRequests": 244,
         "successRequests": 240,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 118158762,
         "outputBytes": 47244714,
-        "lastUsed": 1781756449001,
+        "lastUsed": 1782058271677,
         "daily": {
           "2026-06-18": {
             "requests": 243,
@@ -689,6 +871,16 @@
             "outputBytes": 47244714,
             "totalDuration": 4114403,
             "totalTtfb": 793401,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 684,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -702,27 +894,32 @@
             "requests": 59,
             "inputBytes": 32100298,
             "outputBytes": 12012438
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4114403,
+        "totalDuration": 4115087,
         "totalTtfb": 793401,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781760841080,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058272822,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 247,
+        "totalRequests": 248,
         "successRequests": 241,
-        "failRequests": 6,
+        "failRequests": 7,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 151062114,
         "outputBytes": 41742452,
-        "lastUsed": 1781760841084,
+        "lastUsed": 1782058272827,
         "daily": {
           "2026-06-18": {
             "requests": 247,
@@ -732,6 +929,16 @@
             "outputBytes": 41742452,
             "totalDuration": 4126791,
             "totalTtfb": 968549,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1138,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -745,27 +952,32 @@
             "requests": 90,
             "inputBytes": 59089254,
             "outputBytes": 15435402
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4126791,
+        "totalDuration": 4127929,
         "totalTtfb": 968549,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781765660636,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058275576,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 238,
+        "totalRequests": 239,
         "successRequests": 235,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 122453786,
         "outputBytes": 49251720,
-        "lastUsed": 1781765660641,
+        "lastUsed": 1782058275583,
         "daily": {
           "2026-06-18": {
             "requests": 238,
@@ -775,6 +987,16 @@
             "outputBytes": 49251720,
             "totalDuration": 5132521,
             "totalTtfb": 930757,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2741,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -788,27 +1010,32 @@
             "requests": 158,
             "inputBytes": 77033242,
             "outputBytes": 33357736
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 5132521,
+        "totalDuration": 5135262,
         "totalTtfb": 930757,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781780594589,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058276488,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 234,
+        "totalRequests": 235,
         "successRequests": 229,
-        "failRequests": 5,
+        "failRequests": 6,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 122537454,
         "outputBytes": 46694105,
-        "lastUsed": 1781780594595,
+        "lastUsed": 1782058276494,
         "daily": {
           "2026-06-18": {
             "requests": 234,
@@ -818,6 +1045,16 @@
             "outputBytes": 46694105,
             "totalDuration": 6151439,
             "totalTtfb": 865683,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 898,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -841,27 +1078,32 @@
             "requests": 4,
             "inputBytes": 2203188,
             "outputBytes": 540986
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6151439,
+        "totalDuration": 6152337,
         "totalTtfb": 865683,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781776204526,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058277715,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 292,
+        "totalRequests": 293,
         "successRequests": 286,
-        "failRequests": 6,
+        "failRequests": 7,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 166086201,
         "outputBytes": 59955504,
-        "lastUsed": 1781776204532,
+        "lastUsed": 1782058277722,
         "daily": {
           "2026-06-18": {
             "requests": 292,
@@ -871,6 +1113,16 @@
             "outputBytes": 59955504,
             "totalDuration": 6665875,
             "totalTtfb": 1311061,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1215,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -889,27 +1141,32 @@
             "requests": 96,
             "inputBytes": 79901155,
             "outputBytes": 19641940
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6665875,
+        "totalDuration": 6667090,
         "totalTtfb": 1311061,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781788025544,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058279052,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 301,
+        "totalRequests": 302,
         "successRequests": 296,
-        "failRequests": 5,
+        "failRequests": 6,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 160034259,
         "outputBytes": 63857298,
-        "lastUsed": 1781788025548,
+        "lastUsed": 1782058279056,
         "daily": {
           "2026-06-18": {
             "requests": 301,
@@ -919,6 +1176,16 @@
             "outputBytes": 63857298,
             "totalDuration": 6852429,
             "totalTtfb": 1296273,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1324,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -947,27 +1214,32 @@
             "requests": 14,
             "inputBytes": 6921895,
             "outputBytes": 3397009
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6852429,
+        "totalDuration": 6853753,
         "totalTtfb": 1296273,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781795707481,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058280407,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 259,
+        "totalRequests": 260,
         "successRequests": 252,
-        "failRequests": 7,
+        "failRequests": 8,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 151039777,
         "outputBytes": 59871487,
-        "lastUsed": 1781795707486,
+        "lastUsed": 1782058280414,
         "daily": {
           "2026-06-18": {
             "requests": 259,
@@ -977,6 +1249,16 @@
             "outputBytes": 59871487,
             "totalDuration": 7173182,
             "totalTtfb": 1476599,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1345,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -995,27 +1277,32 @@
             "requests": 32,
             "inputBytes": 17656898,
             "outputBytes": 6824805
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 7173182,
+        "totalDuration": 7174527,
         "totalTtfb": 1476599,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781800548149,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058281094,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 260,
+        "totalRequests": 261,
         "successRequests": 259,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 166967069,
         "outputBytes": 57232074,
-        "lastUsed": 1781800548158,
+        "lastUsed": 1782058281098,
         "daily": {
           "2026-06-18": {
             "requests": 145,
@@ -1036,6 +1323,16 @@
             "totalDuration": 2005887,
             "totalTtfb": 473357,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 674,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -1053,27 +1350,32 @@
             "requests": 115,
             "inputBytes": 84328556,
             "outputBytes": 23180638
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4911713,
+        "totalDuration": 4912387,
         "totalTtfb": 1041436,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781806085394,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058282629,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 294,
+        "totalRequests": 295,
         "successRequests": 293,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 167291343,
         "outputBytes": 57540186,
-        "lastUsed": 1781806085400,
+        "lastUsed": 1782058282636,
         "daily": {
           "2026-06-19": {
             "requests": 294,
@@ -1083,6 +1385,16 @@
             "outputBytes": 57540186,
             "totalDuration": 5026552,
             "totalTtfb": 1087755,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1525,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1101,27 +1413,32 @@
             "requests": 19,
             "inputBytes": 10734765,
             "outputBytes": 3995009
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 5026552,
+        "totalDuration": 5028077,
         "totalTtfb": 1087755,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781834358572,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058283656,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 266,
+        "totalRequests": 267,
         "successRequests": 262,
-        "failRequests": 4,
+        "failRequests": 5,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 152867046,
         "outputBytes": 55738849,
-        "lastUsed": 1781834358578,
+        "lastUsed": 1782058283661,
         "daily": {
           "2026-06-19": {
             "requests": 266,
@@ -1131,6 +1448,16 @@
             "outputBytes": 55738849,
             "totalDuration": 5157987,
             "totalTtfb": 887962,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1013,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1149,27 +1476,32 @@
             "requests": 2,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 5157987,
+        "totalDuration": 5159000,
         "totalTtfb": 887962,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781816306069,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058284983,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 235,
+        "totalRequests": 236,
         "successRequests": 233,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 128845708,
         "outputBytes": 44727595,
-        "lastUsed": 1781816307335,
+        "lastUsed": 1782058284990,
         "daily": {
           "2026-06-19": {
             "requests": 235,
@@ -1179,6 +1511,16 @@
             "outputBytes": 44727595,
             "totalDuration": 4225603,
             "totalTtfb": 772082,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1315,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1192,27 +1534,32 @@
             "requests": 167,
             "inputBytes": 99256829,
             "outputBytes": 31952428
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4225603,
+        "totalDuration": 4226918,
         "totalTtfb": 772082,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781822221248,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058285921,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 259,
+        "totalRequests": 260,
         "successRequests": 258,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 163586775,
         "outputBytes": 51154889,
-        "lastUsed": 1781822221253,
+        "lastUsed": 1782058285925,
         "daily": {
           "2026-06-19": {
             "requests": 259,
@@ -1222,6 +1569,16 @@
             "outputBytes": 51154889,
             "totalDuration": 4390752,
             "totalTtfb": 964729,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 924,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1240,27 +1597,32 @@
             "requests": 82,
             "inputBytes": 53656991,
             "outputBytes": 15114348
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4390752,
+        "totalDuration": 4391676,
         "totalTtfb": 964729,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781830361656,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058286747,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 342,
+        "totalRequests": 343,
         "successRequests": 339,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 167488689,
         "outputBytes": 54305747,
-        "lastUsed": 1781830361664,
+        "lastUsed": 1782058286751,
         "daily": {
           "2026-06-19": {
             "requests": 342,
@@ -1270,6 +1632,16 @@
             "outputBytes": 54305747,
             "totalDuration": 5377016,
             "totalTtfb": 1409050,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 817,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1288,27 +1660,32 @@
             "requests": 118,
             "inputBytes": 68930255,
             "outputBytes": 20019931
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 5377016,
+        "totalDuration": 5377833,
         "totalTtfb": 1409050,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781836852941,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058288159,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 303,
+        "totalRequests": 304,
         "successRequests": 296,
-        "failRequests": 7,
+        "failRequests": 8,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 178088148,
         "outputBytes": 54638116,
-        "lastUsed": 1781836852952,
+        "lastUsed": 1782058288166,
         "daily": {
           "2026-06-19": {
             "requests": 303,
@@ -1318,6 +1695,16 @@
             "outputBytes": 54638116,
             "totalDuration": 5233382,
             "totalTtfb": 1205716,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1401,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1336,27 +1723,32 @@
             "requests": 131,
             "inputBytes": 89012350,
             "outputBytes": 27365117
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 5233382,
+        "totalDuration": 5234783,
         "totalTtfb": 1205716,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781842034033,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058289344,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 270,
+        "totalRequests": 271,
         "successRequests": 267,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 167710568,
         "outputBytes": 55633446,
-        "lastUsed": 1781842034042,
+        "lastUsed": 1782058289348,
         "daily": {
           "2026-06-19": {
             "requests": 270,
@@ -1366,6 +1758,16 @@
             "outputBytes": 55633446,
             "totalDuration": 4360685,
             "totalTtfb": 922906,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1172,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1384,27 +1786,32 @@
             "requests": 2,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4360685,
+        "totalDuration": 4361857,
         "totalTtfb": 922906,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781842004380,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058291022,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 0,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781842004388,
+        "lastUsed": 1782058291028,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -1413,6 +1820,16 @@
             "inputBytes": 0,
             "outputBytes": 0,
             "totalDuration": 3822,
+            "totalTtfb": 0,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1668,
             "totalTtfb": 0,
             "totalCost": 0
           }
@@ -1427,27 +1844,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 3822,
+        "totalDuration": 5490,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781868509310,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058291742,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 0,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781868509318,
+        "lastUsed": 1782058291747,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -1456,6 +1878,16 @@
             "inputBytes": 0,
             "outputBytes": 0,
             "totalDuration": 4526,
+            "totalTtfb": 0,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 709,
             "totalTtfb": 0,
             "totalCost": 0
           }
@@ -1470,27 +1902,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4526,
+        "totalDuration": 5235,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781874932611,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058293281,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 248,
+        "totalRequests": 249,
         "successRequests": 243,
-        "failRequests": 5,
+        "failRequests": 6,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 134832574,
         "outputBytes": 48315234,
-        "lastUsed": 1781874932618,
+        "lastUsed": 1782058293289,
         "daily": {
           "2026-06-19": {
             "requests": 248,
@@ -1500,6 +1937,16 @@
             "outputBytes": 48315234,
             "totalDuration": 6395437,
             "totalTtfb": 949515,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1527,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1523,27 +1970,32 @@
             "requests": 47,
             "inputBytes": 19675077,
             "outputBytes": 8448131
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6395437,
+        "totalDuration": 6396964,
         "totalTtfb": 949515,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781884669951,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058295748,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 279,
+        "totalRequests": 280,
         "successRequests": 271,
-        "failRequests": 8,
+        "failRequests": 9,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 160045885,
         "outputBytes": 62630426,
-        "lastUsed": 1781884669959,
+        "lastUsed": 1782058295754,
         "daily": {
           "2026-06-19": {
             "requests": 279,
@@ -1553,6 +2005,16 @@
             "outputBytes": 62630426,
             "totalDuration": 8610571,
             "totalTtfb": 1499703,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2452,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1576,27 +2038,32 @@
             "requests": 130,
             "inputBytes": 73137408,
             "outputBytes": 28135278
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 8610571,
+        "totalDuration": 8613023,
         "totalTtfb": 1499703,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781888932949,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058297577,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 287,
+        "totalRequests": 288,
         "successRequests": 285,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 158632080,
         "outputBytes": 55151418,
-        "lastUsed": 1781888932958,
+        "lastUsed": 1782058297581,
         "daily": {
           "2026-06-19": {
             "requests": 10,
@@ -1616,6 +2083,16 @@
             "outputBytes": 53936695,
             "totalDuration": 4266264,
             "totalTtfb": 918293,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1818,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1639,27 +2116,32 @@
             "requests": 48,
             "inputBytes": 27940146,
             "outputBytes": 7276391
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4371029,
+        "totalDuration": 4372847,
         "totalTtfb": 957050,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781895815349,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058298501,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 322,
+        "totalRequests": 323,
         "successRequests": 320,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 177667973,
         "outputBytes": 61538624,
-        "lastUsed": 1781895815358,
+        "lastUsed": 1782058298508,
         "daily": {
           "2026-06-19": {
             "requests": 1,
@@ -1679,6 +2161,16 @@
             "outputBytes": 61538624,
             "totalDuration": 4418765,
             "totalTtfb": 1067282,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 916,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1702,27 +2194,32 @@
             "requests": 6,
             "inputBytes": 3512213,
             "outputBytes": 755257
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4420684,
+        "totalDuration": 4421600,
         "totalTtfb": 1067282,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781903084731,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058299681,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 382,
+        "totalRequests": 383,
         "successRequests": 345,
-        "failRequests": 37,
+        "failRequests": 38,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 175357697,
         "outputBytes": 65694299,
-        "lastUsed": 1781903084740,
+        "lastUsed": 1782058299685,
         "daily": {
           "2026-06-19": {
             "requests": 1,
@@ -1742,6 +2239,16 @@
             "outputBytes": 65694299,
             "totalDuration": 4897025,
             "totalTtfb": 1096757,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1166,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1765,27 +2272,32 @@
             "requests": 16,
             "inputBytes": 8620000,
             "outputBytes": 2750892
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4898710,
+        "totalDuration": 4899876,
         "totalTtfb": 1096757,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841520420,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058300915,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781841520426,
+        "lastUsed": 1782058300922,
         "daily": {
           "2026-06-19": {
             "requests": 1,
@@ -1796,6 +2308,16 @@
             "totalDuration": 2329,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1225,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -1803,27 +2325,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 2329,
+        "totalDuration": 3554,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781927934603,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058302101,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 229,
+        "totalRequests": 230,
         "successRequests": 196,
-        "failRequests": 33,
+        "failRequests": 34,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 124592120,
         "outputBytes": 37805896,
-        "lastUsed": 1781927934610,
+        "lastUsed": 1782058302106,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -1843,6 +2370,16 @@
             "outputBytes": 37805896,
             "totalDuration": 8772769,
             "totalTtfb": 1788359,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1174,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1871,27 +2408,32 @@
             "requests": 102,
             "inputBytes": 69560661,
             "outputBytes": 20705033
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 8776296,
+        "totalDuration": 8777470,
         "totalTtfb": 1788359,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781955668946,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058303313,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 299,
+        "totalRequests": 300,
         "successRequests": 283,
-        "failRequests": 16,
+        "failRequests": 17,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 142250869,
         "outputBytes": 60563012,
-        "lastUsed": 1781955668953,
+        "lastUsed": 1782058303319,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -1911,6 +2453,16 @@
             "outputBytes": 60563012,
             "totalDuration": 8838963,
             "totalTtfb": 776518,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1201,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -1949,27 +2501,32 @@
             "requests": 150,
             "inputBytes": 69501751,
             "outputBytes": 31911301
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 8842848,
+        "totalDuration": 8844049,
         "totalTtfb": 776518,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781960279252,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058304132,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 259,
+        "totalRequests": 260,
         "successRequests": 255,
-        "failRequests": 4,
+        "failRequests": 5,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 135511349,
         "outputBytes": 52389240,
-        "lastUsed": 1781960279260,
+        "lastUsed": 1782058304136,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -1989,6 +2546,16 @@
             "outputBytes": 52389240,
             "totalDuration": 4548308,
             "totalTtfb": 649902,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 808,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2012,27 +2579,32 @@
             "requests": 174,
             "inputBytes": 97412711,
             "outputBytes": 37299834
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4552675,
+        "totalDuration": 4553483,
         "totalTtfb": 649902,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781964897262,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058305463,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 280,
+        "totalRequests": 281,
         "successRequests": 276,
-        "failRequests": 4,
+        "failRequests": 5,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 162500937,
         "outputBytes": 58866679,
-        "lastUsed": 1781964897270,
+        "lastUsed": 1782058305469,
         "daily": {
           "2026-06-19": {
             "requests": 3,
@@ -2052,6 +2624,16 @@
             "outputBytes": 58866679,
             "totalDuration": 4294999,
             "totalTtfb": 697651,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1323,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2080,27 +2662,32 @@
             "requests": 60,
             "inputBytes": 34986668,
             "outputBytes": 14459068
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4301209,
+        "totalDuration": 4302532,
         "totalTtfb": 697651,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781971128223,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058306901,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 278,
+        "totalRequests": 279,
         "successRequests": 264,
-        "failRequests": 14,
+        "failRequests": 15,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 147085683,
         "outputBytes": 63533251,
-        "lastUsed": 1781971128231,
+        "lastUsed": 1782058306904,
         "daily": {
           "2026-06-19": {
             "requests": 3,
@@ -2120,6 +2707,16 @@
             "outputBytes": 63533251,
             "totalDuration": 6120291,
             "totalTtfb": 984549,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1427,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2143,27 +2740,32 @@
             "requests": 154,
             "inputBytes": 81350946,
             "outputBytes": 36897194
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6127378,
+        "totalDuration": 6128805,
         "totalTtfb": 984549,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781975509530,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058308025,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 231,
+        "totalRequests": 232,
         "successRequests": 226,
-        "failRequests": 5,
+        "failRequests": 6,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 143642797,
         "outputBytes": 59507357,
-        "lastUsed": 1781975509538,
+        "lastUsed": 1782058308030,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2194,6 +2796,16 @@
             "totalDuration": 4684832,
             "totalTtfb": 696391,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1115,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2221,27 +2833,32 @@
             "requests": 45,
             "inputBytes": 20301131,
             "outputBytes": 11974752
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4753451,
+        "totalDuration": 4754566,
         "totalTtfb": 710379,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781980104489,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782058309763,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 293,
+        "totalRequests": 294,
         "successRequests": 290,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 156440198,
         "outputBytes": 57216639,
-        "lastUsed": 1781980104498,
+        "lastUsed": 1782058309766,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2261,6 +2878,16 @@
             "outputBytes": 57216639,
             "totalDuration": 4466474,
             "totalTtfb": 639783,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1729,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2284,27 +2911,32 @@
             "requests": 94,
             "inputBytes": 51975413,
             "outputBytes": 18065160
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4470418,
+        "totalDuration": 4472147,
         "totalTtfb": 639783,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781983973535,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058311451,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 261,
+        "totalRequests": 262,
         "successRequests": 256,
-        "failRequests": 5,
+        "failRequests": 6,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 142843066,
         "outputBytes": 58491347,
-        "lastUsed": 1781983973545,
+        "lastUsed": 1782058311457,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2324,6 +2956,16 @@
             "outputBytes": 58491347,
             "totalDuration": 4257292,
             "totalTtfb": 610092,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1681,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2347,27 +2989,32 @@
             "requests": 141,
             "inputBytes": 74190875,
             "outputBytes": 30353848
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4261412,
+        "totalDuration": 4263093,
         "totalTtfb": 610092,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841971860,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058313554,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 0,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781841971868,
+        "lastUsed": 1782058313560,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2378,6 +3025,16 @@
             "totalDuration": 3800,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2093,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2390,27 +3047,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 3800,
+        "totalDuration": 5893,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841973748,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058314780,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 0,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781841973755,
+        "lastUsed": 1782058314784,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2421,6 +3083,16 @@
             "totalDuration": 3668,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1217,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2433,27 +3105,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 3668,
+        "totalDuration": 4885,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841976157,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058315705,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 0,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781841976164,
+        "lastUsed": 1782058315710,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2464,6 +3141,16 @@
             "totalDuration": 4378,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 916,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2476,27 +3163,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4378,
+        "totalDuration": 5294,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841953211,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782058316640,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 0,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781841953222,
+        "lastUsed": 1782058316643,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2507,6 +3199,16 @@
             "totalDuration": 5085,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 926,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2519,27 +3221,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 5085,
+        "totalDuration": 6011,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841979240,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782062601103,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
-        "successRequests": 0,
-        "failRequests": 2,
+        "totalRequests": 285,
+        "successRequests": 282,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
-        "inputBytes": 0,
-        "outputBytes": 0,
-        "lastUsed": 1781841979251,
+        "inputBytes": 143090180,
+        "outputBytes": 59491556,
+        "lastUsed": 1782062615791,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2550,6 +3257,16 @@
             "totalDuration": 4787,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 283,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 143090180,
+            "outputBytes": 59491556,
+            "totalDuration": 4172644,
+            "totalTtfb": 649717,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2562,27 +3279,37 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-00": {
+            "requests": 200,
+            "inputBytes": 95645683,
+            "outputBytes": 41612346
+          },
+          "2026-06-22-01": {
+            "requests": 83,
+            "inputBytes": 47444497,
+            "outputBytes": 17879210
           }
         },
-        "totalDuration": 4787,
-        "totalTtfb": 0,
+        "totalDuration": 4177431,
+        "totalTtfb": 649717,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841949949,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 0,
+      "failTime": 1782065366092,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
-        "successRequests": 0,
-        "failRequests": 2,
+        "totalRequests": 206,
+        "successRequests": 203,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
-        "inputBytes": 0,
-        "outputBytes": 0,
-        "lastUsed": 1781841949957,
+        "inputBytes": 105738195,
+        "outputBytes": 42278664,
+        "lastUsed": 1782065366100,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2593,6 +3320,16 @@
             "totalDuration": 3538,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 204,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 105738195,
+            "outputBytes": 42278664,
+            "totalDuration": 2624291,
+            "totalTtfb": 452212,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2605,27 +3342,37 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-01": {
+            "requests": 169,
+            "inputBytes": 77879819,
+            "outputBytes": 32411958
+          },
+          "2026-06-22-02": {
+            "requests": 35,
+            "inputBytes": 27858376,
+            "outputBytes": 9866706
           }
         },
-        "totalDuration": 3538,
-        "totalTtfb": 0,
+        "totalDuration": 2627829,
+        "totalTtfb": 452212,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781841948192,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 0,
+      "failTime": 1782065367187,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 0,
-        "failRequests": 2,
+        "failRequests": 3,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781841948202,
+        "lastUsed": 1782065367190,
         "daily": {
           "2026-06-19": {
             "requests": 2,
@@ -2634,6 +3381,16 @@
             "inputBytes": 0,
             "outputBytes": 0,
             "totalDuration": 3591,
+            "totalTtfb": 0,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1082,
             "totalTtfb": 0,
             "totalCost": 0
           }
@@ -2648,27 +3405,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 3591,
+        "totalDuration": 4673,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781849626144,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065369968,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 279,
+        "totalRequests": 280,
         "successRequests": 276,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 148706088,
         "outputBytes": 62085217,
-        "lastUsed": 1781849626156,
+        "lastUsed": 1782065369974,
         "daily": {
           "2026-06-19": {
             "requests": 279,
@@ -2678,6 +3440,16 @@
             "outputBytes": 62085217,
             "totalDuration": 8506997,
             "totalTtfb": 1324429,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2775,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2696,27 +3468,32 @@
             "requests": 35,
             "inputBytes": 10488584,
             "outputBytes": 9980609
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 8506997,
+        "totalDuration": 8509772,
         "totalTtfb": 1324429,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781856903519,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065371707,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 312,
+        "totalRequests": 313,
         "successRequests": 307,
-        "failRequests": 5,
+        "failRequests": 6,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 190343722,
         "outputBytes": 61715380,
-        "lastUsed": 1781856903527,
+        "lastUsed": 1782065371711,
         "daily": {
           "2026-06-19": {
             "requests": 312,
@@ -2726,6 +3503,16 @@
             "outputBytes": 61715380,
             "totalDuration": 5308234,
             "totalTtfb": 1191729,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1729,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2744,27 +3531,32 @@
             "requests": 45,
             "inputBytes": 34862967,
             "outputBytes": 10219898
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 5308234,
+        "totalDuration": 5309963,
         "totalTtfb": 1191729,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781862852615,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065373449,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 258,
+        "totalRequests": 259,
         "successRequests": 255,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 151734291,
         "outputBytes": 59853459,
-        "lastUsed": 1781862852622,
+        "lastUsed": 1782065373453,
         "daily": {
           "2026-06-19": {
             "requests": 258,
@@ -2774,6 +3566,16 @@
             "outputBytes": 59853459,
             "totalDuration": 6066785,
             "totalTtfb": 902848,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1734,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2787,27 +3589,32 @@
             "requests": 171,
             "inputBytes": 101977265,
             "outputBytes": 40959538
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6066785,
+        "totalDuration": 6068519,
         "totalTtfb": 902848,
         "totalCost": 0
       }
     },
     {
-      "failCode": 403,
-      "failTime": 1781868495216,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782065375190,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 272,
+        "totalRequests": 273,
         "successRequests": 268,
-        "failRequests": 4,
+        "failRequests": 5,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 140672143,
         "outputBytes": 61539983,
-        "lastUsed": 1781868495224,
+        "lastUsed": 1782065375193,
         "daily": {
           "2026-06-19": {
             "requests": 272,
@@ -2817,6 +3624,16 @@
             "outputBytes": 61539983,
             "totalDuration": 6515003,
             "totalTtfb": 904927,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1733,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -2835,27 +3652,32 @@
             "requests": 73,
             "inputBytes": 44557083,
             "outputBytes": 15850646
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 6515003,
+        "totalDuration": 6516736,
         "totalTtfb": 904927,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781903086077,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065377443,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 2,
+        "totalRequests": 3,
         "successRequests": 1,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 694122,
         "outputBytes": 140434,
-        "lastUsed": 1781903086087,
+        "lastUsed": 1782065377448,
         "daily": {
           "2026-06-19": {
             "requests": 1,
@@ -2876,6 +3698,16 @@
             "totalDuration": 1329,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2247,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2888,27 +3720,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 12558,
+        "totalDuration": 14805,
         "totalTtfb": 3872,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781903088145,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065379798,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781903088155,
+        "lastUsed": 1782065379804,
         "daily": {
           "2026-06-20": {
             "requests": 1,
@@ -2919,6 +3756,16 @@
             "totalDuration": 2047,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2346,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2926,27 +3773,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 2047,
+        "totalDuration": 4393,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781903090305,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065381552,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781903090314,
+        "lastUsed": 1782065381555,
         "daily": {
           "2026-06-20": {
             "requests": 1,
@@ -2957,6 +3809,16 @@
             "totalDuration": 2141,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1745,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -2964,9 +3826,14 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 2141,
+        "totalDuration": 3886,
         "totalTtfb": 0,
         "totalCost": 0
       }
@@ -2994,18 +3861,18 @@
     },
     {
       "failCode": 429,
-      "failTime": 1781903091853,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065383075,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781903091862,
+        "lastUsed": 1782065383081,
         "daily": {
           "2026-06-20": {
             "requests": 1,
@@ -3016,6 +3883,16 @@
             "totalDuration": 1530,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1517,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3023,27 +3900,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 1530,
+        "totalDuration": 3047,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781903094106,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065384749,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781903094115,
+        "lastUsed": 1782065384751,
         "daily": {
           "2026-06-20": {
             "requests": 1,
@@ -3054,6 +3936,16 @@
             "totalDuration": 2235,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1665,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3061,27 +3953,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 2235,
+        "totalDuration": 3900,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
-      "failCode": 429,
-      "failTime": 1781914602728,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 0,
+      "failTime": 1782065385823,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 302,
+        "totalRequests": 303,
         "successRequests": 301,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 176550976,
         "outputBytes": 52715552,
-        "lastUsed": 1781914602737,
+        "lastUsed": 1782065385829,
         "daily": {
           "2026-06-20": {
             "requests": 302,
@@ -3091,6 +3988,16 @@
             "outputBytes": 52715552,
             "totalDuration": 4032079,
             "totalTtfb": 927580,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1067,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -3109,27 +4016,32 @@
             "requests": 42,
             "inputBytes": 29986953,
             "outputBytes": 8079323
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 4032079,
+        "totalDuration": 4033146,
         "totalTtfb": 927580,
         "totalCost": 0
       }
     },
     {
-      "failCode": 502,
-      "failTime": 1781916868714,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failCode": 429,
+      "failTime": 1782065387717,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 74,
+        "totalRequests": 75,
         "successRequests": 67,
-        "failRequests": 7,
+        "failRequests": 8,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 24416802,
         "outputBytes": 10206636,
-        "lastUsed": 1781916868724,
+        "lastUsed": 1782065387719,
         "daily": {
           "2026-06-20": {
             "requests": 74,
@@ -3140,6 +4052,16 @@
             "totalDuration": 1127582,
             "totalTtfb": 218045,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1885,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3147,27 +4069,32 @@
             "requests": 74,
             "inputBytes": 24416802,
             "outputBytes": 10206636
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 1127582,
+        "totalDuration": 1129467,
         "totalTtfb": 218045,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781983974543,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065389746,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 15,
+        "totalRequests": 16,
         "successRequests": 12,
-        "failRequests": 3,
+        "failRequests": 4,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 8869553,
         "outputBytes": 1604681,
-        "lastUsed": 1781983974553,
+        "lastUsed": 1782065389751,
         "daily": {
           "2026-06-20": {
             "requests": 14,
@@ -3188,6 +4115,16 @@
             "totalDuration": 987,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2025,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3200,27 +4137,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 429383,
+        "totalDuration": 431408,
         "totalTtfb": 216806,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781983975463,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065391483,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781983975473,
+        "lastUsed": 1782065391485,
         "daily": {
           "2026-06-21": {
             "requests": 1,
@@ -3231,6 +4173,16 @@
             "totalDuration": 900,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1729,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3238,27 +4190,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 900,
+        "totalDuration": 2629,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781983976390,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065393535,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781983976399,
+        "lastUsed": 1782065393539,
         "daily": {
           "2026-06-21": {
             "requests": 1,
@@ -3269,6 +4226,16 @@
             "totalDuration": 905,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2047,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3276,27 +4243,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 905,
+        "totalDuration": 2952,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781983977306,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065395261,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781983977317,
+        "lastUsed": 1782065395262,
         "daily": {
           "2026-06-21": {
             "requests": 1,
@@ -3307,6 +4279,16 @@
             "totalDuration": 897,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1718,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3314,27 +4296,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 897,
+        "totalDuration": 2615,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781983978228,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065397105,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781983978238,
+        "lastUsed": 1782065397110,
         "daily": {
           "2026-06-21": {
             "requests": 1,
@@ -3345,6 +4332,16 @@
             "totalDuration": 903,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1839,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3352,27 +4349,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 903,
+        "totalDuration": 2742,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781983979150,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065398778,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781983979161,
+        "lastUsed": 1782065398780,
         "daily": {
           "2026-06-21": {
             "requests": 1,
@@ -3383,6 +4385,16 @@
             "totalDuration": 904,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1664,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3390,27 +4402,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 904,
+        "totalDuration": 2568,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781983980074,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065400791,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 1,
+        "totalRequests": 2,
         "successRequests": 0,
-        "failRequests": 1,
+        "failRequests": 2,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 0,
         "outputBytes": 0,
-        "lastUsed": 1781983980084,
+        "lastUsed": 1782065400795,
         "daily": {
           "2026-06-21": {
             "requests": 1,
@@ -3421,6 +4438,16 @@
             "totalDuration": 903,
             "totalTtfb": 0,
             "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2007,
+            "totalTtfb": 0,
+            "totalCost": 0
           }
         },
         "hourly": {
@@ -3428,27 +4455,32 @@
             "requests": 1,
             "inputBytes": 0,
             "outputBytes": 0
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 903,
+        "totalDuration": 2910,
         "totalTtfb": 0,
         "totalCost": 0
       }
     },
     {
       "failCode": 429,
-      "failTime": 1781988649771,
-      "failPeriod": "2026-W24",
-      "status": "active",
+      "failTime": 1782065402325,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
       "stats": {
-        "totalRequests": 243,
+        "totalRequests": 244,
         "successRequests": 235,
-        "failRequests": 8,
+        "failRequests": 9,
         "inputTokens": 0,
         "outputTokens": 0,
         "inputBytes": 135427528,
         "outputBytes": 56779239,
-        "lastUsed": 1781988649788,
+        "lastUsed": 1782065402326,
         "daily": {
           "2026-06-21": {
             "requests": 243,
@@ -3458,6 +4490,16 @@
             "outputBytes": 56779239,
             "totalDuration": 3965521,
             "totalTtfb": 548371,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1527,
+            "totalTtfb": 0,
             "totalCost": 0
           }
         },
@@ -3471,13 +4513,1064 @@
             "requests": 160,
             "inputBytes": 82724241,
             "outputBytes": 34137455
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
           }
         },
-        "totalDuration": 3965521,
+        "totalDuration": 3967048,
         "totalTtfb": 548371,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782065404577,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
+      "stats": {
+        "totalRequests": 246,
+        "successRequests": 242,
+        "failRequests": 4,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 116867187,
+        "outputBytes": 58786175,
+        "lastUsed": 1782065404582,
+        "daily": {
+          "2026-06-21": {
+            "requests": 245,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 116867187,
+            "outputBytes": 58786175,
+            "totalDuration": 4602453,
+            "totalTtfb": 641742,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2248,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-10": {
+            "requests": 42,
+            "inputBytes": 16673464,
+            "outputBytes": 12168527
+          },
+          "2026-06-21-11": {
+            "requests": 196,
+            "inputBytes": 96264708,
+            "outputBytes": 43277583
+          },
+          "2026-06-21-12": {
+            "requests": 7,
+            "inputBytes": 3929015,
+            "outputBytes": 3340065
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 4604701,
+        "totalTtfb": 641742,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782065406319,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
+      "stats": {
+        "totalRequests": 255,
+        "successRequests": 252,
+        "failRequests": 3,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 136240364,
+        "outputBytes": 59811363,
+        "lastUsed": 1782065406320,
+        "daily": {
+          "2026-06-21": {
+            "requests": 254,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 136240364,
+            "outputBytes": 59811363,
+            "totalDuration": 5084214,
+            "totalTtfb": 797079,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1734,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-12": {
+            "requests": 205,
+            "inputBytes": 111215792,
+            "outputBytes": 49952232
+          },
+          "2026-06-21-13": {
+            "requests": 49,
+            "inputBytes": 25024572,
+            "outputBytes": 9859131
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 5085948,
+        "totalTtfb": 797079,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782065408506,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 241,
+        "successRequests": 240,
+        "failRequests": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 148955393,
+        "outputBytes": 50979953,
+        "lastUsed": 1782065408511,
+        "daily": {
+          "2026-06-21": {
+            "requests": 240,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 148955393,
+            "outputBytes": 50979953,
+            "totalDuration": 3633554,
+            "totalTtfb": 599012,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2184,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-13": {
+            "requests": 91,
+            "inputBytes": 43980782,
+            "outputBytes": 18497241
+          },
+          "2026-06-21-15": {
+            "requests": 24,
+            "inputBytes": 18874213,
+            "outputBytes": 5822522
+          },
+          "2026-06-21-16": {
+            "requests": 50,
+            "inputBytes": 28621181,
+            "outputBytes": 10614773
+          },
+          "2026-06-21-17": {
+            "requests": 42,
+            "inputBytes": 31175164,
+            "outputBytes": 7512273
+          },
+          "2026-06-21-19": {
+            "requests": 3,
+            "inputBytes": 1614034,
+            "outputBytes": 760271
+          },
+          "2026-06-21-20": {
+            "requests": 8,
+            "inputBytes": 3334640,
+            "outputBytes": 1392937
+          },
+          "2026-06-21-22": {
+            "requests": 2,
+            "inputBytes": 1775576,
+            "outputBytes": 426629
+          },
+          "2026-06-21-23": {
+            "requests": 20,
+            "inputBytes": 19579803,
+            "outputBytes": 5953307
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 3635738,
+        "totalTtfb": 599012,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782065410223,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 4,
+        "successRequests": 3,
+        "failRequests": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 1290747,
+        "outputBytes": 1444127,
+        "lastUsed": 1782065410224,
+        "daily": {
+          "2026-06-21": {
+            "requests": 3,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 1290747,
+            "outputBytes": 1444127,
+            "totalDuration": 107748,
+            "totalTtfb": 6659,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1709,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-20": {
+            "requests": 2,
+            "inputBytes": 814270,
+            "outputBytes": 345472
+          },
+          "2026-06-21-21": {
+            "requests": 1,
+            "inputBytes": 476477,
+            "outputBytes": 1098655
+          },
+          "2026-06-22-02": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 109457,
+        "totalTtfb": 6659,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782067626999,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 142,
+        "successRequests": 140,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 76288678,
+        "outputBytes": 26458117,
+        "lastUsed": 1782067627000,
+        "daily": {
+          "2026-06-21": {
+            "requests": 3,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 1103170,
+            "outputBytes": 1347142,
+            "totalDuration": 90106,
+            "totalTtfb": 5690,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 139,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 75185508,
+            "outputBytes": 25110975,
+            "totalDuration": 1720939,
+            "totalTtfb": 351329,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-20": {
+            "requests": 3,
+            "inputBytes": 1103170,
+            "outputBytes": 1347142
+          },
+          "2026-06-22-02": {
+            "requests": 139,
+            "inputBytes": 75185508,
+            "outputBytes": 25110975
+          }
+        },
+        "totalDuration": 1811045,
+        "totalTtfb": 357019,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782069573342,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 295,
+        "successRequests": 293,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 178302619,
+        "outputBytes": 57299489,
+        "lastUsed": 1782069573343,
+        "daily": {
+          "2026-06-21": {
+            "requests": 169,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 118331501,
+            "outputBytes": 33724000,
+            "totalDuration": 2425079,
+            "totalTtfb": 460440,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 126,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 59971118,
+            "outputBytes": 23575489,
+            "totalDuration": 1686109,
+            "totalTtfb": 272769,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-17": {
+            "requests": 98,
+            "inputBytes": 59823514,
+            "outputBytes": 19247298
+          },
+          "2026-06-21-18": {
+            "requests": 71,
+            "inputBytes": 58507987,
+            "outputBytes": 14476702
+          },
+          "2026-06-22-02": {
+            "requests": 49,
+            "inputBytes": 22673161,
+            "outputBytes": 9825727
+          },
+          "2026-06-22-03": {
+            "requests": 77,
+            "inputBytes": 37297957,
+            "outputBytes": 13749762
+          }
+        },
+        "totalDuration": 4111188,
+        "totalTtfb": 733209,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782069575403,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
+      "stats": {
+        "totalRequests": 250,
+        "successRequests": 248,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 151689808,
+        "outputBytes": 56524644,
+        "lastUsed": 1782069575409,
+        "daily": {
+          "2026-06-21": {
+            "requests": 249,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 151689808,
+            "outputBytes": 56524644,
+            "totalDuration": 4343604,
+            "totalTtfb": 626443,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2056,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-13": {
+            "requests": 41,
+            "inputBytes": 27944903,
+            "outputBytes": 10554292
+          },
+          "2026-06-21-16": {
+            "requests": 91,
+            "inputBytes": 57496146,
+            "outputBytes": 18335669
+          },
+          "2026-06-21-17": {
+            "requests": 117,
+            "inputBytes": 66248759,
+            "outputBytes": 27634683
+          },
+          "2026-06-22-03": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 4345660,
+        "totalTtfb": 626443,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782069577653,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
+      "stats": {
+        "totalRequests": 259,
+        "successRequests": 257,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 145532504,
+        "outputBytes": 57154530,
+        "lastUsed": 1782069577657,
+        "daily": {
+          "2026-06-21": {
+            "requests": 258,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 145532504,
+            "outputBytes": 57154530,
+            "totalDuration": 4485086,
+            "totalTtfb": 650544,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 2243,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-13": {
+            "requests": 18,
+            "inputBytes": 8502922,
+            "outputBytes": 3116531
+          },
+          "2026-06-21-14": {
+            "requests": 5,
+            "inputBytes": 4722957,
+            "outputBytes": 1997369
+          },
+          "2026-06-21-15": {
+            "requests": 153,
+            "inputBytes": 86130354,
+            "outputBytes": 33914829
+          },
+          "2026-06-21-16": {
+            "requests": 82,
+            "inputBytes": 46176271,
+            "outputBytes": 18125801
+          },
+          "2026-06-22-03": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 4487329,
+        "totalTtfb": 650544,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782069579588,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
+      "stats": {
+        "totalRequests": 276,
+        "successRequests": 274,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 156627185,
+        "outputBytes": 57834733,
+        "lastUsed": 1782069579590,
+        "daily": {
+          "2026-06-21": {
+            "requests": 275,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 156627185,
+            "outputBytes": 57834733,
+            "totalDuration": 4479873,
+            "totalTtfb": 697377,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 1927,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-14": {
+            "requests": 232,
+            "inputBytes": 136142435,
+            "outputBytes": 46734919
+          },
+          "2026-06-21-15": {
+            "requests": 43,
+            "inputBytes": 20484750,
+            "outputBytes": 11099814
+          },
+          "2026-06-22-03": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 4481800,
+        "totalTtfb": 697377,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782071039387,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 286,
+        "successRequests": 284,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 144589341,
+        "outputBytes": 58909458,
+        "lastUsed": 1782071039393,
+        "daily": {
+          "2026-06-21": {
+            "requests": 188,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 94312468,
+            "outputBytes": 37299203,
+            "totalDuration": 2653954,
+            "totalTtfb": 416677,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 98,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 50276873,
+            "outputBytes": 21610255,
+            "totalDuration": 1655903,
+            "totalTtfb": 287526,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-18": {
+            "requests": 150,
+            "inputBytes": 81158323,
+            "outputBytes": 31018366
+          },
+          "2026-06-21-19": {
+            "requests": 38,
+            "inputBytes": 13154145,
+            "outputBytes": 6280837
+          },
+          "2026-06-22-03": {
+            "requests": 98,
+            "inputBytes": 50276873,
+            "outputBytes": 21610255
+          }
+        },
+        "totalDuration": 4309857,
+        "totalTtfb": 704203,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 403,
+      "failTime": 1782073931133,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
+      "stats": {
+        "totalRequests": 237,
+        "successRequests": 233,
+        "failRequests": 4,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 126246820,
+        "outputBytes": 54811991,
+        "lastUsed": 1782073975506,
+        "daily": {
+          "2026-06-21": {
+            "requests": 38,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 22659308,
+            "outputBytes": 9373650,
+            "totalDuration": 739394,
+            "totalTtfb": 84495,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 199,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 103587512,
+            "outputBytes": 45438341,
+            "totalDuration": 3441492,
+            "totalTtfb": 411202,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-19": {
+            "requests": 38,
+            "inputBytes": 22659308,
+            "outputBytes": 9373650
+          },
+          "2026-06-22-03": {
+            "requests": 51,
+            "inputBytes": 29516201,
+            "outputBytes": 10322979
+          },
+          "2026-06-22-04": {
+            "requests": 148,
+            "inputBytes": 74071311,
+            "outputBytes": 35115362
+          }
+        },
+        "totalDuration": 4180886,
+        "totalTtfb": 495697,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782074887538,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 255,
+        "successRequests": 254,
+        "failRequests": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 147327025,
+        "outputBytes": 58726782,
+        "lastUsed": 1782074887542,
+        "daily": {
+          "2026-06-21": {
+            "requests": 205,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 112487293,
+            "outputBytes": 44339087,
+            "totalDuration": 3266043,
+            "totalTtfb": 476360,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 50,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 34839732,
+            "outputBytes": 14387695,
+            "totalDuration": 905945,
+            "totalTtfb": 179389,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-19": {
+            "requests": 176,
+            "inputBytes": 102794967,
+            "outputBytes": 39146261
+          },
+          "2026-06-21-20": {
+            "requests": 29,
+            "inputBytes": 9692326,
+            "outputBytes": 5192826
+          },
+          "2026-06-22-04": {
+            "requests": 50,
+            "inputBytes": 34839732,
+            "outputBytes": 14387695
+          }
+        },
+        "totalDuration": 4171988,
+        "totalTtfb": 655749,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782076450914,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 265,
+        "successRequests": 263,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 155494289,
+        "outputBytes": 57731266,
+        "lastUsed": 1782076450925,
+        "daily": {
+          "2026-06-21": {
+            "requests": 166,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 100180880,
+            "outputBytes": 34770905,
+            "totalDuration": 2570538,
+            "totalTtfb": 499043,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 99,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 55313409,
+            "outputBytes": 22960361,
+            "totalDuration": 1583854,
+            "totalTtfb": 293151,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-20": {
+            "requests": 143,
+            "inputBytes": 86155882,
+            "outputBytes": 29994723
+          },
+          "2026-06-21-21": {
+            "requests": 23,
+            "inputBytes": 14024998,
+            "outputBytes": 4776182
+          },
+          "2026-06-22-04": {
+            "requests": 50,
+            "inputBytes": 24956484,
+            "outputBytes": 10619339
+          },
+          "2026-06-22-05": {
+            "requests": 49,
+            "inputBytes": 30356925,
+            "outputBytes": 12341022
+          }
+        },
+        "totalDuration": 4154392,
+        "totalTtfb": 792194,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782078508877,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 242,
+        "successRequests": 239,
+        "failRequests": 3,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 140761589,
+        "outputBytes": 62301896,
+        "lastUsed": 1782078508878,
+        "daily": {
+          "2026-06-21": {
+            "requests": 137,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 65957582,
+            "outputBytes": 33963678,
+            "totalDuration": 2420466,
+            "totalTtfb": 314469,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 105,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 74804007,
+            "outputBytes": 28338218,
+            "totalDuration": 2179248,
+            "totalTtfb": 319318,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-21": {
+            "requests": 137,
+            "inputBytes": 65957582,
+            "outputBytes": 33963678
+          },
+          "2026-06-22-05": {
+            "requests": 105,
+            "inputBytes": 74804007,
+            "outputBytes": 28338218
+          }
+        },
+        "totalDuration": 4599714,
+        "totalTtfb": 633787,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782081711413,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 286,
+        "successRequests": 281,
+        "failRequests": 5,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 156668260,
+        "outputBytes": 67860028,
+        "lastUsed": 1782081711414,
+        "daily": {
+          "2026-06-21": {
+            "requests": 110,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 55128752,
+            "outputBytes": 24568780,
+            "totalDuration": 1788876,
+            "totalTtfb": 299322,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 176,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 101539508,
+            "outputBytes": 43291248,
+            "totalDuration": 3004331,
+            "totalTtfb": 597647,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-21": {
+            "requests": 45,
+            "inputBytes": 26959263,
+            "outputBytes": 10969469
+          },
+          "2026-06-21-22": {
+            "requests": 65,
+            "inputBytes": 28169489,
+            "outputBytes": 13599311
+          },
+          "2026-06-22-05": {
+            "requests": 39,
+            "inputBytes": 14748862,
+            "outputBytes": 10150779
+          },
+          "2026-06-22-06": {
+            "requests": 137,
+            "inputBytes": 86790646,
+            "outputBytes": 33140469
+          }
+        },
+        "totalDuration": 4793207,
+        "totalTtfb": 896969,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782081715649,
+      "failPeriod": "2026-W25",
+      "status": "discarded",
+      "stats": {
+        "totalRequests": 268,
+        "successRequests": 266,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 158207000,
+        "outputBytes": 55669911,
+        "lastUsed": 1782081715656,
+        "daily": {
+          "2026-06-21": {
+            "requests": 267,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 158207000,
+            "outputBytes": 55669911,
+            "totalDuration": 4508631,
+            "totalTtfb": 689258,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+            "totalDuration": 4229,
+            "totalTtfb": 0,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-22": {
+            "requests": 176,
+            "inputBytes": 102783196,
+            "outputBytes": 37059214
+          },
+          "2026-06-21-23": {
+            "requests": 91,
+            "inputBytes": 55423804,
+            "outputBytes": 18610697
+          },
+          "2026-06-22-06": {
+            "requests": 1,
+            "inputBytes": 0,
+            "outputBytes": 0
+          }
+        },
+        "totalDuration": 4512860,
+        "totalTtfb": 689258,
+        "totalCost": 0
+      }
+    },
+    {
+      "failCode": 429,
+      "failTime": 1782083982877,
+      "failPeriod": "2026-W25",
+      "status": "active",
+      "stats": {
+        "totalRequests": 299,
+        "successRequests": 297,
+        "failRequests": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "inputBytes": 169689892,
+        "outputBytes": 59466400,
+        "lastUsed": 1782083982879,
+        "daily": {
+          "2026-06-21": {
+            "requests": 105,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 54836039,
+            "outputBytes": 20114993,
+            "totalDuration": 1629638,
+            "totalTtfb": 334509,
+            "totalCost": 0
+          },
+          "2026-06-22": {
+            "requests": 194,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "inputBytes": 114853853,
+            "outputBytes": 39351407,
+            "totalDuration": 2954652,
+            "totalTtfb": 596170,
+            "totalCost": 0
+          }
+        },
+        "hourly": {
+          "2026-06-21-23": {
+            "requests": 105,
+            "inputBytes": 54836039,
+            "outputBytes": 20114993
+          },
+          "2026-06-22-00": {
+            "requests": 65,
+            "inputBytes": 34452582,
+            "outputBytes": 10791087
+          },
+          "2026-06-22-06": {
+            "requests": 65,
+            "inputBytes": 42987417,
+            "outputBytes": 13686833
+          },
+          "2026-06-22-07": {
+            "requests": 64,
+            "inputBytes": 37413854,
+            "outputBytes": 14873487
+          }
+        },
+        "totalDuration": 4584290,
+        "totalTtfb": 930679,
         "totalCost": 0
       }
     }
   ],
-  "activeKey": 0
+  "activeKey": 5
 }
