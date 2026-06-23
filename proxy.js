@@ -596,6 +596,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone)
       broadcastStatus();
     };
     apiRes.on("end", cleanup);
+    apiRes.on("close", cleanup);
     apiRes.on("error", (err) => {
       console.error(`[proxy] #${idx+1} Stream error: ${err.message}`);
       if (!cleaned) markFailure(idx, 0);
