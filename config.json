@@ -10,7 +10,7 @@
     "sound": true
   },
   "autoRecover": false,
-  "autoRecoverInterval": 6,
+  "autoRecoverInterval": 24,
   "autoRecoverCodes": [
     401,
     402,
@@ -22,5 +22,7 @@
     504
   ],
   "autoRecoverDiscarded": false,
-  "roundRobin": false
+  "roundRobin": false,
+  "lockAfterFailCount": 3,
+  "lockFailCodes": ["401","403"]
 }

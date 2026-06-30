@@ -69,6 +69,9 @@ function loadConfig() {
     config.autoRecoverCodes = Array.isArray(c.autoRecoverCodes) ? c.autoRecoverCodes : [401,402,403,429,500,502,503,504];
     config.autoRecoverDiscarded = c.autoRecoverDiscarded === true;
     config.roundRobin = c.roundRobin === true;
+    config.enableAutoLock = c.enableAutoLock !== false;
+    config.lockAfterFailCount = Math.max(1, c.lockAfterFailCount || 3);
+    config.lockFailCodes = Array.isArray(c.lockFailCodes) ? c.lockFailCodes : ["401","403"];
   } catch { /* defaults */ }
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
@@ -90,7 +93,7 @@ function autoRecover(){
   const toCheck = [];
   for (let i = 0; i < accounts.length; i++) {
     const ks = getKeyState(i);
-    if (ks.status === "shielded") continue;
+    if (ks.status === "shielded" || ks.status === "locked") continue;
     if (!ks.failCode && ks.status !== "discarded") continue;
     if (ks.status === "discarded" && !checkDiscarded) continue;
     if (ks.failCode && !codes.includes(ks.failCode)) continue;
@@ -261,10 +264,11 @@ function backupState() {
 setInterval(backupState, 3600000);
 
 function getKeyState(idx) {
-  while (state.keys.length <= idx) state.keys.push({ failCode: null, failTime: null, failPeriod: null, status: "active", stats: null });
+  while (state.keys.length <= idx) state.keys.push({ failCode: null, failTime: null, failPeriod: null, failCount: 0, status: "active", stats: null });
   const ks = state.keys[idx];
   if (ks.status === undefined) ks.status = "active";
   if (ks.failPeriod === undefined) ks.failPeriod = null;
+  if (ks.failCount === undefined) ks.failCount = 0;
   if (!ks.stats) {
     ks.stats = { totalRequests: 0, successRequests: 0, failRequests: 0, inputTokens: 0, outputTokens: 0, inputBytes: 0, outputBytes: 0, lastUsed: null, daily: {}, hourly: {}, totalDuration: 0, totalTtfb: 0, totalCost: 0 };
   } else {
@@ -329,6 +333,7 @@ function markSuccess(idx) {
   const ks = getKeyState(idx);
   ks.failCode = null;
   ks.failTime = null;
+  ks.failCount = 0;
   allFailedNotified = false;
   saveState();
   processQueue();
@@ -344,6 +349,21 @@ function markFailure(idx, code) {
     if (ks.failPeriod && ks.failPeriod !== curr && isConsecutivePeriod(ks.failPeriod, curr, acct.reset)) {
       ks.status = "discarded";
       console.log(`[proxy] #${idx+1} DISCARDED (consecutive ${acct.reset} failure: ${ks.failPeriod} → ${curr})`);
+    }
+  }
+
+  // Track consecutive failures for lockable codes
+  if (config.enableAutoLock !== false) {
+    const lockCodes = (config.lockFailCodes || "401,403").split(",").map(s => parseInt(s.trim()));
+    if (lockCodes.includes(code)) {
+      const same = ks.failCode === code && ks.failPeriod === curr;
+      ks.failCount = same ? (ks.failCount || 0) + 1 : 1;
+      if (ks.failCount >= (config.lockAfterFailCount || 3)) {
+        ks.status = "locked";
+        console.log(`[proxy] #${idx+1} LOCKED (${ks.failCount}x ${code})`);
+      }
+    } else if (ks.failCount) {
+      ks.failCount = 0;
     }
   }
 
@@ -373,7 +393,7 @@ function checkAllFailed() {
 function inCooldown(idx) {
   const acct = accounts[idx];
   const ks = getKeyState(idx);
-  if (ks.status === "discarded") return true;
+  if (ks.status === "discarded" || ks.status === "locked") return true;
   if (acct.reset === "never") return !!ks.failCode;
   if (!ks.failCode || !ks.failPeriod) return false;
   const curr = keyPeriod(acct.reset);
@@ -396,7 +416,7 @@ function pickKey() {
     for (let i = 0; i < accounts.length; i++) {
       if (accounts[i].status !== "active") continue;
       const ks = getKeyState(i);
-      if (ks.status === "discarded") continue;
+      if (ks.status === "discarded" || ks.status === "locked") continue;
       all.push({ i, priority: accounts[i].priority || 0 });
     }
     // Sort by priority desc, then idx asc
@@ -412,7 +432,7 @@ function pickKey() {
   for (let i = 0; i < accounts.length; i++) {
     if (accounts[i].status !== "active") continue;
     const ks = getKeyState(i);
-    if (ks.status !== "discarded") groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
+    if (ks.status !== "discarded" && ks.status !== "locked") groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
   }
   for (const g of groups) {
     const a = g.filter(i => !inCooldown(i));
@@ -733,6 +753,8 @@ function buildStatusData() {
       failCode: ks.failCode,
       failTime: ks.failTime,
       failPeriod: ks.failPeriod,
+      failCount: ks.failCount,
+      locked: ks.status === "locked",
       active: (activeRequests[i] || 0) > 0,
       activeRequests: activeRequests[i] || 0,
       healthScore: computeHealthScore(ks, i),
@@ -934,11 +956,13 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <label>排序</label>
   <select id="sortBy"><option value="idx">默认顺序</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
   <label>筛选</label>
-  <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option></select>
+  <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option></select>
   <label>趋势</label>
   <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
   <label>搜索</label>
-  <input id="searchBox" placeholder="搜索 ID/备注/地址..." style="width:140px">
+  <input id="searchBox" placeholder="ID/备注/地址..." style="width:120px">
+  <label>状态码</label>
+  <input id="statusCodeBox" placeholder="如 401" style="width:60px">
   <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
 </div>
 <div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
@@ -959,15 +983,24 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="mtitle"><span>Key 管理</span><button class="btn" onclick="closeMgr()">✕</button></div>
 <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">修改后点击保存，代理自动重载配置</div>
 <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
-  <input id="mgrSearch" placeholder="搜索备注/地址..." oninput="renderMgr()" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px">
+  <input id="mgrSearch" placeholder="搜索备注/地址..." oninput="renderMgr()" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px">
+  <input id="mgrCodeFilter" placeholder="状态码" oninput="renderMgr()" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" title="按状态码筛选，如 401">
+  <select id="mgrStatusFilter" onchange="renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
+    <option value="">全部状态</option>
+    <option value="available">可用</option>
+    <option value="cooldown">冷却中</option>
+    <option value="discarded">废弃</option>
+    <option value="locked">锁死</option>
+  </select>
   <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)">全选</button>
-  <button class="btn" style="font-size:11px" onclick="selectAllMgr(false)">取消</button>
+  <button class="btn" style="font-size:11px" onclick="clearMgrSearch()">取消</button>
   <button class="btn" style="font-size:11px" onclick="batchShieldMgr()">🔇 批量屏蔽</button>
   <button class="btn" style="font-size:11px" onclick="batchResetMgr()">🔄 批量重置</button>
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
   <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
   <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
 </div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:6px" id="mgrCount">共 0 个</div>
 <div id="batchTestResults" style="display:none;margin-bottom:8px;padding:8px;background:#1e293b;border:1px solid #475569;border-radius:6px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace">
   <div style="color:#94a3b8;margin-bottom:4px">批量测试结果</div>
   <div id="batchTestList"></div>
@@ -979,7 +1012,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:60px">重置</th><th style="width:55px">优先</th><th style="min-width:100px">备注</th><th style="width:80px"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:60px">重置</th><th style="width:50px">优先</th><th style="max-width:80px">备注</th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -1016,6 +1049,12 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
   <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
+  <div style="color:#94a3b8;padding:4px 0">🔒 连续失败锁死阈值</div>
+  <div><input id="cfgLockCount" type="number" min="1" max="20" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:60px" value="3" title="连续 N 次失败后自动锁死该 Key"> 次</div>
+  <div style="color:#94a3b8;padding:4px 0">🎯 锁死监控错误码</div>
+  <div><input id="cfgLockCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="401,403" placeholder="401,403" title="只有这些错误码会计入连续失败计数"></div>
+  <div style="color:#94a3b8;padding:4px 0">🔒 启用自动锁死</div>
+  <div><label><input type="checkbox" id="cfgEnableAutoLock" checked> 开启后连续失败达到阈值将自动锁死 Key</label></div>
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
@@ -1034,7 +1073,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 const L={"daily":"每日","weekly":"每周","never":"永久"};
 const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never"};
 let data=[],curDate="",fullKeys={};
-let sortBy="idx",filterBy="all",trendRange="24h",searchQ="";
+let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0;
@@ -1096,6 +1135,9 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoCodes").value=(c.autoRecoverCodes||[401,402,403,429,500,502,503,504]).join(",");
     document.getElementById("cfgAutoDiscarded").checked=c.autoRecoverDiscarded===true;
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
+    document.getElementById("cfgLockCount").value=c.lockAfterFailCount||3;
+    document.getElementById("cfgLockCodes").value=(c.lockFailCodes||["401","403"]).join(",");
+    document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
@@ -1165,7 +1207,7 @@ function renderTrend(){
 
 function render(){
   const now=Date.now();
-  const tot=data.length,ok=data.filter(x=>x.available).length,fail=tot-ok;
+  const tot=data.length,ok=data.filter(x=>x.available&&!x.locked).length,fail=data.filter(x=>!x.available&&!x.locked).length,locked=data.filter(x=>x.locked).length;
   const concurrent=data.reduce((s,x)=>s+(x.activeRequests||0),0);
   const allBytes=data.reduce((s,x)=>s+(x.inputBytes||0)+(x.outputBytes||0),0);
   const allReq=data.reduce((s,x)=>s+(x.totalRequests||0),0);
@@ -1180,6 +1222,7 @@ function render(){
   document.getElementById("summary").innerHTML=
     '<div class="sum-item s-ok"><div class="sum-num">'+ok+'/'+tot+'</div><div class="sum-label">可用</div></div>'+
     '<div class="sum-item s-fail"><div class="sum-num">'+fail+'</div><div class="sum-label">冷却中</div></div>'+
+    (locked?'<div class="sum-item" style="background:#7c3aed20;border:1px solid #7c3aed40"><div class="sum-num" style="color:#a78bfa">'+locked+'</div><div class="sum-label" style="color:#a78bfa">🔒 锁死</div></div>':'')+
     '<div class="sum-item s-active"><div class="sum-num">'+concurrent+'</div><div class="sum-label">并发请求</div></div>'+
     '<div class="sum-item s-token"><div class="sum-num">'+fmtBytes(allBytes)+'</div><div class="sum-label">总流量</div></div>'+
     '<div class="sum-item s-token"><div class="sum-num">'+allReq+'</div><div class="sum-label">总请求</div></div>'+
@@ -1196,10 +1239,12 @@ function render(){
   document.getElementById("tabs").innerHTML='<span class="tab'+(curDate==='all'?' on':'')+'" onclick="curDate=\\'all\\';render()">全部</span>'+tabsHtml;
 
   let filtered=data;
+  if(filterBy!=="locked")filtered=filtered.filter(x=>!x.locked);
   if(filterBy==="available")filtered=filtered.filter(x=>x.available);
   else if(filterBy==="cooldown")filtered=filtered.filter(x=>!x.available&&x.status!=="discarded");
   else if(filterBy==="discarded")filtered=filtered.filter(x=>x.status==="discarded");
   if(searchQ){const q=searchQ.toLowerCase();filtered=filtered.filter(x=>String(x.idx).includes(q)||(x.remark||"").toLowerCase().includes(q)||x.url.toLowerCase().includes(q))}
+  if(statusCodeQ){filtered=filtered.filter(x=>x.failCode&&String(x.failCode)===statusCodeQ)}
   if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
   else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
   else if(sortBy==="rate5m"){
@@ -1348,6 +1393,7 @@ document.getElementById("sortBy").addEventListener("change",function(){sortBy=th
 document.getElementById("filterBy").addEventListener("change",function(){filterBy=this.value;render()});
 document.getElementById("trendRange").addEventListener("change",function(){trendRange=this.value;render()});
 document.getElementById("searchBox").addEventListener("input",function(){searchQ=this.value;render()});
+document.getElementById("statusCodeBox").addEventListener("input",function(){statusCodeQ=this.value.trim();render()});
 
 let mgrKeys=[];
 let logInterval=null;
@@ -1364,30 +1410,60 @@ async function openMgr(){
   document.getElementById("mgrModal").classList.add("on");
 }
 function closeMgr(){document.getElementById("mgrModal").classList.remove("on")}
-let mgrSearchCache=[],dragIdx=-1;
+let mgrSearchCache=[],dragIdx=-1,grpCache=null;
+let mgrCollapsed={},mgrCollapsedExpandedAll=true;
+function toggleGroup(g){
+  mgrCollapsed[g]=!mgrCollapsed[g];
+  renderMgr();
+}
+function toggleAllCollapse(){
+  const groups=Object.keys(grpCache||{});
+  const allCollapsed=mgrCollapsedExpandedAll;
+  groups.forEach(g=>mgrCollapsed[g]=allCollapsed);
+  mgrCollapsedExpandedAll=!allCollapsed;
+  renderMgr();
+}
+function unlockKey(i){
+  if(!confirm('解锁 #'+(i+1)+'？将清除锁死状态，Key 恢复正常使用。'))return;
+  fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})})
+    .then(r=>r.json()).then(j=>{if(j.ok){mgrKeys[i]._locked=undefined;renderMgr();loadKeys()}});
+}
 function renderMgr(){
   const q=(document.getElementById("mgrSearch").value||"").toLowerCase();
+  const codeFilter=document.getElementById("mgrCodeFilter").value.trim();
+  const statusFilter=document.getElementById("mgrStatusFilter").value;
   const tbody=document.getElementById("mgrBody");
   tbody.innerHTML="";
   const filtered=[];const grp={};
   for(let i=0;i<mgrKeys.length;i++){
     const k=mgrKeys[i];
-    if(q&&!(k.remark||"").toLowerCase().includes(q)&&!(k.url||"").toLowerCase().includes(q)&&!(k.key||"").toLowerCase().includes(q))continue;
+    if(q&&!(k.remark||"").toLowerCase().includes(q)&&!(k.url||"").toLowerCase().includes(q)&&!(k.key||"").toLowerCase().includes(q)&&!String(k._failCode||"").includes(q))continue;
+    if(codeFilter&&String(k._failCode||"")!==codeFilter)continue;
+    if(statusFilter==="available"&&k._available!==true)continue;
+    if(statusFilter==="cooldown"&&k._available!==false)continue;
+    if(statusFilter==="discarded"&&k.status!=="discarded")continue;
+    if(statusFilter==="locked"&&k._locked!==true)continue;
     filtered.push(i);
     const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
     if(!grp[g])grp[g]=[];
     grp[g].push(i);
   }
+  grpCache=grp;
   mgrSearchCache=filtered;
+  document.getElementById("mgrCount").textContent="共 "+mgrKeys.length+" 个"+(filtered.length<mgrKeys.length?"，筛选后 "+filtered.length+" 个":"");
   const groups=Object.keys(grp);
   for(let gi=0;gi<groups.length;gi++){
     const g=groups[gi],items=grp[g];
+    const collapsed=mgrCollapsed[g]===true;
     const hdr=document.createElement("tr");
-    hdr.style.background="#1e293b";hdr.style.color="#94a3b8";
-    hdr.innerHTML='<td colspan="8" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155">📁 '+esc(g)+' ('+items.length+')</td>';
+    hdr.style.background="#1e293b";hdr.style.cursor="pointer";
+    hdr.onclick=function(){toggleGroup(g)};
+    hdr.innerHTML='<td colspan="9" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
+      (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')</td>';
     tbody.appendChild(hdr);
+    if(collapsed)continue;
     for(let ii=0;ii<items.length;ii++){
-      const i=items[ii],k=mgrKeys[i],sh=k.status==="shielded";
+      const i=items[ii],k=mgrKeys[i],sh=k.status==="shielded",lk=k._locked===true;
       const tr=document.createElement("tr");
       tr.draggable=true;
       tr.ondragstart=function(){dragIdx=i};
@@ -1401,18 +1477,25 @@ function renderMgr(){
         renderMgr();
       };
       tr.style.cursor="grab";
+      let badges='';
+      if(sh)badges+='<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>';
+      if(lk)badges+='<span class="badge" style="background:#2e1065;color:#a78bfa;white-space:nowrap;margin-left:2px">🔒 锁死</span>';
+      const fc=k._failCode||"";
+      const fcBadge=fc?'<span class="badge" style="background:#1e293b;color:'+(fc==="429"?"#fbbf24":fc==="401"?"#fb923c":fc==="403"?"#f87171":"#94a3b8")+';border:1px solid #475569">'+fc+'</span>':'';
       tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
         '<td>'+(i+1)+'</td>'+
-        '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+(sh?'<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>':'')+'</td>'+
-        '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..."></td>'+
+        '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
+        '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
+        '<td style="text-align:center">'+fcBadge+'</td>'+
         '<td><select class="kreset"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select></td>'+
         '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
-        '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注"></td>'+
+        '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"></td>'+
         '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
-          '<span class="del" onclick="testKey('+i+')" title="测试连通性">🔍</span>'+
-          '<span class="del" onclick="resetKeyStatus('+i+')" title="重置状态（清除冷却/废弃）">🔄</span>'+
-          '<span class="del" onclick="toggleShield('+i+')" title="'+(sh?'恢复使用':'屏蔽')+'">'+(sh?'🔄':'🔇')+'</span>'+
-          '<span class="del" onclick="delKeyRow('+i+')">✕</span></td>';
+          '<span class="del" onclick="testKey('+i+')" title="#'+(i+1)+' 测试连通性">🔍</span>'+
+          '<span class="del" onclick="resetKeyStatus('+i+')" title="#'+(i+1)+' 重置状态（清除冷却/废弃/锁死）">🔄</span>'+
+          '<span class="del" onclick="toggleShield('+i+')" title="#'+(i+1)+' '+(sh?'恢复使用':'屏蔽')+'">'+(sh?'🔄':'🔇')+'</span>'+
+          (lk?'<span class="del" onclick="unlockKey('+i+')" title="#'+(i+1)+' 解锁 Key" style="color:#a78bfa">🔓</span>':'')+
+          '<span class="del" onclick="delKeyRow('+i+')" title="#'+(i+1)+' 删除">✕</span></td>';
       tbody.appendChild(tr);
     }
   }
@@ -1431,6 +1514,12 @@ function delKeyRow(i){
   if(!confirm('确定要删除 Key #'+(i+1)+'？\\n删除后不再显示和调用，可在 keys.json 中恢复。'))return;
   mgrKeys[i].status="deleted";renderMgr();
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
+}
+function clearMgrSearch(){
+  document.getElementById("mgrSearch").value="";
+  document.getElementById("mgrCodeFilter").value="";
+  document.getElementById("mgrStatusFilter").value="";
+  renderMgr();
 }
 function selectAllMgr(sel){
   document.querySelectorAll("#mgrBody .mgr-cb").forEach(c=>c.checked=sel);
@@ -1620,7 +1709,10 @@ async function saveConfig(){
     autoRecoverInterval:parseFloat(document.getElementById("cfgAutoInterval").value)||1,
     autoRecoverCodes:(document.getElementById("cfgAutoCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
     autoRecoverDiscarded:document.getElementById("cfgAutoDiscarded").checked,
-    roundRobin:document.getElementById("cfgRoundRobin").checked
+    roundRobin:document.getElementById("cfgRoundRobin").checked,
+    enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
+    lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
+    lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s)
   };
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
@@ -1799,6 +1891,12 @@ const server = http.createServer((req, res) => {
   if (pathname === "/__keys") {
     if (req.method === "GET") {
       const raw = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8"));
+      for (let i = 0; i < raw.length; i++) {
+        const ks = i < accounts.length ? getKeyState(i) : state.keys[i];
+        if (ks && ks.status === "locked") raw[i]._locked = true;
+        if (ks && (ks.failCode || ks.failCode === 0)) raw[i]._failCode = ks.failCode;
+        if (i < accounts.length && accounts[i]) raw[i]._available = !inCooldown(i);
+      }
       res.writeHead(200, cors);
       res.end(JSON.stringify(raw, null, 2));
       return;
@@ -1844,7 +1942,8 @@ const server = http.createServer((req, res) => {
           ks.failCode = null;
           ks.failTime = null;
           ks.failPeriod = "";
-          if (ks.status === "discarded") ks.status = "active";
+          ks.failCount = 0;
+          if (ks.status === "discarded" || ks.status === "locked") ks.status = "active";
           allFailedNotified = false;
           saveState();
           broadcastStatus();

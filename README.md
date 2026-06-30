@@ -182,11 +182,15 @@ codex
 
 全部 Key 切换失败后返回 `502 {"error": "All keys exhausted"}`。
 
-## 冷却与废弃
+## 冷却、废弃与自动锁死
 
 - Key 返回 401/402/403/429/5xx → `failCode` + `failPeriod` 写入 `state.json` → 该周期内 `inCooldown()` 返回 true → 不再被 `pickKey()` 选中
 - 同 Key **连续两个周期**（天/周）都失败 → 自动标记 `status: "discarded"` → 永久跳过（直到手动重置）
 - `reset: "never"` 的 Key 一次失败即永久冷却
+- **自动锁死**（`enableAutoLock: true`）：对 `lockFailCodes`（默认 401,403）中的错误码，连续失败达到 `lockAfterFailCount`（默认 3 次）后，自动标记 `status: "locked"` → 永久跳过（直到手动解锁）
+  - 锁死计数仅统计同周期内同失败码的连续失败，成功请求或不同错误码会重置计数
+  - 锁死状态写入 `state.json`，不影响 `keys.json`（避免面板保存覆盖）
+  - 管理弹窗显示 🔒 锁死徽章 + 🔓 解锁按钮
 
 ## 管理 Key 状态重置
 
@@ -194,11 +198,11 @@ codex
 
 后端处理：
 - 清除 `failCode` / `failTime` / `failPeriod`
-- 如 Key 之前被自动标记为 `discarded`，恢复为 `active`
+- 如 Key 之前被自动标记为 `discarded` 或 `locked`，恢复为 `active`
 - 保存 `state.json` + 广播 WebSocket 更新
 - 不重启代理，下次轮询到该 Key 即正常尝试
 
-可用于充值后快速恢复冷却/废弃 Key。
+可用于充值后快速恢复冷却/废弃/锁死 Key。
 
 ## 管理弹窗
 
@@ -209,7 +213,11 @@ codex
 - **屏蔽/恢复**：🔇 屏蔽（不参与调度）、🔓 恢复
 - **重置冷却**：🔄 清除冷却/废弃状态
 - **搜索过滤**：实时搜索 ID/备注/地址
+- **状态码筛选**：输入 `401` 等过滤指定失败码的 Key
+- **状态筛选**：下拉选择 全部/可用/冷却中/废弃/锁死
+- **数量显示**：实时显示 `共 X 个，筛选后 Y 个`
 - **自动分组**：按备注前缀（中文逗号/英文逗号/空格分割的第一段）自动分组折叠
+- **一键折叠/展开**：📂 按钮折叠或展开所有分组
 - **拖拽排序**：拖动行调整顺序，自动保存到 keys.json
 - **优先级设置**：每行「优先」数字输入框，数值越大调度越优先（仅轮询均摊模式生效）
 - **全选 + 批量操作**：批量重置 / 批量屏蔽 / 批量删除
@@ -223,11 +231,12 @@ codex
 `http://localhost:3456/` 内嵌完整监控面板：
 
 ### 顶部摘要
-可用数/总数、冷却中、并发请求、总流量、总请求、健康评分、预估费用
+可用数/总数、冷却中、🔒 锁死数、并发请求、总流量、总请求、健康评分、预估费用
 
 ### 排序/筛选/搜索/批量操作
 - 排序：默认 / 健康评分 / 平均延迟 / 5 分钟成功率
-- 筛选：全部 / 可用 / 冷却中 / 废弃
+- 筛选：全部 / 可用 / 冷却中 / 废弃 / 🔒 锁死
+- 状态码筛选：输入 `401` 等过滤指定失败码的 Key
 - 搜索：ID / 备注 / 地址
 - 批量：勾选卡片 → 批量重置 / 批量屏蔽
 
@@ -235,11 +244,11 @@ codex
 24 小时 / 7 天 / 30 天切换，每小时柱状图，X 轴标签密度自适配
 
 ### Key 卡片
-脱敏显示（点击明文切换）、重置类型徽章、并发徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮
+脱敏显示（点击明文切换）、重置类型徽章、并发徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮、锁死 Key 紫色标记
 
 ### 状态栏快捷操作
 - 🔍 测试连通性
-- 🔄 重置冷却/废弃
+- 🔄 重置冷却/废弃/锁死
 - 🔇 屏蔽此 Key
 
 ### 一键折叠
@@ -260,7 +269,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 重启代理按钮
 |---|---|---|
 | `/` 或 `/dashboard` | GET | 监控面板 HTML |
 | `/__status` | GET | JSON 状态（所有 Key 的完整指标） |
-| `/__keys` | GET | 读取 keys.json |
+| `/__keys` | GET | 读取 keys.json（富化 `_locked`/`_failCode`/`_available` 字段） |
 | `/__keys` | PUT | 写入 keys.json（自动重载） |
 | `/__config` | GET | 读取 config.json |
 | `/__config` | PUT | 写入 config.json（自动重载） |
@@ -284,10 +293,12 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 重启代理按钮
 | `reset` | string | daily / weekly / never |
 | `remark` | string | 备注 |
 | `available` | bool | 当前可用（`!inCooldown()`） |
-| `status` | string | active / discarded |
+| `status` | string | active / discarded / locked |
 | `failCode` | int/null | 上次失败码 |
 | `failTime` | int/null | 上次失败时间戳 |
 | `failPeriod` | string/null | 失效周期标识 |
+| `failCount` | int | 连续失败计数（仅 lockFailCodes 中的错误码） |
+| `locked` | bool | 是否被自动锁死 |
 | `active` | bool | 当前是否有请求在处理 |
 | `activeRequests` | int | 当前并发请求数 |
 | `healthScore` | int | 0-100 |
@@ -358,7 +369,15 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "webhookUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx",
   "prices": { "inputPer1M": 5, "outputPer1M": 15 },
   "bytesPerToken": 3,
-  "notifications": { "sound": true, "desktop": true }
+  "notifications": { "sound": true, "desktop": true },
+  "autoRecover": true,
+  "autoRecoverInterval": 1,
+  "autoRecoverCodes": [401,402,403,429,500,502,503,504],
+  "autoRecoverDiscarded": false,
+  "roundRobin": false,
+  "enableAutoLock": true,
+  "lockAfterFailCount": 3,
+  "lockFailCodes": ["401","403"]
 }
 ```
 
@@ -375,6 +394,9 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoRecoverCodes` | 需要检测的失败码数组，如 `[401,429,500]` |
 | `autoRecoverDiscarded` | 是否也检测 `discarded` 状态的 Key |
 | `roundRobin` | 是否启用轮询均摊模式（见「Key 调度顺序」） |
+| `enableAutoLock` | 是否启用自动锁死（true/false，默认 true） |
+| `lockAfterFailCount` | 连续 N 次失败后自动锁死（默认 3） |
+| `lockFailCodes` | 只有这些错误码会计入连续失败计数（默认 `["401","403"]`） |
 
 ## 自动恢复冷却 Key
 
@@ -458,6 +480,9 @@ A: 管理界面点击 🔇，或 keys.json 设 `"status": "shielded"`。
 
 **Q: 删除的 Key 怎么恢复？**
 A: 前端删除是软删除（设 `status="deleted"`），Key 仍在 keys.json。编辑 keys.json 删除 `status` 字段或改回 `"active"` 即可。
+
+**Q: Key 被自动锁死了怎么恢复？**
+A: 管理弹窗找到 🔒 锁死的 Key，点击 🔓 解锁按钮，或手动调用 `POST /__reset-key {"idx": N}`。可在配置中关闭自动锁死（取消勾选「启用自动锁死」）或调整阈值 `lockAfterFailCount`。
 
 **Q: 费用估算不准？**
 A: 调整 `config.json` 中 `bytesPerToken` 和 `prices`。不同模型 token 密度不同。
