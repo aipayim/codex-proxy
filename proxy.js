@@ -354,7 +354,8 @@ function markFailure(idx, code) {
 
   // Track consecutive failures for lockable codes
   if (config.enableAutoLock !== false) {
-    const lockCodes = (config.lockFailCodes || "401,403").split(",").map(s => parseInt(s.trim()));
+    const raw = config.lockFailCodes || ["401", "403"];
+    const lockCodes = (Array.isArray(raw) ? raw : raw.split(",")).map(s => parseInt((s && s.trim) ? s.trim() : s));
     if (lockCodes.includes(code)) {
       const same = ks.failCode === code && ks.failPeriod === curr;
       ks.failCount = same ? (ks.failCount || 0) + 1 : 1;
@@ -676,7 +677,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname) {
     retries++;
     const idx = pickKey();
     if (responded) return;
-    if (idx < 0 || (usedKeys.has(idx) && usedKeys.size >= activeCount)) {
+    if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
       if (idx < 0) {
         console.log(`[proxy] No available keys, queueing request`);
         enqueueRequest(method, headers, body, clientRes, pathname);
