@@ -413,20 +413,23 @@ function pickKey() {
   }
 
   if (config.roundRobin) {
-    const all = [];
+    const groups = [[], [], []];
     for (let i = 0; i < accounts.length; i++) {
       if (accounts[i].status !== "active") continue;
       const ks = getKeyState(i);
       if (ks.status === "discarded" || ks.status === "locked") continue;
-      all.push({ i, priority: accounts[i].priority || 0 });
+      groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
     }
-    // Sort by priority desc, then idx asc
-    all.sort((a, b) => b.priority - a.priority || a.i - b.i);
-    const available = all.filter(x => !inCooldown(x.i));
-    const pool = available.length ? available : all;
-    if (!pool.length) return -1;
-    if (_rrCursor >= pool.length) _rrCursor = 0;
-    return pool[_rrCursor++].i;
+    for (const g of groups) g.sort((a, b) => (accounts[b].priority || 0) - (accounts[a].priority || 0) || a - b);
+    for (let gi = 0; gi <= 2; gi++) {
+      const g = groups[gi];
+      if (!g.length) continue;
+      const avail = g.filter(i => !inCooldown(i));
+      const pool = avail.length ? avail : g;
+      if (_rrCursor >= pool.length) _rrCursor = 0;
+      return pool[_rrCursor++];
+    }
+    return -1;
   }
 
   const groups = [[], [], []];
@@ -435,6 +438,7 @@ function pickKey() {
     const ks = getKeyState(i);
     if (ks.status !== "discarded" && ks.status !== "locked") groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
   }
+  for (const g of groups) g.sort((a, b) => (accounts[b].priority || 0) - (accounts[a].priority || 0) || a - b);
   for (const g of groups) {
     const a = g.filter(i => !inCooldown(i));
     if (a.length) return a[0];

@@ -47,7 +47,7 @@ npm install
 #   reset:  额度重置周期 daily / weekly / never
 #   remark: 备注（可选）
 #   status: 可选字段，active / shielded / deleted
-#   priority: 可选字段，整数（默认 0），数值越大调度优先级越高（仅轮询均摊模式下生效）
+#   priority: 可选字段，整数（默认 0），数值越大调度优先级越高（同 reset 类型内优先）
 #
 # 示例：
 # [
@@ -138,28 +138,36 @@ codex
 
 ## Key 调度顺序
 
-有两种调度模式，通过 `config.json` 的 `roundRobin` 字段切换：
+`pickKey()` 采用**双层优先级调度**：
+
+| 层级 | 依据 | 顺序 |
+|------|------|------|
+| **第一层** | 额度重置周期 `reset` | daily → weekly → never |
+| **第二层** | 用户设置的 `priority` 数值 | 同 reset 组内，数值越大越优先，不限上限（默认 0） |
+
+两种调度模式均遵循此双层顺序：
 
 ### 默认模式（`roundRobin: false`）
 
-每次请求，`pickKey()` 按以下优先级选取：
+每次请求，从高优组到低优组逐层尝试，每组内按 priority 降序（同分按 keys.json 顺序）：
 
-1. **daily 类型** 中不在冷却的 Key（按 keys.json 顺序）
-2. **weekly 类型** 中不在冷却的 Key
-3. **never 类型** 中不在冷却的 Key
-4. **兜底**：同类型中第一个 Key（无视冷却，但 `inCooldown()` 会立即标记失败）
+1. **daily 类型** → 取第一个不在冷却的 Key（高 priority 优先）
+2. **weekly 类型** → 同上
+3. **never 类型** → 同上
+4. **兜底**：同类型中第一个 Key（无视冷却）
 
 ### 轮询均摊模式（`roundRobin: true`）
 
-启用后，所有可用 Key 按 `priority` 字段降序分组，同组内轮询（Round-Robin）使用：
+按 reset 类型分组，组内按 priority 降序排列，同组内轮询使用：
 
-| priority 值 | 调度顺序 |
-|---|---|
-| 10（新增临时 Key） | 最优先使用，独享流量直到冷却 |
-| 0（默认值） | 后续轮询均摊 |
-| 1~N | 数值越大越优先，同数值均摊 |
+| 分组 | 调度顺序 |
+|------|----------|
+| daily → priority: 10（高优） | 在 daily 组内先轮询 |
+| daily → priority: 0（默认） | 高优 Key 冷却后切至此组轮询 |
+| daily 用完后 → weekly 组 | 同上分层逻辑 |
+| weekly 用完后 → never 组 | 同上分层逻辑 |
 
-例：`priority: 10` 的 Key 先用完（独享全部请求），冷却后自动切换到 `priority: 0` 的 Key 轮询。
+例：`priority: 10` 的 daily Key 在 daily 组内独享轮询，冷却后自动切换到 daily 组内 `priority: 0` 的 Key 轮询；daily 组全部冷却后切入 weekly 组。
 
 两种模式中，可用 Key 数（`activeCount`）仅统计 `status === "active"` 的 Key，
 屏蔽（shielded）和软删除（deleted）不计入。
@@ -219,7 +227,7 @@ codex
 - **自动分组**：按备注前缀（中文逗号/英文逗号/空格分割的第一段）自动分组折叠
 - **一键折叠/展开**：📂 按钮折叠或展开所有分组
 - **拖拽排序**：拖动行调整顺序，自动保存到 keys.json
-- **优先级设置**：每行「优先」数字输入框，数值越大调度越优先（仅轮询均摊模式生效）
+- **优先级设置**：每行「优先」数字输入框，数值越大调度越优先（同 reset 类型组内优先）
 - **全选 + 批量操作**：批量重置 / 批量屏蔽 / 批量删除
 - **批量导入**：📋 粘贴多行 `sk-xxx url 周期 备注` 快速导入
 - **单 Key 测试**：🔍 调用 `GET /v1/models` 测试连通性，返回模型名 + 耗时
