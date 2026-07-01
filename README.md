@@ -57,7 +57,7 @@ npm install
 # ]
 ```
 
-> 💡 推荐中转代理（注册送额度）：[https://api.fenno.ai/register?aff=PG29S7V2J2ZT](https://api.fenno.ai/register?aff=PG29S7V2J2ZT)
+> 💡 推荐中转代理（注册送额度）：[https://api.fenno.ai/register?aff=FBGPVRCAA765](https://api.fenno.ai/register?aff=FBGPVRCAA765)
 
 ### 3. 启动代理
 
