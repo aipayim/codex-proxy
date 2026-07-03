@@ -246,9 +246,9 @@ function loadState() {
   }
 }
 let _saveThrottle = 0;
-function saveState() {
+function saveState(force) {
   const now = Date.now();
-  if (now - _saveThrottle < 2000) return; // at most every 2s
+  if (!force && now - _saveThrottle < 2000) return; // at most every 2s
   _saveThrottle = now;
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -741,7 +741,7 @@ function buildStatusData() {
   const data = [];
   for (let i = 0; i < accounts.length; i++) {
     const a = accounts[i];
-    if (a.status !== "active") continue;
+    if (a.status !== "active" && a.status !== "shielded") continue;
     const ks = getKeyState(i);
     const m = a.key.match(/^(sk-[^-]+)/);
     const s = ks.stats || {};
@@ -760,6 +760,7 @@ function buildStatusData() {
       failPeriod: ks.failPeriod,
       failCount: ks.failCount,
       locked: ks.status === "locked",
+      shielded: a.status === "shielded",
       active: (activeRequests[i] || 0) > 0,
       activeRequests: activeRequests[i] || 0,
       healthScore: computeHealthScore(ks, i),
@@ -961,7 +962,9 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <label>排序</label>
   <select id="sortBy"><option value="idx">默认顺序</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
   <label>筛选</label>
-  <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option></select>
+   <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
+  <label>重置</label>
+  <select id="resetFilter"><option value="all">全部</option><option value="daily">每日重置</option><option value="weekly">每周重置</option><option value="never">永不过期</option></select>
   <label>趋势</label>
   <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
   <label>搜索</label>
@@ -969,6 +972,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <label>状态码</label>
   <input id="statusCodeBox" placeholder="如 401" style="width:60px">
   <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
+  <span style="color:#94a3b8;font-size:11px;margin-left:8px" id="filterCount"></span>
 </div>
 <div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
   <span style="color:#94a3b8;font-size:12px" id="batchCount">已选 0 个</span>
@@ -996,6 +1000,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="cooldown">冷却中</option>
     <option value="discarded">废弃</option>
     <option value="locked">锁死</option>
+    <option value="shielded">屏蔽</option>
   </select>
   <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)">全选</button>
   <button class="btn" style="font-size:11px" onclick="clearMgrSearch()">取消</button>
@@ -1212,7 +1217,8 @@ function renderTrend(){
 
 function render(){
   const now=Date.now();
-  const tot=data.length,ok=data.filter(x=>x.available&&!x.locked).length,fail=data.filter(x=>!x.available&&!x.locked).length,locked=data.filter(x=>x.locked).length;
+  const activeData=data.filter(x=>!x.shielded);
+  const tot=activeData.length,ok=activeData.filter(x=>x.available&&!x.locked).length,fail=activeData.filter(x=>!x.available&&!x.locked).length,locked=activeData.filter(x=>x.locked).length;
   const concurrent=data.reduce((s,x)=>s+(x.activeRequests||0),0);
   const allBytes=data.reduce((s,x)=>s+(x.inputBytes||0)+(x.outputBytes||0),0);
   const allReq=data.reduce((s,x)=>s+(x.totalRequests||0),0);
@@ -1245,11 +1251,18 @@ function render(){
 
   let filtered=data;
   if(filterBy!=="locked")filtered=filtered.filter(x=>!x.locked);
+  if(filterBy!=="shielded")filtered=filtered.filter(x=>!x.shielded);
   if(filterBy==="available")filtered=filtered.filter(x=>x.available);
   else if(filterBy==="cooldown")filtered=filtered.filter(x=>!x.available&&x.status!=="discarded");
   else if(filterBy==="discarded")filtered=filtered.filter(x=>x.status==="discarded");
+  else if(filterBy==="shielded")filtered=filtered.filter(x=>x.shielded);
   if(searchQ){const q=searchQ.toLowerCase();filtered=filtered.filter(x=>String(x.idx).includes(q)||(x.remark||"").toLowerCase().includes(q)||x.url.toLowerCase().includes(q))}
   if(statusCodeQ){filtered=filtered.filter(x=>x.failCode&&String(x.failCode)===statusCodeQ)}
+  const resetType=document.getElementById("resetFilter").value;
+  if(resetType!=="all")filtered=filtered.filter(x=>x.reset===resetType);
+  document.getElementById("filterCount").textContent="显示 "+filtered.length+" / "+data.length+" 个";
+  const shieldedCount=data.filter(x=>x.shielded).length;
+  if(shieldedCount>0)document.getElementById("filterCount").textContent+="，屏蔽 "+shieldedCount+" 个";
   if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
   else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
   else if(sortBy==="rate5m"){
@@ -1396,6 +1409,7 @@ setTimeout(function(){if(!data.length)httpLoad()},3000);
 
 document.getElementById("sortBy").addEventListener("change",function(){sortBy=this.value;render()});
 document.getElementById("filterBy").addEventListener("change",function(){filterBy=this.value;render()});
+document.getElementById("resetFilter").addEventListener("change",function(){render()});
 document.getElementById("trendRange").addEventListener("change",function(){trendRange=this.value;render()});
 document.getElementById("searchBox").addEventListener("input",function(){searchQ=this.value;render()});
 document.getElementById("statusCodeBox").addEventListener("input",function(){statusCodeQ=this.value.trim();render()});
@@ -1448,6 +1462,7 @@ function renderMgr(){
     if(statusFilter==="cooldown"&&k._available!==false)continue;
     if(statusFilter==="discarded"&&k.status!=="discarded")continue;
     if(statusFilter==="locked"&&k._locked!==true)continue;
+    if(statusFilter==="shielded"&&k.status!=="shielded")continue;
     filtered.push(i);
     const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
     if(!grp[g])grp[g]=[];
@@ -1950,7 +1965,7 @@ const server = http.createServer((req, res) => {
           ks.failCount = 0;
           if (ks.status === "discarded" || ks.status === "locked") ks.status = "active";
           allFailedNotified = false;
-          saveState();
+          saveState(true);
           broadcastStatus();
           console.log(`[proxy] #${idx} state reset manually`);
           res.writeHead(200, cors);

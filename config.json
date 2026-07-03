@@ -9,20 +9,17 @@
     "desktop": true,
     "sound": true
   },
-  "autoRecover": false,
+  "autoRecover": true,
   "autoRecoverInterval": 24,
   "autoRecoverCodes": [
-    401,
-    402,
-    403,
-    429,
-    500,
-    502,
-    503,
-    504
+    429
   ],
   "autoRecoverDiscarded": false,
   "roundRobin": false,
   "lockAfterFailCount": 3,
-  "lockFailCodes": ["401","403"]
+  "lockFailCodes": [
+    "401",
+    "403"
+  ],
+  "enableAutoLock": true
 }
