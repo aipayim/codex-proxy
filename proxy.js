@@ -1822,7 +1822,12 @@ const server = http.createServer((req, res) => {
           const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
           Object.assign(cur, c);
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(cur, null, 2));
+          const savedNextTime = autoRecoverNextTime;
+          const savedInterval = config.autoRecoverInterval;
           loadConfig();
+          if (config.autoRecover && savedNextTime > Date.now() && savedInterval === config.autoRecoverInterval) {
+            autoRecoverNextTime = savedNextTime;
+          }
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {
