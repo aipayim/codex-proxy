@@ -1008,7 +1008,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .hist{padding:2px 0;font-size:clamp(10px,1.3vw,11px);color:#94a3b8;display:flex;justify-content:space-between}
 .hist-bar{height:4px;background:#334155;border-radius:2px;margin:2px 0;overflow:hidden}
 .hist-fill{height:100%;background:#3b82f6;border-radius:2px}
-.tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.tabs{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
 .tab{padding:3px 8px;border-radius:4px;font-size:clamp(10px,1.3vw,11px);cursor:pointer;background:#334155;color:#94a3b8;border:1px solid transparent;white-space:nowrap}
 .tab.on{background:#1e3a5f;color:#60a5fa;border-color:#3b82f6}
 .tab:hover{background:#475569}
@@ -1231,7 +1231,7 @@ let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="",model
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0;
-let boostedIdx=-1;
+let collapsedCards={};
 
 async function httpLoad(){
   try{
@@ -1399,7 +1399,6 @@ function render(){
   curDate=sorted.includes(curDate)?curDate:(sorted[0]||todayStr());
   const tabsHtml=sorted.map(d=>'<span class="tab'+(d===curDate?' on':'')+'" onclick="curDate=\\''+d+'\\';render()">'+d+'</span>').join("");
   document.getElementById("tabs").innerHTML='<span class="tab'+(curDate==='all'?' on':'')+'" onclick="curDate=\\'all\\';render()">全部</span>'+tabsHtml;
-
   let filtered=data;
   if(filterBy!=="locked")filtered=filtered.filter(x=>!x.locked);
   if(filterBy!=="shielded")filtered=filtered.filter(x=>!x.shielded);
@@ -1511,11 +1510,12 @@ function render(){
   }
   document.getElementById("grid").innerHTML=html;
   updateBatchBar();
+  for(const idx in collapsedCards){const b=document.getElementById("body-"+idx);if(b)b.classList.toggle("collapsed",collapsedCards[idx])}
 }
 
 function toggleCollapse(idx){
   const body=document.getElementById("body-"+idx);
-  if(body)body.classList.toggle("collapsed");
+  if(body){body.classList.toggle("collapsed");collapsedCards[idx]=body.classList.contains("collapsed")}
 }
 
 function todayStr(){return new Date().toISOString().slice(0,10)}
@@ -1526,10 +1526,9 @@ function esc(s){const d=document.createElement("div");d.textContent=s;return d.i
 const FAIL_MEAN={"401":"API Key 无效或已过期","402":"额度不足，账号已欠费","403":"权限不足，Key 无访问权限","429":"请求过频繁，触发了速率限制","500":"上游服务器内部错误","502":"上游网关错误","503":"服务暂时不可用","504":"上游超时"};
 function toggleAllCollapse(){
   const all=document.querySelectorAll("#grid .cbody");
-  const first=all[0];
-  if(!first)return;
-  const isCollapsed=first.classList.contains("collapsed");
-  all.forEach(b=>b.classList.toggle("collapsed",!isCollapsed));
+  if(!all.length)return;
+  const isCollapsed=all[0].classList.contains("collapsed");
+  all.forEach(b=>{b.classList.toggle("collapsed",!isCollapsed);const idx=b.id.replace("body-","");collapsedCards[idx]=!isCollapsed});
 }
 function showAlert(txt){document.getElementById("sub").textContent=txt}
 function cardReset(idx){
@@ -1590,7 +1589,7 @@ function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
   renderMgr();
 }
-function toggleAllCollapse(){
+function toggleAllMgrGroups(){
   const groups=Object.keys(grpCache||{});
   const allCollapsed=mgrCollapsedExpandedAll;
   groups.forEach(g=>mgrCollapsed[g]=allCollapsed);
