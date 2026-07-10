@@ -8,7 +8,7 @@
 codex-proxy/
 ├── proxy.js              # 核心代理服务器（含内嵌完整监控面板）
 ├── keys.json             # API Key 列表（每个 key 可独立配置 url/reset/status/remark）
-├── config.json           # 系统配置（prices、webhookUrl、notifications）
+├── config.json           # 系统配置（prices、webhookUrl、notifications、log 等）
 ├── state.json            # 自动生成，持久化统计数据与冷却/废弃状态
 ├── state.json.bak        # 每小时自动备份
 ├── dashboard.html        # 独立监控面板文件（file:// 打开会有引导提示）
@@ -16,6 +16,7 @@ codex-proxy/
 ├── install.sh            # 一键安装脚本（自动读取自身路径，替换 {{PROXY_DIR}}）
 ├── edit-keys.sh          # 命令行快速编辑 keys.json 的辅助脚本
 ├── package.json          # npm 依赖（仅 ws）
+├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
 └── README.md             # 本文件
 ```
 
@@ -346,7 +347,9 @@ codex
 📂 按钮一键折叠/展开全部卡片
 
 ### 日志查看器
-最近 500 条请求记录，WebSocket 实时推送，时间/Key/方法/路径/状态码/流量/延迟
+最近 2000 条请求记录，WebSocket 实时推送（日志弹窗打开时自动追加），时间/Key/方法/模型/路径/状态码/流量/延迟。
+支持筛选：按 Key 序号、状态码（支持 `4xx` `5xx` 通配）、模型名子串、时间范围（5 分钟/15 分钟/1 小时/全部）。
+支持 CSV 导出当前筛选结果。
 
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
@@ -369,7 +372,8 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 重启代理按钮
 | `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`） |
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
 | `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |
-| `/__logs` | GET | 最近请求日志（`?limit=N`） |
+| `/__logs` | GET | 请求日志（`?key=11&status=502&model=gpt-5.6-sol&since=ts&until=ts&limit=200&offset=0&format=csv`，支持 `4xx`/`5xx` 通配） |
+| `/__export-logs` | GET | 导出历史日志（`?date=2026-07-10&key=11&status=502&model=gpt-5.6-sol&format=csv`，无 date 时返回内存日志） |
 | `/__export` | GET | CSV 导出统计报表 |
 | `/__pathstats` | GET | 按路径/模型的请求分布 |
 | `/metrics` | GET | Prometheus 格式指标 |
@@ -469,7 +473,10 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "roundRobin": false,
   "enableAutoLock": true,
   "lockAfterFailCount": 3,
-  "lockFailCodes": ["401","403"]
+  "lockFailCodes": ["401","403"],
+  "logFile": true,
+  "logRetentionDays": 7,
+  "logDetail": "full"
 }
 ```
 
@@ -489,6 +496,9 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `enableAutoLock` | 是否启用自动锁死（true/false，默认 true） |
 | `lockAfterFailCount` | 连续 N 次失败后自动锁死（默认 3） |
 | `lockFailCodes` | 只有这些错误码会计入连续失败计数（默认 `["401","403"]`） |
+| `logFile` | 是否启用文件日志（true/false，默认 true）。关闭后仅内存缓存 2000 条，不写磁盘 |
+| `logRetentionDays` | 日志文件保留天数（默认 7）。设为 0 关闭自动清理 |
+| `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
 
 ## 自动恢复冷却 Key
 

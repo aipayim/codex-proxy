@@ -14,8 +14,14 @@ const TIMEOUT = 300000;
 const PRIORITY = { daily: 0, weekly: 1, never: 2 };
 const HTTP_MOD = { "http:": http, "https:": https };
 const TZ = "Asia/Shanghai";
-const MAX_LOG = 500;
+const MAX_LOG = 2000;
 const QUEUE_TIMEOUT = 30000;
+const LOG_DIR = path.join(__dirname, "logs");
+let LOG_RETENTION_DAYS = 7;
+let LOG_FILE_ENABLED = true;
+let LOG_DETAIL = "full";
+let logStream = null;
+let logDate = null;
 
 let accounts = [];
 let state = { keys: [], activeKey: null, dailyLog: {} };
@@ -72,6 +78,9 @@ function loadConfig() {
     config.enableAutoLock = c.enableAutoLock !== false;
     config.lockAfterFailCount = Math.max(1, c.lockAfterFailCount || 3);
     config.lockFailCodes = Array.isArray(c.lockFailCodes) ? c.lockFailCodes : ["401","403"];
+    LOG_RETENTION_DAYS = c.logRetentionDays != null ? c.logRetentionDays : 7;
+    LOG_FILE_ENABLED = c.logFile !== false;
+    LOG_DETAIL = c.logDetail === "basic" ? "basic" : "full";
   } catch { /* defaults */ }
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
@@ -140,6 +149,43 @@ function autoRecover(){
 function addLog(entry) {
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  if (LOG_FILE_ENABLED) writeLogEntry(entry);
+  broadcastLog(entry);
+}
+
+function ensureLogStream() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (logDate === today && logStream) return;
+  if (logStream) { try { logStream.end(); } catch(e) {} }
+  try {
+    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+    logStream = fs.createWriteStream(path.join(LOG_DIR, today + ".jsonl"), { flags: "a" });
+    logDate = today;
+  } catch(e) { /* fail silently */ }
+}
+
+function writeLogEntry(entry) {
+  try {
+    ensureLogStream();
+    logStream.write(JSON.stringify(entry) + "\n");
+  } catch(e) { /* fail silently */ }
+}
+
+function cleanOldLogs() {
+  try {
+    if (!fs.existsSync(LOG_DIR)) return;
+    const files = fs.readdirSync(LOG_DIR);
+    const now = Date.now();
+    for (const f of files) {
+      if (!f.endsWith(".jsonl")) continue;
+      const dateStr = f.replace(".jsonl", "");
+      const fd = new Date(dateStr);
+      if (isNaN(fd.getTime())) continue;
+      if ((now - fd.getTime()) / 86400000 > LOG_RETENTION_DAYS) {
+        fs.unlinkSync(path.join(LOG_DIR, f));
+      }
+    }
+  } catch(e) { /* fail silently */ }
 }
 
 function computeHealthScore(ks, idx) {
@@ -607,6 +653,10 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone)
   };
 
   const logEntry = { time: Date.now(), idx: idx + 1, method, path: pathname, url: acct.url };
+  if (body && LOG_DETAIL !== "basic") {
+    try { const p = JSON.parse(body.toString()); logEntry.reqModel = p.model || null; } catch(e) {}
+  }
+  if (acct.model) logEntry.overrideModel = acct.model;
 
   const proxyReq = mod.request(options, (apiRes) => {
     if (onDone.done) { apiRes.destroy(); return; }
@@ -787,6 +837,14 @@ function broadcastStatus() {
 
 function broadcastNotification(type) {
   const msg = JSON.stringify({ type: "notification", notificationType: type, time: new Date().toISOString() });
+  for (const ws of wsClients) {
+    if (ws.readyState === 1) ws.send(msg);
+  }
+}
+
+function broadcastLog(entry) {
+  if (!wsClients.size) return;
+  const msg = JSON.stringify({ type: "log", data: entry });
   for (const ws of wsClients) {
     if (ws.readyState === 1) ws.send(msg);
   }
@@ -1130,6 +1188,11 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
   <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">📋 日志配置</div>
+  <div style="color:#94a3b8;padding:4px 0">启用文件日志</div>
+  <div><label><input type="checkbox" id="cfgLogFile" checked> 保留 <input id="cfgLogRetention" type="number" min="0" max="365" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天自动清理</label></div>
+  <div style="color:#94a3b8;padding:4px 0">日志详情级别</div>
+  <div><label><select id="cfgLogDetail" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><option value="full">完整</option><option value="basic">简洁</option></select> 简洁模式不记录模型名</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔒 连续失败锁死阈值</div>
   <div><input id="cfgLockCount" type="number" min="1" max="20" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:60px" value="3" title="连续 N 次失败后自动锁死该 Key"> 次</div>
   <div style="color:#94a3b8;padding:4px 0">🎯 锁死监控错误码</div>
@@ -1144,9 +1207,19 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="modal" id="logModal">
 <div class="mcontent">
 <div class="mtitle"><span>实时请求日志</span><button class="btn" onclick="closeLogs()">✕</button></div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">最近 500 条请求记录，实时推送</div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">最近 2000 条请求记录，实时推送</div>
+<div class="log-filters" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center">
+<input id="logKeyFilter" placeholder="Key #" style="width:50px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logStatusFilter" placeholder="状态码" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logModelFilter" placeholder="模型" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<select id="logTimeFilter" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<option value="">全部时间</option><option value="5">最近 5 分钟</option><option value="15">最近 15 分钟</option><option value="60">最近 1 小时</option>
+</select>
+<button class="btn" onclick="reloadLogs()" style="font-size:11px;padding:2px 8px">🔍 搜索</button>
+<button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px">⬇ CSV</button>
+</div>
 <div style="overflow-x:auto"><table class="log-table"><thead><tr>
-<th>时间</th><th>#</th><th>方法</th><th>路径</th><th>状态</th><th>↑B</th><th>↓B</th><th>耗时</th><th>首字节</th>
+<th>时间</th><th>#</th><th>方法</th><th>模型</th><th>路径</th><th>状态</th><th>↑B</th><th>↓B</th><th>耗时</th><th>首字节</th>
 </tr></thead><tbody id="logBody"></tbody></table></div>
 </div></div>
 
@@ -1178,6 +1251,10 @@ function connectWS(){
       const msg=JSON.parse(e.data);
       if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
+      if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
+        const tbody=document.getElementById("logBody");
+        if(tbody){const tr=document.createElement("tr");tr.innerHTML=makeLogRow(msg.data);tbody.insertBefore(tr,tbody.firstChild);if(tbody.children.length>500)tbody.removeChild(tbody.lastChild)}
+      }
     }catch(e){}
   };
   ws.onclose=function(){
@@ -1218,6 +1295,9 @@ async function loadConfigUI(){
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
     document.getElementById("cfgLockCount").value=c.lockAfterFailCount||3;
     document.getElementById("cfgLockCodes").value=(c.lockFailCodes||["401","403"]).join(",");
+    document.getElementById("cfgLogFile").checked=c.logFile!==false;
+    document.getElementById("cfgLogRetention").value=c.logRetentionDays||7;
+    document.getElementById("cfgLogDetail").value=c.logDetail||"full";
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
@@ -1818,20 +1898,46 @@ async function openLogs(){
 function closeLogs(){
   document.getElementById("logModal").classList.remove("on");
 }
+function buildLogFilterQuery(){
+  const p=new URLSearchParams();
+  const k=document.getElementById("logKeyFilter")?.value.trim();
+  if(k)p.set("key",k);
+  const s=document.getElementById("logStatusFilter")?.value.trim();
+  if(s)p.set("status",s);
+  const m=document.getElementById("logModelFilter")?.value.trim();
+  if(m)p.set("model",m);
+  const t=document.getElementById("logTimeFilter")?.value;
+  if(t){const ms=parseInt(t)*60000;p.set("since",Date.now()-ms)}
+  p.set("limit","500");
+  return p.toString();
+}
 async function loadLogs(){
   try{
-    const r=await fetch("http://localhost:3456/__logs?limit=200");
+    const q=buildLogFilterQuery();
+    const r=await fetch("http://localhost:3456/__logs?"+q);
     if(!r.ok)return;
     const logs=await r.json();
-    const tbody=document.getElementById("logBody");
-    tbody.innerHTML=logs.slice().reverse().map(e=>{
-      const s=e.status||0;
-      const sc="log-s"+s;
-      const tm=new Date(e.time);
-      const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
-      return '<tr><td class="log-time">'+ts+'</td><td>#'+e.idx+'</td><td>'+e.method+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td><td class="log-status '+sc+'">'+s+'</td><td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td><td class="log-dur">'+fmtDur(e.duration||0)+'</td><td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td></tr>';
-    }).join("")||'<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">暂无请求记录</td></tr>';
+    renderLogs(logs);
   }catch(e){}
+}
+function reloadLogs(){loadLogs()}
+function exportLogs(){
+  const q=buildLogFilterQuery();
+  window.open("http://localhost:3456/__logs?"+q+"&format=csv");
+}
+function makeLogRow(e){
+  const s=e.status||0;
+  const sc="log-s"+s;
+  const tm=new Date(e.time);
+  const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
+  const mdl=e.overrideModel||e.reqModel||"";
+  return '<td class="log-time">'+ts+'</td><td>#'+e.idx+'</td><td>'+e.method+'</td><td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(mdl)+'">'+esc(mdl)+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td><td class="log-status '+sc+'">'+s+'</td><td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td><td class="log-dur">'+fmtDur(e.duration||0)+'</td><td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td>';
+}
+function renderLogs(logs){
+  const tbody=document.getElementById("logBody");
+  tbody.innerHTML=logs.slice().reverse().map(e=>{
+    return '<tr>'+makeLogRow(e)+'</tr>';
+  }).join("")||'<tr><td colspan="10" style="text-align:center;color:#64748b;padding:20px">暂无请求记录</td></tr>';
 }
 
 function openConfig(){loadConfigUI();document.getElementById("configModal").classList.add("on")}
@@ -1849,7 +1955,10 @@ async function saveConfig(){
     roundRobin:document.getElementById("cfgRoundRobin").checked,
     enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
-    lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s)
+    lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
+    logFile:document.getElementById("cfgLogFile").checked,
+    logRetentionDays:parseInt(document.getElementById("cfgLogRetention").value)||7,
+    logDetail:document.getElementById("cfgLogDetail").value
   };
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
@@ -2147,10 +2256,77 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/__logs") {
     if (req.method === "GET") {
-      const limit = Math.min(parseInt(req.url.split("?limit=")[1] || "100", 10), MAX_LOG);
-      const last = requestLog.slice(-limit);
+      const u = new URL(req.url, "http://x");
+      const limit = Math.min(parseInt(u.searchParams.get("limit") || "200", 10), MAX_LOG);
+      const key = u.searchParams.get("key");
+      const status = u.searchParams.get("status");
+      const model = u.searchParams.get("model");
+      const since = u.searchParams.get("since");
+      const until = u.searchParams.get("until");
+      const offset = parseInt(u.searchParams.get("offset") || "0", 10);
+      const format = u.searchParams.get("format");
+      let entries = requestLog;
+      if (since) { const t = parseInt(since, 10); if (t) entries = entries.filter(e => e.time >= t); }
+      if (until) { const t = parseInt(until, 10); if (t) entries = entries.filter(e => e.time <= t); }
+      if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length) entries = entries.filter(e => keys.includes(e.idx)); }
+      if (status) { entries = entries.filter(e => { const s = e.status || 0; if (status.endsWith("xx")) { const prefix = parseInt(status, 10); return !isNaN(prefix) && Math.floor(s / 100) === prefix; } return String(s) === status; }); }
+      if (model) { const ml = model.toLowerCase(); entries = entries.filter(e => (e.reqModel||"").toLowerCase().includes(ml) || (e.overrideModel||"").toLowerCase().includes(ml)); }
+      entries = entries.slice(-limit - offset, entries.length - offset);
+      if (entries.length > limit) entries = entries.slice(entries.length - limit);
+      if (format === "csv") {
+        const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel";
+        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", e.reqModel||"", e.overrideModel||""].join(","));
+        res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
+        res.end(header + "\n" + rows.join("\n"));
+        return;
+      }
       res.writeHead(200, cors);
-      res.end(JSON.stringify(last, null, 2));
+      res.end(JSON.stringify(entries, null, 2));
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__export-logs") {
+    if (req.method === "GET") {
+      const u = new URL(req.url, "http://x");
+      const date = u.searchParams.get("date");
+      const key = u.searchParams.get("key");
+      const status = u.searchParams.get("status");
+      const model = u.searchParams.get("model");
+      const format = u.searchParams.get("format") || "csv";
+      const entries = [];
+      function filterEntry(e) {
+        if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length && !keys.includes(e.idx)) return false; }
+        if (status) { const s = e.status || 0; if (status.endsWith("xx")) { const p = parseInt(status, 10); if (isNaN(p) || Math.floor(s / 100) !== p) return false; } else if (String(s) !== status) return false; }
+        if (model) { const ml = model.toLowerCase(); if (!(e.reqModel||"").toLowerCase().includes(ml) && !(e.overrideModel||"").toLowerCase().includes(ml)) return false; }
+        return true;
+      }
+      if (date) {
+        const filePath = path.join(LOG_DIR, date + ".jsonl");
+        try {
+          if (fs.existsSync(filePath)) {
+            const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n");
+            for (const line of lines) {
+              if (!line) continue;
+              try { const e = JSON.parse(line); if (filterEntry(e)) entries.push(e); } catch(e2) {}
+            }
+          }
+        } catch(e) { /* file not found */ }
+      } else {
+        for (const e of requestLog) { if (filterEntry(e)) entries.push(e); }
+      }
+      if (format === "jsonl") {
+        res.writeHead(200, { ...cors, "content-type": "application/x-ndjson", "content-disposition": "attachment; filename=proxy-logs.jsonl" });
+        res.end(entries.map(e => JSON.stringify(e)).join("\n"));
+        return;
+      }
+      const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel";
+      const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", e.reqModel||"", e.overrideModel||""].join(","));
+      res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
+      res.end(header + "\n" + rows.join("\n"));
       return;
     }
     res.writeHead(405, cors);
@@ -2388,6 +2564,8 @@ const server = http.createServer((req, res) => {
 });
 
 server.on("error", (e) => console.error(`[proxy] ${e.message}`));
+
+cleanOldLogs();
 
 server.listen(PORT, "localhost", () => {
   setupWebSocket(server);
