@@ -173,7 +173,25 @@ function tzWeekPeriod(tz) {
   const wn = Math.ceil((((date - ys) / 86400000) + 1) / 7);
   return `${y}-W${String(wn).padStart(2, "0")}`;
 }
-function keyPeriod(reset) {
+function getWeeklyEpoch(act, resetDay) {
+  const d = new Date(act);
+  if (resetDay !== undefined && resetDay !== null && resetDay !== "") {
+    const jsDay = d.getDay(); // 0=Sun...6=Sat
+    const isoDay = jsDay === 0 ? 7 : jsDay; // 1=Mon...7=Sun
+    const diff = (isoDay - Number(resetDay) + 7) % 7;
+    d.setDate(d.getDate() - diff);
+    d.setHours(0, 0, 0, 0);
+  }
+  return d.getTime();
+}
+function keyPeriod(reset, idx) {
+  if (reset === "weekly" && idx !== undefined) {
+    const ks = getKeyState(idx);
+    const acct = accounts[idx];
+    const act = ks.activatedAt || Date.now();
+    const epoch = getWeeklyEpoch(act, acct ? acct.resetDay : null);
+    return String(Math.floor((Date.now() - epoch) / (7 * 86400000)));
+  }
   return reset === "weekly" ? tzWeekPeriod(TZ) : tzDate(TZ);
 }
 function isConsecutivePeriod(prev, curr, reset) {
@@ -182,9 +200,7 @@ function isConsecutivePeriod(prev, curr, reset) {
     return (c - p) === 86400000;
   }
   if (reset === "weekly") {
-    const r = /(\d+)-W(\d+)/;
-    const [, py, pw] = prev.match(r), [, cy, cw] = curr.match(r);
-    return (+cy * 100 + +cw) - (+py * 100 + +pw) === 1;
+    return Number(curr) - Number(prev) === 1;
   }
   return false;
 }
@@ -244,6 +260,16 @@ function loadState() {
   } catch {
     state = { keys: [], activeKey: null, dailyLog: {} };
   }
+  // Migrate old ISO week failPeriod (e.g. "2026-W28") → null for new per-key cycle format
+  if (state.keys) {
+    for (const ks of state.keys) {
+      if (ks.failPeriod && /^\d{4}-W\d{2}$/.test(ks.failPeriod)) {
+        ks.failPeriod = null;
+        ks.failCode = null;
+        ks.failTime = null;
+      }
+    }
+  }
 }
 let _saveThrottle = 0;
 function saveState(force) {
@@ -268,6 +294,7 @@ function getKeyState(idx) {
   const ks = state.keys[idx];
   if (ks.status === undefined) ks.status = "active";
   if (ks.failPeriod === undefined) ks.failPeriod = null;
+  if (ks.activatedAt === undefined) ks.activatedAt = Date.now();
   if (ks.failCount === undefined) ks.failCount = 0;
   if (!ks.stats) {
     ks.stats = { totalRequests: 0, successRequests: 0, failRequests: 0, inputTokens: 0, outputTokens: 0, inputBytes: 0, outputBytes: 0, lastUsed: null, daily: {}, hourly: {}, totalDuration: 0, totalTtfb: 0, totalCost: 0 };
@@ -343,7 +370,7 @@ function markSuccess(idx) {
 function markFailure(idx, code) {
   const ks = getKeyState(idx);
   const acct = accounts[idx];
-  const curr = keyPeriod(acct.reset);
+  const curr = keyPeriod(acct.reset, idx);
 
   if (acct.reset !== "never") {
     if (ks.failPeriod && ks.failPeriod !== curr && isConsecutivePeriod(ks.failPeriod, curr, acct.reset)) {
@@ -397,14 +424,19 @@ function inCooldown(idx) {
   if (ks.status === "discarded" || ks.status === "locked") return true;
   if (acct.reset === "never") return !!ks.failCode;
   if (!ks.failCode || !ks.failPeriod) return false;
-  const curr = keyPeriod(acct.reset);
+  const curr = keyPeriod(acct.reset, idx);
   return ks.failPeriod === curr;
 }
 
-function pickKey() {
+function pickKey(model) {
+  function matchesModel(a) {
+    if (!model) return true;
+    if (!a.models || !a.models.length) return true;
+    return a.models.includes(model);
+  }
   // Boost: 持续高优
   if (_boostKey >= 0 && _boostKey < accounts.length) {
-    if (accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
+    if (matchesModel(accounts[_boostKey]) && accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
       return _boostKey;
     }
     // boosted key no longer available, auto-clear
@@ -416,6 +448,7 @@ function pickKey() {
     const groups = [[], [], []];
     for (let i = 0; i < accounts.length; i++) {
       if (accounts[i].status !== "active") continue;
+      if (!matchesModel(accounts[i])) continue;
       const ks = getKeyState(i);
       if (ks.status === "discarded" || ks.status === "locked") continue;
       groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
@@ -435,6 +468,7 @@ function pickKey() {
   const groups = [[], [], []];
   for (let i = 0; i < accounts.length; i++) {
     if (accounts[i].status !== "active") continue;
+    if (!matchesModel(accounts[i])) continue;
     const ks = getKeyState(i);
     if (ks.status !== "discarded" && ks.status !== "locked") groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
   }
@@ -471,7 +505,9 @@ function processQueue() {
       }
       continue;
     }
-    const idx = pickKey();
+    let rmodel = null;
+    try { const parsed = JSON.parse(r.body.toString()); rmodel = parsed.model || null; } catch(e) {}
+    const idx = pickKey(rmodel);
     if (idx < 0 || inCooldown(idx)) {
       requestQueue.push(r);
       continue;
@@ -497,6 +533,8 @@ function loadAccounts() {
     remark: a.remark || "",
     status: a.status || "active",
     priority: a.priority || 0,
+    models: a.models || [],
+    resetDay: a.resetDay || null,
   }));
   if (!accounts.length) { console.error("[proxy] No valid accounts, reverting"); accounts = oldAccounts; return; }
   loadState();
@@ -670,6 +708,8 @@ function forwardWithPriority(method, headers, body, clientRes, pathname) {
   const activeCount = accounts.filter(a => a.status === "active").length;
   let retries = 0;
   const MAX_RETRIES = Math.max(activeCount * 2, 10);
+  let model = null;
+  try { const parsed = JSON.parse(body.toString()); model = parsed.model || null; } catch(e) {}
   function attempt() {
     if (retries >= MAX_RETRIES) {
       if (responded) return;
@@ -679,7 +719,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname) {
       return;
     }
     retries++;
-    const idx = pickKey();
+    const idx = pickKey(model);
     if (responded) return;
     if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
       if (idx < 0) {
@@ -753,6 +793,9 @@ function buildStatusData() {
       url: a.url,
       reset: a.reset,
       remark: a.remark || "",
+      models: a.models || [],
+      resetDay: a.resetDay || null,
+      activatedAt: ks.activatedAt || null,
       available: !inCooldown(i),
       status: ks.status || "active",
       failCode: ks.failCode,
@@ -772,6 +815,14 @@ function buildStatusData() {
       sliding5mRate: slidingRate(i, 300000),
       sliding1hRate: slidingRate(i, 3600000),
       totalCost: s.totalCost || 0,
+      nextResetDay: (function(){
+        if (a.reset !== "weekly") return null;
+        const act = ks.activatedAt || Date.now();
+        const epoch = getWeeklyEpoch(act, a.resetDay);
+        const cyc = Math.floor((Date.now() - epoch) / (7 * 86400000));
+        const next = epoch + (cyc + 1) * 7 * 86400000;
+        return ["周日","周一","周二","周三","周四","周五","周六"][new Date(next).getDay()];
+      })(),
       ...s,
       daily: s.daily || {},
       hourly: s.hourly || {},
@@ -899,7 +950,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .meter-fill{height:100%;border-radius:2px;transition:width .3s}
 .modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:100;padding:clamp(8px,2vw,20px)}
 .modal.on{display:flex;align-items:flex-start;justify-content:center}
-.mcontent{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:clamp(10px,2vw,16px);max-width:960px;width:100%;max-height:90vh;overflow-y:auto;margin-top:10px}
+.mcontent{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:clamp(10px,2vw,16px);max-width:1200px;width:100%;max-height:90vh;overflow-y:auto;margin-top:10px}
 .mtitle{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:clamp(14px,2vw,16px);font-weight:700}
 .mtable{width:100%;border-collapse:collapse;font-size:clamp(11px,1.4vw,12px)}
 .mtable th,.mtable td{padding:4px 6px;text-align:left;border-bottom:1px solid #334155}
@@ -971,6 +1022,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <input id="searchBox" placeholder="ID/备注/地址..." style="width:120px">
   <label>状态码</label>
   <input id="statusCodeBox" placeholder="如 401" style="width:60px">
+  <label>模型</label>
+  <input id="modelSearchBox" placeholder="模型名" style="width:80px">
   <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
   <span style="color:#94a3b8;font-size:11px;margin-left:8px" id="filterCount"></span>
 </div>
@@ -994,6 +1047,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
   <input id="mgrSearch" placeholder="搜索备注/地址..." oninput="renderMgr()" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px">
   <input id="mgrCodeFilter" placeholder="状态码" oninput="renderMgr()" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" title="按状态码筛选，如 401">
+  <input id="mgrModelFilter" placeholder="指定模型" oninput="renderMgr()" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" title="按指定模型搜索，子串匹配">
   <select id="mgrStatusFilter" onchange="renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
     <option value="">全部状态</option>
     <option value="available">可用</option>
@@ -1022,7 +1076,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:60px">重置</th><th style="width:50px">优先</th><th style="max-width:80px">备注</th><th style="width:80px"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="max-width:80px">备注</th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -1083,7 +1137,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 const L={"daily":"每日","weekly":"每周","never":"永久"};
 const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never"};
 let data=[],curDate="",fullKeys={};
-let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="";
+let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="",modelSQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0;
@@ -1256,8 +1310,9 @@ function render(){
   else if(filterBy==="cooldown")filtered=filtered.filter(x=>!x.available&&x.status!=="discarded");
   else if(filterBy==="discarded")filtered=filtered.filter(x=>x.status==="discarded");
   else if(filterBy==="shielded")filtered=filtered.filter(x=>x.shielded);
-  if(searchQ){const q=searchQ.toLowerCase();filtered=filtered.filter(x=>String(x.idx).includes(q)||(x.remark||"").toLowerCase().includes(q)||x.url.toLowerCase().includes(q))}
+  if(searchQ){const q=searchQ.toLowerCase();filtered=filtered.filter(x=>String(x.idx).includes(q)||(x.remark||"").toLowerCase().includes(q)||x.url.toLowerCase().includes(q)||(x.models||[]).some(m=>m.toLowerCase().includes(q)))}
   if(statusCodeQ){filtered=filtered.filter(x=>x.failCode&&String(x.failCode)===statusCodeQ)}
+  if(modelSQ){const q=modelSQ.toLowerCase();filtered=filtered.filter(x=>(x.models||[]).some(m=>m.toLowerCase().includes(q)))}
   const resetType=document.getElementById("resetFilter").value;
   if(resetType!=="all")filtered=filtered.filter(x=>x.reset===resetType);
   document.getElementById("filterCount").textContent="显示 "+filtered.length+" / "+data.length+" 个";
@@ -1287,7 +1342,7 @@ function render(){
       const r=a.reset;
       if(r==="never"){cd="永久失效"}
       else if(r==="daily"){cd="本日已用完，明天0点重置"}
-      else{cd="本周已用完，下周一0点重置"}
+      else{cd="本周已用完，"+(a.nextResetDay||"周一")+"0点重置"}
     }
     const rg=a.remark?'<div class="rem">📝 '+esc(a.remark)+'</div>':"";
     const req=a.totalRequests||0,suc=a.successRequests||0;
@@ -1319,6 +1374,7 @@ function render(){
       '<div class="row"><span class="label">Key</span><span class="val"><span class="key-mask" data-idx="'+a.idx+'" onclick="var i=this.dataset.idx,f=fullKeys[i];if(!f){loadKeys();var t=this;setTimeout(function(){f=fullKeys[i];if(f)t.textContent=t.textContent===maskKey(f)?f:maskKey(f)},300)}else this.textContent=this.textContent===maskKey(f)?f:maskKey(f)">'+a.key+'</span></span></div>'+
       '<div class="row"><span class="label">地址</span><span class="val uurl">'+esc(a.url)+'</span></div>'+
       rg+
+      (a.models&&a.models.length?'<div class="row"><span class="label">指定模型</span><span class="val">'+esc(a.models.join(', '))+'</span></div>':'<div class="row"><span class="label">指定模型</span><span class="val" style="color:#64748b">通用</span></div>')+
       (a.failCode?'<div class="row"><span class="label">失败码</span><span class="val" title="'+(FAIL_MEAN[a.failCode]||'')+'">'+a.failCode+'</span></div>':"")+
       (a.failTime?'<div class="row"><span class="label">最后失败</span><span class="val" style="color:#f87171">'+fmtDur(Date.now()-a.failTime)+'前</span></div>':"")+
       (cd?'<div class="row"><span class="label">冷却剩余</span><span class="val cooldown">'+cd+'</span></div>':"")+
@@ -1413,6 +1469,7 @@ document.getElementById("resetFilter").addEventListener("change",function(){rend
 document.getElementById("trendRange").addEventListener("change",function(){trendRange=this.value;render()});
 document.getElementById("searchBox").addEventListener("input",function(){searchQ=this.value;render()});
 document.getElementById("statusCodeBox").addEventListener("input",function(){statusCodeQ=this.value.trim();render()});
+document.getElementById("modelSearchBox").addEventListener("input",function(){modelSQ=this.value.trim();render()});
 
 let mgrKeys=[];
 let logInterval=null;
@@ -1450,6 +1507,7 @@ function unlockKey(i){
 function renderMgr(){
   const q=(document.getElementById("mgrSearch").value||"").toLowerCase();
   const codeFilter=document.getElementById("mgrCodeFilter").value.trim();
+  const mf=(document.getElementById("mgrModelFilter").value||"").toLowerCase().trim();
   const statusFilter=document.getElementById("mgrStatusFilter").value;
   const tbody=document.getElementById("mgrBody");
   tbody.innerHTML="";
@@ -1458,6 +1516,7 @@ function renderMgr(){
     const k=mgrKeys[i];
     if(q&&!(k.remark||"").toLowerCase().includes(q)&&!(k.url||"").toLowerCase().includes(q)&&!(k.key||"").toLowerCase().includes(q)&&!String(k._failCode||"").includes(q))continue;
     if(codeFilter&&String(k._failCode||"")!==codeFilter)continue;
+    if(mf&&!((k.models||k._models||[])||[]).some(m=>m.toLowerCase().includes(mf)))continue;
     if(statusFilter==="available"&&k._available!==true)continue;
     if(statusFilter==="cooldown"&&k._available!==false)continue;
     if(statusFilter==="discarded"&&k.status!=="discarded")continue;
@@ -1478,7 +1537,7 @@ function renderMgr(){
     const hdr=document.createElement("tr");
     hdr.style.background="#1e293b";hdr.style.cursor="pointer";
     hdr.onclick=function(){toggleGroup(g)};
-    hdr.innerHTML='<td colspan="9" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
+    hdr.innerHTML='<td colspan="10" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
       (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')</td>';
     tbody.appendChild(hdr);
     if(collapsed)continue;
@@ -1507,8 +1566,20 @@ function renderMgr(){
         '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
         '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
         '<td style="text-align:center">'+fcBadge+'</td>'+
-        '<td><select class="kreset"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select></td>'+
+        '<td style="display:flex;gap:4px;align-items:center">'+
+        '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\'"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
+        '<select class="kresetday" style="display:'+(k.reset==="weekly"?"inline-block":"none")+';width:60px;font-size:10px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
+          '<option value="">自动</option>'+
+          '<option value="1"'+(k.resetDay=="1"?" selected":"")+'>周一</option>'+
+          '<option value="2"'+(k.resetDay=="2"?" selected":"")+'>周二</option>'+
+          '<option value="3"'+(k.resetDay=="3"?" selected":"")+'>周三</option>'+
+          '<option value="4"'+(k.resetDay=="4"?" selected":"")+'>周四</option>'+
+          '<option value="5"'+(k.resetDay=="5"?" selected":"")+'>周五</option>'+
+          '<option value="6"'+(k.resetDay=="6"?" selected":"")+'>周六</option>'+
+          '<option value="7"'+(k.resetDay=="7"?" selected":"")+'>周日</option>'+
+        '</select></td>'+
         '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
+        '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="指定模型名" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="逗号分隔，如 gpt-5.5, gpt-5.4-mini"></td>'+
         '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"></td>'+
         '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
           '<span class="del" onclick="testKey('+i+')" title="#'+(i+1)+' 测试连通性">🔍</span>'+
@@ -1521,7 +1592,7 @@ function renderMgr(){
   }
   document.getElementById("mgrSelectAll").checked=false;
 }
-function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0});renderMgr()}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],resetDay:void 0});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
 async function resetKeyStatus(i){
   try{
@@ -1538,6 +1609,7 @@ function delKeyRow(i){
 function clearMgrSearch(){
   document.getElementById("mgrSearch").value="";
   document.getElementById("mgrCodeFilter").value="";
+  document.getElementById("mgrModelFilter").value="";
   document.getElementById("mgrStatusFilter").value="";
   renderMgr();
 }
@@ -1573,7 +1645,7 @@ function batchDeleteMgr(){
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],resetDay:k.resetDay||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -1585,8 +1657,13 @@ function collectMgr(){
     result[sidx].key=key;
     result[sidx].url=r.querySelector(".kurl").value.trim();
     result[sidx].reset=r.querySelector(".kreset").value;
+    const resetDayEl=r.querySelector(".kresetday");
+    result[sidx].resetDay=resetDayEl?resetDayEl.value||void 0:void 0;
     const prioEl=r.querySelector(".kprio");
     result[sidx].priority=prioEl?parseInt(prioEl.value)||0:result[sidx].priority;
+    const modelsEl=r.querySelector(".kmodels");
+    const raw=modelsEl?modelsEl.value.trim():"";
+    result[sidx].models=raw?raw.split(",").map(s=>s.trim()).filter(Boolean):[];
     result[sidx].remark=r.querySelector(".kremark").value.trim();
     result[sidx].status=mgrKeys[sidx].status&&mgrKeys[sidx].status!=="active"?mgrKeys[sidx].status:void 0;
   }
@@ -1814,9 +1891,10 @@ const server = http.createServer((req, res) => {
       return;
     }
     if (req.method === "PUT") {
-      let body = "";
-      req.on("data", c => body += c);
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const c = JSON.parse(body);
           const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
@@ -1844,9 +1922,10 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/__test-key") {
     if (req.method === "POST") {
-      let body = "";
-      req.on("data", c => body += c);
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const { key, url } = JSON.parse(body);
           if (!key || !url) throw new Error("key and url required");
@@ -1920,16 +1999,17 @@ const server = http.createServer((req, res) => {
         const ks = i < accounts.length ? getKeyState(i) : state.keys[i];
         if (ks && ks.status === "locked") raw[i]._locked = true;
         if (ks && (ks.failCode || ks.failCode === 0)) raw[i]._failCode = ks.failCode;
-        if (i < accounts.length && accounts[i]) raw[i]._available = !inCooldown(i);
+        if (i < accounts.length && accounts[i]) { raw[i]._available = !inCooldown(i); if (accounts[i].models && accounts[i].models.length) raw[i]._models = accounts[i].models; }
       }
       res.writeHead(200, cors);
       res.end(JSON.stringify(raw, null, 2));
       return;
     }
     if (req.method === "PUT") {
-      let body = "";
-      req.on("data", c => body += c);
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const arr = JSON.parse(body);
           if (!Array.isArray(arr)) throw new Error("must be an array");
@@ -1956,9 +2036,10 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/__reset-key") {
     if (req.method === "POST") {
-      let body = "";
-      req.on("data", c => body += c);
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const { idx } = JSON.parse(body);
           const ai = idx - 1;
@@ -2002,9 +2083,10 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/__patch-key-status") {
     if (req.method === "POST") {
-      let body = "";
-      req.on("data", c => body += c);
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const { idx, status } = JSON.parse(body);
           if (typeof idx !== "number" || !["active","shielded"].includes(status)) throw new Error("invalid idx or status");
@@ -2033,9 +2115,10 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/__boost-key") {
     if (req.method === "POST") {
-      let body = "";
-      req.on("data", c => body += c);
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const { idx } = JSON.parse(body);
           if (typeof idx !== "number" || idx < 1 || idx > accounts.length) throw new Error("invalid idx");
@@ -2065,9 +2148,10 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/__verify-model") {
     if (req.method === "POST") {
-      let body = "";
-      req.on("data", c => body += c);
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const { idx, key, url } = JSON.parse(body);
           let targetKey, targetUrl;

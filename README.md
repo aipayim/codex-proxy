@@ -48,12 +48,16 @@ npm install
 #   remark: 备注（可选）
 #   status: 可选字段，active / shielded / deleted
 #   priority: 可选字段，整数（默认 0），数值越大调度优先级越高（同 reset 类型内优先）
+#   models:   可选字段，数组，指定该 Key 可处理的模型名列表。
+#            未设置或空数组时匹配所有模型（通配）。设置后仅路由匹配的模型请求到此 Key。
+#   resetDay: 可选字段，1-7（1=周一…7=周日）。仅对 weekly 生效，指定每周哪天 00:00 重置。
+#            未设置时按 Key 首次启用日自动对齐。
 #
 # 示例：
 # [
-#   {"key": "sk-xxx...", "url": "https://api.fenno.ai",   "reset": "weekly", "remark": "主力 Key"},
-#   {"key": "sk-yyy...", "url": "https://apikey.tech/v1",  "reset": "daily",  "remark": "备用额度卡"},
-#   {"key": "sk-zzz...", "url": "http://199.115.228.60:8080", "reset": "never", "remark": "一次性", "status": "shielded"}
+#   {"key": "sk-xxx...", "url": "https://api.openai.com/v1",   "reset": "weekly", "remark": "主力 Key"},
+#   {"key": "sk-yyy...", "url": "https://api.provider.com/v1", "reset": "daily",  "remark": "备用额度卡", "models": ["gpt-5.5", "gpt-5.4-mini"]},
+#   {"key": "sk-zzz...", "url": "http://proxy.example.com:8080", "reset": "never",  "remark": "一次性", "status": "shielded"}
 # ]
 ```
 
@@ -145,6 +149,9 @@ codex
 | **第一层** | 额度重置周期 `reset` | daily → weekly → never |
 | **第二层** | 用户设置的 `priority` 数值 | 同 reset 组内，数值越大越优先，不限上限（默认 0） |
 
+> **每周重置说明**：自 v2 起，每周重置不再按固定自然周（周一 00:00），而是每个 Key **独立按启用时间算 7 天**。
+> 例如周三启用的 Key → 下周三 00:00 重置。可通过 `resetDay` 字段（或管理面板「重置日」）固定周几重置。
+
 两种调度模式均遵循此双层顺序：
 
 ### 默认模式（`roundRobin: false`）
@@ -171,6 +178,45 @@ codex
 
 两种模式中，可用 Key 数（`activeCount`）仅统计 `status === "active"` 的 Key，
 屏蔽（shielded）和软删除（deleted）不计入。
+
+## 模型路由
+
+支持按请求中的 `model` 字段自动路由到支持该模型的 Key（代理从请求 body 中解析 `model` 字段）。
+
+### 配置
+
+在 `keys.json` 中为 Key 添加 `models` 数组：
+
+```json
+{"key": "sk-xxx...", "url": "https://...", "models": ["gpt-5.5", "gpt-5.4-mini"], "reset": "weekly"}
+```
+
+| `models` 字段 | 行为 |
+|---|---|
+| 未设置或 `[]` | 匹配所有模型（通配/向后兼容） |
+| `["gpt-5.5", "gpt-5.4"]` | 仅匹配列出的模型 |
+
+### 路由逻辑
+
+1. `pickKey()` 收到请求中的 `model` 参数
+2. 过滤 Key 池：`models` 未设置或包含该模型的 Key 进入候选池
+3. 在候选池内按原有优先级/轮询逻辑选择最优 Key
+4. 如无任何 Key 匹配 → 回落通配 Key（`models` 未设置的 Key）
+5. 如无通配 Key → `502 All keys exhausted`
+
+### 使用方式
+
+```bash
+# Codex CLI 指定模型（自动路由到支持该模型的 Key）
+codex exec -m gpt-5.6-sol "写个脚本"
+
+# 或修改 ~/.codex/config.toml
+model = "gpt-5.6-sol"
+```
+
+### 管理面板
+
+「管理 Key」弹窗每行新增「指定模型」输入框（逗号分隔），保存后生效，无需重启。
 
 ## 自动切换故障 Key
 
@@ -269,7 +315,7 @@ codex
 最近 500 条请求记录，WebSocket 实时推送，时间/Key/方法/路径/状态码/流量/延迟
 
 ### Key 管理
-增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
+增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 
 ### 系统配置
 Webhook URL、价格参数、桌面通知/声音开关、🔄 重启代理按钮
@@ -377,7 +423,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 
 ```json
 {
-  "webhookUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx",
+  "webhookUrl": "https://hooks.example.com/webhook?key=your_key_here",
   "prices": { "inputPer1M": 5, "outputPer1M": 15 },
   "bytesPerToken": 3,
   "notifications": { "sound": true, "desktop": true },
