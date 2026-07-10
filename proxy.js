@@ -1071,6 +1071,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div id="batchTestSummary" style="margin-top:4px;color:#94a3b8"></div>
   <div style="margin-top:6px;display:flex;gap:4px">
     <button class="btn" style="font-size:11px;display:none" id="batchTestResetBtn" onclick="batchTestResetPassed()">🔄 重置通过测试的 Key</button>
+    <button class="btn" style="font-size:11px;display:none" id="batchTestResetAllBtn" onclick="batchTestResetAll()">🔄 重置所有 Key 的状态码</button>
     <button class="btn" style="font-size:11px" onclick="document.getElementById('batchTestResults').style.display='none'">收起</button>
   </div>
 </div>
@@ -1718,7 +1719,7 @@ async function testKey(i){
     alert("Key #"+(i+1)+" 测试请求失败: "+e.message)
   }
 }
-let batchTestPassed=[];
+let batchTestPassed=[],batchTestResults=[];
 async function batchTestMgr(){
   const sel=getSelectedMgr();
   if(!sel.length){alert("请先勾选要测试的 Key");return}
@@ -1726,26 +1727,32 @@ async function batchTestMgr(){
   const list=document.getElementById("batchTestList");
   const summary=document.getElementById("batchTestSummary");
   const resetBtn=document.getElementById("batchTestResetBtn");
+  const resetAllBtn=document.getElementById("batchTestResetAllBtn");
   if(!area||!list)return;
-  batchTestPassed=[];
+  batchTestPassed=[];batchTestResults=[];
   area.style.display="block";
   list.innerHTML="";
   summary.textContent="测试中...";
   resetBtn.style.display="none";
+  if(resetAllBtn)resetAllBtn.style.display="none";
   for(const i of sel){
     const k=mgrKeys[i];
     const line=document.createElement("div");
     line.id="btr-"+i;
     if(!k||!k.key){line.textContent="⏭️ #"+(i+1)+" Key 为空，跳过";list.appendChild(line);continue}
+    batchTestResults.push({idx:i, ok:false, status:null});
     line.textContent="⏳ #"+(i+1)+" 测试中...";
     list.appendChild(line);
     try{
       const r=await fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:k.key,url:k.url})});
       const j=await r.json();
+      const cr=batchTestResults[batchTestResults.length-1];
       if(j.ok){
         batchTestPassed.push(i);
+        if(cr){cr.ok=true;cr.status=j.status}
         line.textContent="✅ #"+(i+1)+" 成功"+(j.model?" 模型: "+j.model:"")+(j.duration?" ("+j.duration+"ms)":"");
       }else{
+        if(cr)cr.status=j.status||null;
         line.textContent="❌ #"+(i+1)+" 失败: "+(j.error||"未知错误");
       }
     }catch(e){
@@ -1756,6 +1763,7 @@ async function batchTestMgr(){
   const passed=batchTestPassed.length;
   summary.textContent="测试完成 — "+passed+" 个通过, "+(total-passed)+" 个失败";
   if(passed>0){resetBtn.style.display="inline-block";resetBtn.textContent="🔄 重置通过测试的 Key ("+passed+"个)"}
+  if(resetAllBtn&&batchTestResults.length>0){resetAllBtn.style.display="inline-block";resetAllBtn.textContent="🔄 重置所有 Key 的状态码 ("+batchTestResults.length+"个)"}
 }
 function closeBatchTestResults(){
   document.getElementById("batchTestResults").style.display="none";
@@ -1765,6 +1773,18 @@ async function batchTestResetPassed(){
   for(const i of batchTestPassed){
     try{await fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})})}catch(e){}
   }
+  batchTestPassed=[];
+  document.getElementById("batchTestResults").style.display="none";
+  loadKeys();
+}
+async function batchTestResetAll(){
+  if(!batchTestResults.length)return;
+  for(const r of batchTestResults){
+    try{
+      await fetch("http://localhost:3456/__apply-test-result",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:r.idx+1,failCode:r.ok?null:r.status})})
+    }catch(e){}
+  }
+  batchTestResults=[];
   batchTestPassed=[];
   document.getElementById("batchTestResults").style.display="none";
   loadKeys();
@@ -2054,6 +2074,43 @@ const server = http.createServer((req, res) => {
           saveState(true);
           broadcastStatus();
           console.log(`[proxy] #${idx} state reset manually`);
+          res.writeHead(200, cors);
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__apply-test-result") {
+    if (req.method === "POST") {
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
+        try {
+          const { idx, failCode } = JSON.parse(body);
+          if (typeof idx !== "number" || idx < 1 || idx > accounts.length) throw new Error("invalid idx");
+          const ai = idx - 1;
+          if (failCode && failCode !== 200) {
+            markFailure(ai, failCode);
+          } else {
+            const ks = getKeyState(ai);
+            ks.failCode = null;
+            ks.failTime = null;
+            ks.failPeriod = "";
+            ks.failCount = 0;
+            if (ks.status === "discarded" || ks.status === "locked") ks.status = "active";
+            allFailedNotified = false;
+            saveState(true);
+            broadcastStatus();
+          }
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {
