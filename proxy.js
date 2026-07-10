@@ -534,6 +534,7 @@ function loadAccounts() {
     status: a.status || "active",
     priority: a.priority || 0,
     models: a.models || [],
+    model: a.model || null,
     resetDay: a.resetDay || null,
   }));
   if (!accounts.length) { console.error("[proxy] No valid accounts, reverting"); accounts = oldAccounts; return; }
@@ -698,7 +699,17 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone)
     onDone({ switched: true, error: new Error("timeout") });
   });
 
-  if (body) proxyReq.write(body);
+  if (body) {
+    let bodyToWrite = body;
+    if (acct.model) {
+      try {
+        const parsed = JSON.parse(body.toString());
+        parsed.model = acct.model;
+        bodyToWrite = Buffer.from(JSON.stringify(parsed));
+      } catch(e) {}
+    }
+    proxyReq.write(bodyToWrite);
+  }
   proxyReq.end();
 }
 
@@ -742,6 +753,10 @@ function forwardWithPriority(method, headers, body, clientRes, pathname) {
     console.log(`[proxy] → #${idx + 1}${tag} ${a.url}`);
     forwardRequest(idx, method, headers, body, clientRes, pathname, (r) => {
       if (r.switched && usedKeys.size < activeCount) { console.log(`[proxy] #${idx+1} → ${r.code||"err"}, switching...`); return attempt(); }
+      if (r.switched && !clientRes.destroyed && !clientRes.headersSent) {
+        clientRes.writeHead(502, { "content-type": "application/json" });
+        clientRes.end(JSON.stringify({ error: "All keys exhausted" }));
+      }
       responded = true;
     });
   }
@@ -794,6 +809,7 @@ function buildStatusData() {
       reset: a.reset,
       remark: a.remark || "",
       models: a.models || [],
+      model: a.model || null,
       resetDay: a.resetDay || null,
       activatedAt: ks.activatedAt || null,
       available: !inCooldown(i),
@@ -1077,7 +1093,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="max-width:80px">备注</th><th style="width:80px"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th><th style="max-width:80px">备注</th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -1376,6 +1392,7 @@ function render(){
       '<div class="row"><span class="label">地址</span><span class="val uurl">'+esc(a.url)+'</span></div>'+
       rg+
       (a.models&&a.models.length?'<div class="row"><span class="label">指定模型</span><span class="val">'+esc(a.models.join(', '))+'</span></div>':'<div class="row"><span class="label">指定模型</span><span class="val" style="color:#64748b">通用</span></div>')+
+      (a.model?'<div class="row"><span class="label">覆盖模型</span><span class="val" style="color:#fbbf24">'+esc(a.model)+'</span></div>':"")+
       (a.failCode?'<div class="row"><span class="label">失败码</span><span class="val" title="'+(FAIL_MEAN[a.failCode]||'')+'">'+a.failCode+'</span></div>':"")+
       (a.failTime?'<div class="row"><span class="label">最后失败</span><span class="val" style="color:#f87171">'+fmtDur(Date.now()-a.failTime)+'前</span></div>':"")+
       (cd?'<div class="row"><span class="label">冷却剩余</span><span class="val cooldown">'+cd+'</span></div>':"")+
@@ -1538,7 +1555,7 @@ function renderMgr(){
     const hdr=document.createElement("tr");
     hdr.style.background="#1e293b";hdr.style.cursor="pointer";
     hdr.onclick=function(){toggleGroup(g)};
-    hdr.innerHTML='<td colspan="10" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
+    hdr.innerHTML='<td colspan="11" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
       (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')</td>';
     tbody.appendChild(hdr);
     if(collapsed)continue;
@@ -1581,6 +1598,7 @@ function renderMgr(){
         '</select></td>'+
         '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
         '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="指定模型名" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="逗号分隔，如 gpt-5.5, gpt-5.4-mini"></td>'+
+        '<td><input class="kmodel" value="'+esc(k.model||"")+'" placeholder="覆盖模型" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="非空时转发请求时强制替换 model 为此值"></td>'+
         '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"></td>'+
         '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
           '<span class="del" onclick="testKey('+i+')" title="#'+(i+1)+' 测试连通性">🔍</span>'+
@@ -1593,7 +1611,7 @@ function renderMgr(){
   }
   document.getElementById("mgrSelectAll").checked=false;
 }
-function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],resetDay:void 0});renderMgr()}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
 async function resetKeyStatus(i){
   try{
@@ -1646,7 +1664,7 @@ function batchDeleteMgr(){
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],resetDay:k.resetDay||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,resetDay:k.resetDay||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -1665,6 +1683,8 @@ function collectMgr(){
     const modelsEl=r.querySelector(".kmodels");
     const raw=modelsEl?modelsEl.value.trim():"";
     result[sidx].models=raw?raw.split(",").map(s=>s.trim()).filter(Boolean):[];
+    const modelEl=r.querySelector(".kmodel");
+    result[sidx].model=modelEl?modelEl.value.trim()||null:result[sidx].model;
     result[sidx].remark=r.querySelector(".kremark").value.trim();
     result[sidx].status=mgrKeys[sidx].status&&mgrKeys[sidx].status!=="active"?mgrKeys[sidx].status:void 0;
   }
