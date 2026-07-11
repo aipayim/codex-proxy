@@ -125,6 +125,7 @@ function scheduleDailyRecover(){
 }
 function autoRecover(){
   if (!config.autoRecover && !config.autoRecoverDaily) return;
+  console.log(`[proxy] auto-recover: fired (daily=${config.autoRecoverDaily})`);
   const codes = config.autoRecoverCodes || [];
   const checkDiscarded = config.autoRecoverDiscarded === true;
   const toCheck = [];
@@ -136,7 +137,7 @@ function autoRecover(){
     if (ks.failCode && !codes.includes(ks.failCode)) continue;
     toCheck.push(i);
   }
-  if (!toCheck.length) return;
+  if (!toCheck.length) { console.log(`[proxy] auto-recover: 0 keys to check`); return; }
   console.log(`[proxy] auto-recover: checking ${toCheck.length} key(s)...`);
   toCheck.forEach(i => {
     const acct = accounts[i];
@@ -165,6 +166,8 @@ function autoRecover(){
           saveState();
           broadcastStatus();
           console.log(`[proxy] auto-recover: #${i+1} recovered (was ${ks.status||"cooled"})`);
+        } else {
+          console.log(`[proxy] auto-recover: #${i+1} test returned ${testRes.statusCode}, not recovered`);
         }
       });
     });
