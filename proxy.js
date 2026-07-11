@@ -38,6 +38,8 @@ let lastBroadcast = "{}";
 let allFailedNotified = false;
 let autoRecoverTimer = null;
 let autoRecoverNextTime = 0;
+let autoRecoverDailyTimer = null;
+let autoRecoverDailyNextTime = 0;
 let _rrCursor = 0;
 let _boostKey = -1;
 
@@ -74,6 +76,10 @@ function loadConfig() {
     config.autoRecoverInterval = Math.max(0.5, c.autoRecoverInterval || 1);
     config.autoRecoverCodes = Array.isArray(c.autoRecoverCodes) ? c.autoRecoverCodes : [401,402,403,429,500,502,503,504];
     config.autoRecoverDiscarded = c.autoRecoverDiscarded === true;
+    config.autoRecoverDaily = c.autoRecoverDaily === true;
+    config.autoRecoverDailyDays = Math.max(1, parseInt(c.autoRecoverDailyDays) || 1);
+    config.autoRecoverDailyHour = Math.min(23, Math.max(0, (n=>isNaN(n)?8:n)(parseInt(c.autoRecoverDailyHour))));
+    config.autoRecoverDailyMinute = Math.min(59, Math.max(0, (n=>isNaN(n)?0:n)(parseInt(c.autoRecoverDailyMinute))));
     config.roundRobin = c.roundRobin === true;
     config.enableAutoLock = c.enableAutoLock !== false;
     config.lockAfterFailCount = Math.max(1, c.lockAfterFailCount || 3);
@@ -93,10 +99,32 @@ function loadConfig() {
   } else {
     autoRecoverNextTime = 0;
   }
+  if (autoRecoverDailyTimer) { clearTimeout(autoRecoverDailyTimer); autoRecoverDailyTimer = null; }
+  if (config.autoRecoverDaily) {
+    autoRecoverDailyNextTime = calcNextDailyRun(Date.now(), config.autoRecoverDailyDays, config.autoRecoverDailyHour, config.autoRecoverDailyMinute);
+    scheduleDailyRecover();
+  } else {
+    autoRecoverDailyNextTime = 0;
+  }
 }
 
+function calcNextDailyRun(from, days, hour, min){
+  const d = new Date(from);
+  d.setSeconds(0, 0);
+  d.setHours(hour, min, 0, 0);
+  while (d.getTime() <= from) d.setDate(d.getDate() + days);
+  return d.getTime();
+}
+function scheduleDailyRecover(){
+  const delay = Math.max(0, autoRecoverDailyNextTime - Date.now());
+  autoRecoverDailyTimer = setTimeout(() => {
+    autoRecover();
+    autoRecoverDailyNextTime = calcNextDailyRun(autoRecoverDailyNextTime, config.autoRecoverDailyDays, config.autoRecoverDailyHour, config.autoRecoverDailyMinute);
+    scheduleDailyRecover();
+  }, delay);
+}
 function autoRecover(){
-  if (!config.autoRecover) return;
+  if (!config.autoRecover && !config.autoRecoverDaily) return;
   const codes = config.autoRecoverCodes || [];
   const checkDiscarded = config.autoRecoverDiscarded === true;
   const toCheck = [];
@@ -1182,6 +1210,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><label><input type="checkbox" id="cfgAutoRecover"> 定时检测并恢复</label></div>
   <div style="color:#94a3b8;padding:4px 0">⏱ 探测间隔（小时）</div>
   <div><input id="cfgAutoInterval" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:80px" placeholder="1" title="最小 0.5 小时"></div>
+  <div style="color:#94a3b8;padding:4px 0">📅 固定时间检测</div>
+  <div><label><input type="checkbox" id="cfgAutoRecoverDaily"> 每 <input id="cfgAutoDailyDays" type="number" min="1" max="365" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天 <input id="cfgAutoDailyTime" type="time" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 固定检测</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔢 检测的失败码</div>
   <div><input id="cfgAutoCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="401,402,403,429,500,502,503,504" title="401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时"></div>
   <div style="color:#94a3b8;padding:4px 0">🚫 包含 discarded Key</div>
@@ -1200,7 +1230,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div style="color:#94a3b8;padding:4px 0">🔒 启用自动锁死</div>
   <div><label><input type="checkbox" id="cfgEnableAutoLock" checked> 开启后连续失败达到阈值将自动锁死 Key</label></div>
 </div>
-<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
@@ -1230,7 +1261,7 @@ let data=[],curDate="",fullKeys={};
 let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="",modelSQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
-let autoRecoverNextTime=0;
+let autoRecoverNextTime=0,autoRecoverDailyNextTime=0;
 let collapsedCards={};
 
 async function httpLoad(){
@@ -1290,6 +1321,10 @@ async function loadConfigUI(){
     document.getElementById("cfgSound").checked=c.notifications?.sound!==false;
     document.getElementById("cfgAutoRecover").checked=c.autoRecover!==false;
     document.getElementById("cfgAutoInterval").value=c.autoRecoverInterval||1;
+    document.getElementById("cfgAutoRecoverDaily").checked=c.autoRecoverDaily===true;
+    document.getElementById("cfgAutoDailyDays").value=c.autoRecoverDailyDays||1;
+    const dh=c.autoRecoverDailyHour!=null?c.autoRecoverDailyHour:8,dm=c.autoRecoverDailyMinute!=null?c.autoRecoverDailyMinute:0;
+    document.getElementById("cfgAutoDailyTime").value=String(dh).padStart(2,"0")+":"+String(dm).padStart(2,"0");
     document.getElementById("cfgAutoCodes").value=(c.autoRecoverCodes||[401,402,403,429,500,502,503,504]).join(",");
     document.getElementById("cfgAutoDiscarded").checked=c.autoRecoverDiscarded===true;
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
@@ -1300,6 +1335,7 @@ async function loadConfigUI(){
     document.getElementById("cfgLogDetail").value=c.logDetail||"full";
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
+    if(c.autoRecoverDailyNextTime)autoRecoverDailyNextTime=parseInt(c.autoRecoverDailyNextTime);else autoRecoverDailyNextTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
     updateAutoCountdown();
@@ -1307,11 +1343,15 @@ async function loadConfigUI(){
 }
 function updateAutoCountdown(){
   const el=document.getElementById("cfgAutoCountdown");
-  if(!el)return;
-  if(!autoRecoverNextTime||autoRecoverNextTime<=Date.now()){el.textContent="⏳ 下次检测: --";return;}
-  const diff=Math.ceil((autoRecoverNextTime-Date.now())/1000);
-  const h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;
-  el.textContent="⏳ 下次检测: "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";
+  if(el){
+    if(!autoRecoverNextTime||autoRecoverNextTime<=Date.now()){el.textContent="⏳ 下次检测（间隔）: --";}
+    else{const diff=Math.ceil((autoRecoverNextTime-Date.now())/1000);const h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;el.textContent="⏳ 下次检测（间隔）: "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";}
+  }
+  const dailyEl=document.getElementById("cfgAutoDailyCountdown");
+  if(dailyEl){
+    if(!autoRecoverDailyNextTime||autoRecoverDailyNextTime<=Date.now()){dailyEl.textContent="⏳ 下次检测（固定）: --";}
+    else{const diff=Math.ceil((autoRecoverDailyNextTime-Date.now())/1000);const days=Math.floor(diff/86400);const h=Math.floor((diff%86400)/3600),m=Math.floor((diff%3600)/60),s=diff%60;dailyEl.textContent="⏳ 下次检测（固定）: "+days+"d "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";}
+  }
 }
 
 function renderTrend(){
@@ -1949,6 +1989,10 @@ async function saveConfig(){
     notifications:{desktop:document.getElementById("cfgDesktop").checked,sound:document.getElementById("cfgSound").checked},
     autoRecover:document.getElementById("cfgAutoRecover").checked,
     autoRecoverInterval:parseFloat(document.getElementById("cfgAutoInterval").value)||1,
+    autoRecoverDaily:document.getElementById("cfgAutoRecoverDaily").checked,
+    autoRecoverDailyDays:parseInt(document.getElementById("cfgAutoDailyDays").value)||1,
+    autoRecoverDailyHour:(n=>isNaN(n)?8:n)(parseInt((document.getElementById("cfgAutoDailyTime").value||"08:00").split(":")[0])),
+    autoRecoverDailyMinute:(n=>isNaN(n)?0:n)(parseInt((document.getElementById("cfgAutoDailyTime").value||"08:00").split(":")[1])),
     autoRecoverCodes:(document.getElementById("cfgAutoCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
     autoRecoverDiscarded:document.getElementById("cfgAutoDiscarded").checked,
     roundRobin:document.getElementById("cfgRoundRobin").checked,
@@ -2035,7 +2079,7 @@ const server = http.createServer((req, res) => {
   if (pathname === "/__config") {
     if (req.method === "GET") {
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ ...config, autoRecoverNextTime }, null, 2));
+      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime }, null, 2));
       return;
     }
     if (req.method === "PUT") {
@@ -2049,10 +2093,22 @@ const server = http.createServer((req, res) => {
           Object.assign(cur, c);
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(cur, null, 2));
           const savedNextTime = autoRecoverNextTime;
+          const savedDailyNextTime = autoRecoverDailyNextTime;
           const savedInterval = config.autoRecoverInterval;
+          const savedDailyDays = config.autoRecoverDailyDays;
+          const savedDailyHour = config.autoRecoverDailyHour;
+          const savedDailyMin = config.autoRecoverDailyMinute;
           loadConfig();
           if (config.autoRecover && savedNextTime > Date.now() && savedInterval === config.autoRecoverInterval) {
             autoRecoverNextTime = savedNextTime;
+          }
+          if (config.autoRecoverDaily && savedDailyNextTime > Date.now() &&
+              savedDailyDays === config.autoRecoverDailyDays &&
+              savedDailyHour === config.autoRecoverDailyHour &&
+              savedDailyMin === config.autoRecoverDailyMinute) {
+            autoRecoverDailyNextTime = savedDailyNextTime;
+            if (autoRecoverDailyTimer) clearTimeout(autoRecoverDailyTimer);
+            scheduleDailyRecover();
           }
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true }));

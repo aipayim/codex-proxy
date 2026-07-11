@@ -470,6 +470,10 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "autoRecoverInterval": 1,
   "autoRecoverCodes": [401,402,403,429,500,502,503,504],
   "autoRecoverDiscarded": false,
+  "autoRecoverDaily": false,
+  "autoRecoverDailyDays": 1,
+  "autoRecoverDailyHour": 8,
+  "autoRecoverDailyMinute": 0,
   "roundRobin": false,
   "enableAutoLock": true,
   "lockAfterFailCount": 3,
@@ -492,6 +496,10 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoRecoverInterval` | 探测间隔（小时，最小 0.5） |
 | `autoRecoverCodes` | 需要检测的失败码数组，如 `[401,429,500]` |
 | `autoRecoverDiscarded` | 是否也检测 `discarded` 状态的 Key |
+| `autoRecoverDaily` | 是否启用固定时间检测（true/false，默认 false） |
+| `autoRecoverDailyDays` | 每 N 天检测一次（默认 1） |
+| `autoRecoverDailyHour` | 检测时间：时（0-23，默认 8） |
+| `autoRecoverDailyMinute` | 检测时间：分（0-59，默认 0） |
 | `roundRobin` | 是否启用轮询均摊模式（见「Key 调度顺序」） |
 | `enableAutoLock` | 是否启用自动锁死（true/false，默认 true） |
 | `lockAfterFailCount` | 连续 N 次失败后自动锁死（默认 3） |
@@ -511,6 +519,15 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 - 探测成功（200 OK）→ 自动清除 `failCode`/`failTime`/`failPeriod`，若 `discarded` 恢复 `active`
 - 日志输出 `[proxy] auto-recover: #N recovered`
 - 配置保存后立即生效，无需重启（定时器自动重置）
+
+### 两种模式
+
+| 模式 | 说明 |
+|------|------|
+| **定时检测并恢复**（间隔模式） | 每 N 小时检测一次（默认 1 小时），基于 `setInterval` |
+| **固定时间检测**（日历模式） | 每 N 天的指定 HH:MM 检测一次（默认每天 08:00），基于 `setTimeout` 链 |
+
+两种模式可独立启用/关闭，也可同时开启。同时开启时面板上显示两条独立的倒计时。失败码和 discarded 配置由两种模式共用。
 
 ## 费用估算
 
