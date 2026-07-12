@@ -183,6 +183,19 @@ codex
 
 例：`priority: 10` 的 daily Key 在 daily 组内独享轮询，冷却后自动切换到 daily 组内 `priority: 0` 的 Key 轮询；daily 组全部冷却后切入 weekly 组。
 
+### 每周 Key 按到期日排序
+
+可在系统配置中勾选「每周 Key 按到期日排序」。启用后 `pickKey()` 从 weekly 组选取 Key 时，不再按 priority 排序，而是按**下次重置时间最近优先**：
+
+| 当前日 | 选取顺序 |
+|--------|----------|
+| 周一 | 周二 → 周三 → ... → 周日 → 周一（当天）→ 无 resetDay |
+| 周三 | 周四 → 周五 → ... → 周二 → 周三（当天）→ 无 resetDay |
+
+算法：计算每个 weekly Key 的 `resetDay` 距今天数，**距离下次重置越近的 Key 越先使用**，当天重置的 Key 排在同组最后，`resetDay` 未设置的 Key 排最后。
+
+配置字段：`weeklySortBy`（`"priority"` / `"expiry"`），默认 `"priority"`。
+
 两种模式中，可用 Key 数（`activeCount`）仅统计 `status === "active"` 的 Key，
 屏蔽（shielded）和软删除（deleted）不计入。
 
@@ -329,7 +342,7 @@ codex
 可用数/总数、冷却中、🔒 锁死数、并发请求、总流量、总请求、健康评分、预估费用
 
 ### 排序/筛选/搜索/批量操作
-- 排序：默认 / 健康评分 / 平均延迟 / 5 分钟成功率
+- 排序：默认 / 按到期日（最近→最远）/ 健康评分 / 平均延迟 / 5 分钟成功率
 - 筛选：全部 / 可用 / 冷却中 / 废弃 / 🔒 锁死（与重置筛选可组合使用）
 - 重置筛选：每日重置 / 每周重置 / 永不过期（可与状态筛选组合）
 - 状态码筛选：输入 `401` 等过滤指定失败码的 Key
@@ -342,7 +355,7 @@ codex
 屏蔽 Key 的流量也纳入趋势图统计。
 
 ### Key 卡片
-脱敏显示（点击明文切换）、重置类型徽章、并发徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮、锁死 Key 紫色标记
+脱敏显示（点击明文切换）、重置类型徽章（每周 Key 额外显示具体周几/自动）、并发徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮、锁死 Key 紫色标记
 
 ### 状态栏快捷操作
 - 🔍 测试连通性
@@ -361,7 +374,7 @@ codex
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔄 重启代理按钮
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔄 重启代理按钮
 
 ## API 接口
 
@@ -488,6 +501,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "autoResumeDebounceMinutes": 3,
   "autoResumeProjects": [],
   "cmdPath": "/mnt/c/Windows/System32/cmd.exe",
+  "weeklySortBy": "priority",
   "roundRobin": false,
   "enableAutoLock": true,
   "lockAfterFailCount": 3,
@@ -522,6 +536,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3） |
 | `autoResumeProjects` | 项目列表数组，每项含 name/path/cmd，最多 10 个 |
 | `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
+| `weeklySortBy` | weekly 组排序方式：`"priority"`（按 priority+索引）或 `"expiry"`（按最先到期先使用） |
 | `roundRobin` | 是否启用轮询均摊模式（见「Key 调度顺序」） |
 | `enableAutoLock` | 是否启用自动锁死（true/false，默认 true） |
 | `lockAfterFailCount` | 连续 N 次失败后自动锁死（默认 3） |

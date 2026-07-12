@@ -95,6 +95,7 @@ function loadConfig() {
     config.autoResumeDebounceMinutes = Math.max(1, parseInt(c.autoResumeDebounceMinutes) || 3);
     config.autoResumeProjects = Array.isArray(c.autoResumeProjects) ? c.autoResumeProjects.slice(0, 10) : [];
     config.cmdPath = c.cmdPath || "/mnt/c/Windows/System32/cmd.exe";
+    config.weeklySortBy = c.weeklySortBy === "expiry" ? "expiry" : "priority";
     config.roundRobin = c.roundRobin === true;
     config.enableAutoLock = c.enableAutoLock !== false;
     config.lockAfterFailCount = Math.max(1, c.lockAfterFailCount || 3);
@@ -147,9 +148,9 @@ function loadConfig() {
 function normalizePath(p) {
   if (!p) return p;
   let s = String(p);
-  try { s = require('path').resolve(s); } catch(e) {}
   s = s.replace(/\\/g, '/');
   s = s.replace(/^([A-Za-z]):\//, (_, d) => '/mnt/' + d.toLowerCase() + '/');
+  try { s = require('path').resolve(s); } catch(e) {}
   s = s.replace(/\/+$/, '');
   return s;
 }
@@ -173,7 +174,7 @@ function triggerResume(proj) {
     try { const oldPid = fs.readFileSync(pidFile, 'utf8').trim(); if (oldPid) try { process.kill(parseInt(oldPid)); } catch(e) {} } catch(e) {}
     const normalizedPath = normalizePath(proj.path);
     const escapedCmd = proj.cmd.replace(/'/g, "'\\''");
-    const wrapperCmd = 'echo $$ > ' + pidFile + '; cd ' + JSON.stringify(normalizedPath).slice(1,-1) + ' && ' + proj.cmd + '; rm -f ' + pidFile;
+    const wrapperCmd = 'echo $$ > ' + pidFile + '; cd ' + JSON.stringify(normalizedPath).slice(1,-1) + ' && ' + escapedCmd + '; rm -f ' + pidFile;
     const cmdPath = config.cmdPath || '/mnt/c/Windows/System32/cmd.exe';
     const title = 'Codex Resume - ' + (proj.name || 'default');
     const args = ['/c', 'start', title, cmdPath, '/c', '/mnt/c/Windows/System32/wsl.exe', 'bash', '-l', '-c', wrapperCmd];
@@ -605,6 +606,13 @@ function inCooldown(idx) {
   return ks.failPeriod === curr;
 }
 
+function daysUntilReset(resetDay) {
+  if (resetDay == null) return 99;
+  const jsDay = new Date().getDay();
+  const isoDay = jsDay === 0 ? 7 : jsDay;
+  const target = parseInt(resetDay);
+  return (target - isoDay + 7) % 7 || 7;
+}
 function pickKey(model) {
   function matchesModel(a) {
     if (!model) return true;
@@ -630,7 +638,12 @@ function pickKey(model) {
       if (ks.status === "discarded" || ks.status === "locked") continue;
       groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
     }
-    for (const g of groups) g.sort((a, b) => (accounts[b].priority || 0) - (accounts[a].priority || 0) || a - b);
+    for (const g of groups) g.sort((a, b) => {
+      if (config.weeklySortBy === "expiry" && accounts[a].reset === "weekly" && accounts[b].reset === "weekly") {
+        return daysUntilReset(accounts[a].resetDay) - daysUntilReset(accounts[b].resetDay);
+      }
+      return (accounts[b].priority || 0) - (accounts[a].priority || 0) || a - b;
+    });
     for (let gi = 0; gi <= 2; gi++) {
       const g = groups[gi];
       if (!g.length) continue;
@@ -649,7 +662,12 @@ function pickKey(model) {
     const ks = getKeyState(i);
     if (ks.status !== "discarded" && ks.status !== "locked") groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
   }
-  for (const g of groups) g.sort((a, b) => (accounts[b].priority || 0) - (accounts[a].priority || 0) || a - b);
+  for (const g of groups) g.sort((a, b) => {
+    if (config.weeklySortBy === "expiry" && accounts[a].reset === "weekly" && accounts[b].reset === "weekly") {
+      return daysUntilReset(accounts[a].resetDay) - daysUntilReset(accounts[b].resetDay);
+    }
+    return (accounts[b].priority || 0) - (accounts[a].priority || 0) || a - b;
+  });
   for (const g of groups) {
     const a = g.filter(i => !inCooldown(i));
     if (a.length) return a[0];
@@ -1216,7 +1234,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="top-row" id="summary"></div>
 <div class="controls" id="controls">
   <label>排序</label>
-  <select id="sortBy"><option value="idx">默认顺序</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
+  <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
   <label>筛选</label>
    <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
   <label>重置</label>
@@ -1334,6 +1352,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgAutoRecoverPollCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="500,502,503,504" placeholder="500,502,503,504"></div>
   <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
   <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
+  <div style="color:#94a3b8;padding:4px 0">📅 每周 Key 按到期日排序</div>
+  <div><label><input type="checkbox" id="cfgWeeklySortBy"> 每周重置的 Key 按「最先到期先使用」排序（当日最后），无 resetDay 排最后</label></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🧬 闲置自动恢复（autoResume）</div>
   <div style="color:#94a3b8;padding:4px 0">启用闲置恢复</div>
   <div><label><input type="checkbox" id="cfgAutoResume"> 代理空闲时自动在 Windows 中打开终端运行项目命令</label></div>
@@ -1386,6 +1406,14 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <script>
 const L={"daily":"每日","weekly":"每周","never":"永久"};
 const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never"};
+const DAY_CN={"1":"周一","2":"周二","3":"周三","4":"周四","5":"周五","6":"周六","7":"周日"};
+function daysUntilResetClient(resetDay) {
+  if (resetDay == null) return 99;
+  const jsDay = new Date().getDay();
+  const isoDay = jsDay === 0 ? 7 : jsDay;
+  const target = parseInt(resetDay);
+  return (target - isoDay + 7) % 7 || 7;
+}
 let data=[],curDate="",fullKeys={};
 let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="",modelSQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
@@ -1461,6 +1489,7 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoRecoverPollInterval").value=c.autoRecoverPollInterval||5;
     document.getElementById("cfgAutoRecoverPollCodes").value=(c.autoRecoverPollCodes||[500,502,503,504]).join(",");
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
+    document.getElementById("cfgWeeklySortBy").checked=c.weeklySortBy==="expiry";
     document.getElementById("cfgLockCount").value=c.lockAfterFailCount||3;
     document.getElementById("cfgLockCodes").value=(c.lockFailCodes||["401","403"]).join(",");
     document.getElementById("cfgLogFile").checked=c.logFile!==false;
@@ -1675,6 +1704,12 @@ function render(){
       const rb=b.sliding5mRate!==null?b.sliding5mRate:-1;
       return rb-ra;
     });
+  }else if(sortBy==="weeklyExpiry"){
+    filtered.sort((a,b)=>{
+      const da=a.reset==="weekly"?daysUntilResetClient(a.resetDay):99;
+      const db=b.reset==="weekly"?daysUntilResetClient(b.resetDay):99;
+      return da-db;
+    });
   }
 
   let html="";
@@ -1712,7 +1747,7 @@ function render(){
       '<div class="ctop"><input type="checkbox" class="card-cb" data-idx="'+a.idx+'" onchange="updateBatchBar()" style="margin-right:4px;accent-color:#3b82f6">'+
       '<span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
       '<span style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">'+
-      '<span class="badge '+C[a.reset]+'">'+L[a.reset]+'</span>'+
+      '<span class="badge '+C[a.reset]+'">'+(a.reset==="weekly"?("每周-"+(DAY_CN[a.resetDay]||"自动")):L[a.reset])+'</span>'+
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
@@ -2231,6 +2266,7 @@ async function saveConfig(){
     autoRecoverPollInterval:parseInt(document.getElementById("cfgAutoRecoverPollInterval").value)||5,
     autoRecoverPollCodes:(document.getElementById("cfgAutoRecoverPollCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
     roundRobin:document.getElementById("cfgRoundRobin").checked,
+    weeklySortBy:document.getElementById("cfgWeeklySortBy").checked?"expiry":"priority",
     enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
