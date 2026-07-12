@@ -2324,7 +2324,9 @@ function updateBatchBar(){
 // --- HTTP Server ---
 const server = http.createServer((req, res) => {
   const pathname = (req.url || "/").split("?")[0];
-  lastRequestTime = Date.now();
+  if (!pathname.startsWith("/__") && pathname !== "/" && pathname !== "/dashboard" && pathname !== "/metrics") {
+    lastRequestTime = Date.now();
+  }
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, {

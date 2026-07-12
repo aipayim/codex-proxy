@@ -576,7 +576,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 
 ### 工作原理
 
-1. 代理记录每次请求时间（`lastRequestTime`），内部 WebSocket 心跳不计入
+1. 代理记录每次 codex CLI 转发请求的时间（`lastRequestTime`），仅 `/v1/*`、`/responses` 等实际 API 调用计入活动时间。仪表盘页面（`/`、`/dashboard`）、管理接口（`/__*`）、Prometheus 指标（`/metrics`）不重置空闲计时，即使 WebSocket 断开降级为 HTTP 轮询也不影响
 2. 每 30 秒检测空闲时长，超过 `autoResumeIdleMinutes`（默认 10 分钟）且距上次恢复超过 `autoResumeDebounceMinutes`（默认 3 分钟）时触发
 3. `checkAutoResume()` 遍历 `autoResumeProjects` 列表，为每个项目执行 `triggerResume()`
 4. 通过 `cmd.exe /c start` 启动新的 Windows 可见 cmd 窗口 → 运行 wsl.exe → bash → 执行项目命令
