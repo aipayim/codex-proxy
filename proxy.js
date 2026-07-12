@@ -173,8 +173,7 @@ function triggerResume(proj) {
     const pidFile = '/tmp/codex-resume-' + sanitized + '.pid';
     try { const oldPid = fs.readFileSync(pidFile, 'utf8').trim(); if (oldPid) try { process.kill(parseInt(oldPid)); } catch(e) {} } catch(e) {}
     const normalizedPath = normalizePath(proj.path);
-    const escapedCmd = proj.cmd.replace(/'/g, "'\\''");
-    const wrapperCmd = 'echo $$ > ' + pidFile + '; cd ' + JSON.stringify(normalizedPath).slice(1,-1) + ' && ' + escapedCmd + '; rm -f ' + pidFile;
+    const wrapperCmd = 'echo $$ > ' + pidFile + '; cd ' + JSON.stringify(normalizedPath).slice(1,-1) + ' && ' + proj.cmd + '; rm -f ' + pidFile;
     const cmdPath = config.cmdPath || '/mnt/c/Windows/System32/cmd.exe';
     const title = 'Codex Resume - ' + (proj.name || 'default');
     const args = ['/c', 'start', title, cmdPath, '/c', '/mnt/c/Windows/System32/wsl.exe', 'bash', '-l', '-c', wrapperCmd];
@@ -1810,7 +1809,7 @@ function todayStr(){return new Date().toISOString().slice(0,10)}
 function fmtBytes(n){if(!n)return"0B";if(n>=1048576)return(n/1048576).toFixed(1)+"MB";if(n>=1024)return(n/1024).toFixed(1)+"KB";return n+"B"}
 function fmtDur(ms){if(ms>=1000)return(ms/1000).toFixed(2)+"s";return ms+"ms"}
 function maskKey(k){return k&&k.length>12?k.slice(0,6)+'...'+k.slice(-4):(k||'')}
-function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML}
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 const FAIL_MEAN={"401":"API Key 无效或已过期","402":"额度不足，账号已欠费","403":"权限不足，Key 无访问权限","429":"请求过频繁，触发了速率限制","500":"上游服务器内部错误","502":"上游网关错误","503":"服务暂时不可用","504":"上游超时"};
 function toggleAllCollapse(){
   const all=document.querySelectorAll("#grid .cbody");
