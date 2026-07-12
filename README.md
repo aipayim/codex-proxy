@@ -302,7 +302,8 @@ codex
 - **搜索过滤**：实时搜索 ID/备注/地址
 - **状态码筛选**：输入 `401` 等过滤指定失败码的 Key
 - **状态筛选**：下拉选择 全部/可用/冷却中/废弃/锁死
-- **数量显示**：实时显示 `共 X 个，筛选后 Y 个`
+- **隐藏已屏蔽**：🙈 按钮一键隐藏所有「已屏蔽」的 Key，方便对非屏蔽 Key 批量操作。状态跨模态打开保持。再次点击 🙉 恢复显示
+- **数量显示**：实时显示 `共 X 个，筛选后 Y 个`，并单独统计已屏蔽数量
 - **自动分组**：按备注前缀（中文逗号/英文逗号/空格分割的第一段）自动分组折叠
 - **一键折叠/展开**：📂 按钮折叠或展开所有分组
 - **拖拽排序**：拖动行调整顺序，自动保存到 keys.json
@@ -353,9 +354,9 @@ codex
 
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
-
 ### 系统配置
-Webhook URL、价格参数、桌面通知/声音开关、🔄 重启代理按钮
+
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔄 重启代理按钮
 
 ## API 接口
 
@@ -474,6 +475,9 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "autoRecoverDailyDays": 1,
   "autoRecoverDailyHour": 8,
   "autoRecoverDailyMinute": 0,
+  "autoRecoverPoll": false,
+  "autoRecoverPollInterval": 5,
+  "autoRecoverPollCodes": [500, 502, 503, 504],
   "roundRobin": false,
   "enableAutoLock": true,
   "lockAfterFailCount": 3,
@@ -500,6 +504,9 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoRecoverDailyDays` | 每 N 天检测一次（默认 1） |
 | `autoRecoverDailyHour` | 检测时间：时（0-23，默认 8） |
 | `autoRecoverDailyMinute` | 检测时间：分（0-59，默认 0） |
+| `autoRecoverPoll` | 是否启用快速恢复（true/false，默认 false）。Key 出现指定失败码时，自动启动短间隔轮询检测，全部恢复后停止 |
+| `autoRecoverPollInterval` | 轮询间隔（分钟，默认 5，最小 1） |
+| `autoRecoverPollCodes` | 触发的失败码数组，如 `[500,502,503,504]`。Key 出现其中任意状态码即激活快速轮询 |
 | `roundRobin` | 是否启用轮询均摊模式（见「Key 调度顺序」） |
 | `enableAutoLock` | 是否启用自动锁死（true/false，默认 true） |
 | `lockAfterFailCount` | 连续 N 次失败后自动锁死（默认 3） |
@@ -520,14 +527,21 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 - 日志输出 `[proxy] auto-recover: #N recovered`
 - 配置保存后立即生效，无需重启（定时器自动重置）
 
-### 两种模式
+### 三种模式
 
 | 模式 | 说明 |
 |------|------|
 | **定时检测并恢复**（间隔模式） | 每 N 小时检测一次（默认 1 小时），基于 `setInterval` |
 | **固定时间检测**（日历模式） | 每 N 天的指定 HH:MM 检测一次（默认每天 08:00），基于 `setTimeout` 链 |
+| **快速恢复**（事件驱动模式） | 当 Key 出现 `autoRecoverPollCodes` 中的状态码（默认 500/502/503/504）时，自动以短间隔（默认 5 分钟）轮询检测，全部恢复后自动停止。再出现时再自动激活，基于 `setTimeout` 链 + `markFailure` 事件钩子 |
 
-两种模式可独立启用/关闭，也可同时开启。同时开启时面板上显示两条独立的倒计时。失败码和 discarded 配置由两种模式共用。
+三种模式可独立启用/关闭，也可同时开启。同时开启时面板上显示三条独立的倒计时。失败码和 discarded 配置由三种模式共用。
+
+#### 快速恢复的工作原理
+
+1. Key 获取到 500/502/503/504 等失败码 → `markFailure()` 检测到该码在 `autoRecoverPollCodes` 中且当前无 timer 运行 → 启动 `schedulePollRecover()`
+2. 每 `autoRecoverPollInterval` 分钟（默认 5）：检查是否仍有 Key 持有匹配的失败码 → 有则调用 `GET /v1/models` 测试连通性，成功后自动清除冷却；无则停止（不留定时器）
+3. 停止后如有 Key 再次出现匹配的失败码 → 重新激活（事件驱动，不依赖轮询）
 
 ## 费用估算
 

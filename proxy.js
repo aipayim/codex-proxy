@@ -40,6 +40,8 @@ let autoRecoverTimer = null;
 let autoRecoverNextTime = 0;
 let autoRecoverDailyTimer = null;
 let autoRecoverDailyNextTime = 0;
+let autoRecoverPollTimer = null;
+let autoRecoverPollNextTime = 0;
 let _rrCursor = 0;
 let _boostKey = -1;
 
@@ -80,6 +82,9 @@ function loadConfig() {
     config.autoRecoverDailyDays = Math.max(1, parseInt(c.autoRecoverDailyDays) || 1);
     config.autoRecoverDailyHour = Math.min(23, Math.max(0, (n=>isNaN(n)?8:n)(parseInt(c.autoRecoverDailyHour))));
     config.autoRecoverDailyMinute = Math.min(59, Math.max(0, (n=>isNaN(n)?0:n)(parseInt(c.autoRecoverDailyMinute))));
+    config.autoRecoverPoll = c.autoRecoverPoll === true;
+    config.autoRecoverPollInterval = Math.max(1, parseInt(c.autoRecoverPollInterval) || 5);
+    config.autoRecoverPollCodes = Array.isArray(c.autoRecoverPollCodes) ? c.autoRecoverPollCodes : [500,502,503,504];
     config.roundRobin = c.roundRobin === true;
     config.enableAutoLock = c.enableAutoLock !== false;
     config.lockAfterFailCount = Math.max(1, c.lockAfterFailCount || 3);
@@ -106,6 +111,18 @@ function loadConfig() {
   } else {
     autoRecoverDailyNextTime = 0;
   }
+  if (autoRecoverPollTimer) { clearTimeout(autoRecoverPollTimer); autoRecoverPollTimer = null; }
+  autoRecoverPollNextTime = 0;
+  if (config.autoRecoverPoll) {
+    const pollCodes = config.autoRecoverPollCodes || [];
+    for (let i = 0; i < accounts.length; i++) {
+      const ks = getKeyState(i);
+      if (ks.failCode && pollCodes.includes(ks.failCode)) {
+        schedulePollRecover();
+        break;
+      }
+    }
+  }
 }
 
 function calcNextDailyRun(from, days, hour, min){
@@ -123,10 +140,32 @@ function scheduleDailyRecover(){
     scheduleDailyRecover();
   }, delay);
 }
-function autoRecover(){
-  if (!config.autoRecover && !config.autoRecoverDaily) return;
-  console.log(`[proxy] auto-recover: fired (daily=${config.autoRecoverDaily})`);
-  const codes = config.autoRecoverCodes || [];
+function schedulePollRecover() {
+  if (autoRecoverPollTimer) clearTimeout(autoRecoverPollTimer);
+  const interval = Math.max(60000, (config.autoRecoverPollInterval || 5) * 60000);
+  autoRecoverPollNextTime = Date.now() + interval;
+  autoRecoverPollTimer = setTimeout(() => {
+    autoRecoverPollTimer = null;
+    autoRecoverPollNextTime = 0;
+    const codes = config.autoRecoverPollCodes || [];
+    let hasMatch = false;
+    for (let i = 0; i < accounts.length; i++) {
+      const ks = getKeyState(i);
+      if (ks.failCode && codes.includes(ks.failCode)) { hasMatch = true; break; }
+    }
+    if (!hasMatch) {
+      console.log(`[proxy] poll-recover: no matching keys, stopped`);
+      return;
+    }
+    console.log(`[proxy] poll-recover: checking ${codes.join(",")} keys...`);
+    autoRecover(codes);
+    schedulePollRecover();
+  }, interval);
+}
+function autoRecover(optCodes){
+  if (!config.autoRecover && !config.autoRecoverDaily && !optCodes) return;
+  console.log(`[proxy] auto-recover: fired (daily=${config.autoRecoverDaily}${optCodes ? ', poll' : ''})`);
+  const codes = optCodes || config.autoRecoverCodes || [];
   const checkDiscarded = config.autoRecoverDiscarded === true;
   const toCheck = [];
   for (let i = 0; i < accounts.length; i++) {
@@ -473,6 +512,10 @@ function markFailure(idx, code) {
   }
 
   ks.failCode = code;
+  if (config.autoRecoverPoll && !autoRecoverPollTimer &&
+      (config.autoRecoverPollCodes || []).includes(code)) {
+    schedulePollRecover();
+  }
   ks.failTime = Date.now();
   ks.failPeriod = curr;
   saveState();
@@ -1220,6 +1263,13 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgAutoCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="401,402,403,429,500,502,503,504" title="401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时"></div>
   <div style="color:#94a3b8;padding:4px 0">🚫 包含 discarded Key</div>
   <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">⚡ 快速恢复（针对 5xx 等异常）</div>
+  <div style="color:#94a3b8;padding:4px 0">启用快速恢复</div>
+  <div><label><input type="checkbox" id="cfgAutoRecoverPoll"> 当 Key 出现以下状态码时快速轮询检测</label></div>
+  <div style="color:#94a3b8;padding:4px 0">轮询间隔（分钟）</div>
+  <div><input id="cfgAutoRecoverPollInterval" type="number" min="1" max="60" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="5"></div>
+  <div style="color:#94a3b8;padding:4px 0">监控的状态码</div>
+  <div><input id="cfgAutoRecoverPollCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="500,502,503,504" placeholder="500,502,503,504"></div>
   <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
   <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">📋 日志配置</div>
@@ -1235,7 +1285,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><label><input type="checkbox" id="cfgEnableAutoLock" checked> 开启后连续失败达到阈值将自动锁死 Key</label></div>
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
-<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
@@ -1265,7 +1316,7 @@ let data=[],curDate="",fullKeys={};
 let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="",modelSQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
-let autoRecoverNextTime=0,autoRecoverDailyNextTime=0;
+let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
 let collapsedCards={};
 
 async function httpLoad(){
@@ -1331,6 +1382,9 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoDailyTime").value=String(dh).padStart(2,"0")+":"+String(dm).padStart(2,"0");
     document.getElementById("cfgAutoCodes").value=(c.autoRecoverCodes||[401,402,403,429,500,502,503,504]).join(",");
     document.getElementById("cfgAutoDiscarded").checked=c.autoRecoverDiscarded===true;
+    document.getElementById("cfgAutoRecoverPoll").checked=c.autoRecoverPoll===true;
+    document.getElementById("cfgAutoRecoverPollInterval").value=c.autoRecoverPollInterval||5;
+    document.getElementById("cfgAutoRecoverPollCodes").value=(c.autoRecoverPollCodes||[500,502,503,504]).join(",");
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
     document.getElementById("cfgLockCount").value=c.lockAfterFailCount||3;
     document.getElementById("cfgLockCodes").value=(c.lockFailCodes||["401","403"]).join(",");
@@ -1340,6 +1394,7 @@ async function loadConfigUI(){
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(c.autoRecoverDailyNextTime)autoRecoverDailyNextTime=parseInt(c.autoRecoverDailyNextTime);else autoRecoverDailyNextTime=0;
+    if(c.autoRecoverPollNextTime)autoRecoverPollNextTime=parseInt(c.autoRecoverPollNextTime);else autoRecoverPollNextTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
     updateAutoCountdown();
@@ -1355,6 +1410,11 @@ function updateAutoCountdown(){
   if(dailyEl){
     if(!autoRecoverDailyNextTime||autoRecoverDailyNextTime<=Date.now()){dailyEl.textContent="⏳ 下次检测（固定）: --";}
     else{const diff=Math.ceil((autoRecoverDailyNextTime-Date.now())/1000);const days=Math.floor(diff/86400);const h=Math.floor((diff%86400)/3600),m=Math.floor((diff%3600)/60),s=diff%60;dailyEl.textContent="⏳ 下次检测（固定）: "+days+"d "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";}
+  }
+  const pollEl=document.getElementById("cfgAutoPollCountdown");
+  if(pollEl){
+    if(!autoRecoverPollNextTime||autoRecoverPollNextTime<=Date.now()){pollEl.textContent="⏳ 下次检测（快速）: --";}
+    else{const diff=Math.ceil((autoRecoverPollNextTime-Date.now())/1000);const m=Math.floor(diff/60),s=diff%60;pollEl.textContent="⏳ 下次检测（快速）: "+m+"m "+String(s).padStart(2,"0")+"s";}
   }
 }
 
@@ -2006,6 +2066,9 @@ async function saveConfig(){
     autoRecoverDailyMinute:(n=>isNaN(n)?0:n)(parseInt((document.getElementById("cfgAutoDailyTime").value||"08:00").split(":")[1])),
     autoRecoverCodes:(document.getElementById("cfgAutoCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
     autoRecoverDiscarded:document.getElementById("cfgAutoDiscarded").checked,
+    autoRecoverPoll:document.getElementById("cfgAutoRecoverPoll").checked,
+    autoRecoverPollInterval:parseInt(document.getElementById("cfgAutoRecoverPollInterval").value)||5,
+    autoRecoverPollCodes:(document.getElementById("cfgAutoRecoverPollCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
     roundRobin:document.getElementById("cfgRoundRobin").checked,
     enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
@@ -2090,7 +2153,7 @@ const server = http.createServer((req, res) => {
   if (pathname === "/__config") {
     if (req.method === "GET") {
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime }, null, 2));
+      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime }, null, 2));
       return;
     }
     if (req.method === "PUT") {
