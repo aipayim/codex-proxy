@@ -19,6 +19,7 @@ codex-proxy/
 ├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
+├── resume-codex.sh       # autoResume 辅助脚本：通过 cmd.exe 创建 Windows 可见终端运行 wsl 命令
 ├── proxy.pid             # 自动生成，记录代理进程 PID（watchdog 依赖此文件检测存活）
 └── README.md             # 本文件
 ```
@@ -360,7 +361,7 @@ codex
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔄 重启代理按钮
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔄 重启代理按钮
 
 ## API 接口
 
@@ -482,6 +483,11 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "autoRecoverPoll": false,
   "autoRecoverPollInterval": 5,
   "autoRecoverPollCodes": [500, 502, 503, 504],
+  "autoResume": false,
+  "autoResumeIdleMinutes": 10,
+  "autoResumeDebounceMinutes": 3,
+  "autoResumeProjects": [],
+  "cmdPath": "/mnt/c/Windows/System32/cmd.exe",
   "roundRobin": false,
   "enableAutoLock": true,
   "lockAfterFailCount": 3,
@@ -511,6 +517,11 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoRecoverPoll` | 是否启用快速恢复（true/false，默认 false）。Key 出现指定失败码时，自动启动短间隔轮询检测，全部恢复后停止 |
 | `autoRecoverPollInterval` | 轮询间隔（分钟，默认 5，最小 1） |
 | `autoRecoverPollCodes` | 触发的失败码数组，如 `[500,502,503,504]`。Key 出现其中任意状态码即激活快速轮询 |
+| `autoResume` | 是否启用闲置自动恢复（true/false，默认 false） |
+| `autoResumeIdleMinutes` | 空闲阈值（分钟，默认 10） |
+| `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3） |
+| `autoResumeProjects` | 项目列表数组，每项含 name/path/cmd，最多 10 个 |
+| `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
 | `roundRobin` | 是否启用轮询均摊模式（见「Key 调度顺序」） |
 | `enableAutoLock` | 是否启用自动锁死（true/false，默认 true） |
 | `lockAfterFailCount` | 连续 N 次失败后自动锁死（默认 3） |
@@ -540,6 +551,66 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | **快速恢复**（事件驱动模式） | 当 Key 出现 `autoRecoverPollCodes` 中的状态码（默认 500/502/503/504）时，自动以短间隔（默认 5 分钟）轮询检测，全部恢复后自动停止。再出现时再自动激活，基于 `setTimeout` 链 + `markFailure` 事件钩子 |
 
 三种模式可独立启用/关闭，也可同时开启。同时开启时面板上显示三条独立的倒计时。失败码和 discarded 配置由三种模式共用。
+
+## 闲置自动恢复（autoResume）
+
+代理空闲超过阈值时，自动在 Windows 可见终端中重新打开项目终端窗口（适用于 WSL2 环境，确保 codex CLI 运行在可见窗口中）。
+
+### 工作原理
+
+1. 代理记录每次请求时间（`lastRequestTime`），内部 WebSocket 心跳不计入
+2. 每 30 秒检测空闲时长，超过 `autoResumeIdleMinutes`（默认 10 分钟）且距上次恢复超过 `autoResumeDebounceMinutes`（默认 3 分钟）时触发
+3. `checkAutoResume()` 遍历 `autoResumeProjects` 列表，为每个项目执行 `triggerResume()`
+4. 通过 `cmd.exe /c start` 启动新的 Windows 可见 cmd 窗口 → 运行 wsl.exe → bash → 执行项目命令
+5. 每个项目启动时写入 PID 到 `/tmp/codex-resume-<项目名>.pid`，再次触发时自动 kill 旧进程
+
+### 配置字段
+
+```json
+{
+  "autoResume": true,
+  "autoResumeIdleMinutes": 10,
+  "autoResumeDebounceMinutes": 3,
+  "autoResumeProjects": [
+    {"name": "project-a", "path": "/mnt/e/project-a", "cmd": "codex chat"},
+    {"name": "project-b", "path": "/mnt/e/project-b", "cmd": "./run.sh"}
+  ],
+  "cmdPath": "/mnt/c/Windows/System32/cmd.exe"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `autoResume` | 是否启用闲置自动恢复（true/false） |
+| `autoResumeIdleMinutes` | 空闲阈值（分钟，默认 10）。代理无任何请求超过此分钟后触发 |
+| `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3）。防止频繁触发 |
+| `autoResumeProjects` | 项目列表，最多 10 个。每个项目包含 `name`（显示名）、`path`（WSL 路径，支持 `E:\xxx` 格式自动转换）、`cmd`（要执行的命令） |
+| `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
+
+### 面板状态
+
+- **配置弹窗**：显示 `🧬 闲置恢复: 空闲 Xm，上次触发 Ym 前` 实时状态行
+- **仪表盘**：工具栏右侧显示 `🧬空闲Xm/恢复Ym前`
+
+### 路径自检
+
+`path` 字段支持以下格式，保存配置时自动标准化：
+- WSL Linux 路径：`/mnt/e/codex-proxy` → 不变
+- Windows 路径：`E:\codex-proxy` → `/mnt/e/codex-proxy`
+- 混合路径：自动转换为 WSL 绝对路径
+
+### 依赖脚本
+
+`resume-codex.sh` 位于 `codex-proxy/` 目录，通过 `cmd.exe /c start` + `wsl.exe` 打开可见终端窗口。
+shell 命令中的单引号自动转义，确保安全执行。
+
+### 注意事项
+
+- **仅适用于 WSL2**：依赖 `cmd.exe` 和 `wsl.exe` 创建 Windows 可见终端，纯 Linux 环境无效
+- **路径必须存在**：`path` 目录在 WSL 中必须可 `cd` 进入
+- **命令不含交互输入**：自动打开的进程无 stdin 交互，适合 `codex chat`（持续输出模式）或 `node server.js` 等长时间运行命令
+- **PID 文件**：存放于 `/tmp/codex-resume-*.pid`，系统重启后自动清理
+- **重入保护**：防抖机制确保两次触发间隔至少 `autoResumeDebounceMinutes`
 
 #### 快速恢复的工作原理
 

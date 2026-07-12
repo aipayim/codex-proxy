@@ -43,6 +43,9 @@ let autoRecoverDailyTimer = null;
 let autoRecoverDailyNextTime = 0;
 let autoRecoverPollTimer = null;
 let autoRecoverPollNextTime = 0;
+let lastRequestTime = Date.now();
+let lastResumeTime = 0;
+let autoResumeTimer = null;
 let _rrCursor = 0;
 let _boostKey = -1;
 
@@ -87,6 +90,11 @@ function loadConfig() {
     config.autoRecoverPoll = c.autoRecoverPoll === true;
     config.autoRecoverPollInterval = Math.max(1, parseInt(c.autoRecoverPollInterval) || 5);
     config.autoRecoverPollCodes = Array.isArray(c.autoRecoverPollCodes) ? c.autoRecoverPollCodes : [500,502,503,504];
+    config.autoResume = c.autoResume === true;
+    config.autoResumeIdleMinutes = Math.max(1, parseInt(c.autoResumeIdleMinutes) || 10);
+    config.autoResumeDebounceMinutes = Math.max(1, parseInt(c.autoResumeDebounceMinutes) || 3);
+    config.autoResumeProjects = Array.isArray(c.autoResumeProjects) ? c.autoResumeProjects.slice(0, 10) : [];
+    config.cmdPath = c.cmdPath || "/mnt/c/Windows/System32/cmd.exe";
     config.roundRobin = c.roundRobin === true;
     config.enableAutoLock = c.enableAutoLock !== false;
     config.lockAfterFailCount = Math.max(1, c.lockAfterFailCount || 3);
@@ -125,6 +133,53 @@ function loadConfig() {
       }
     }
   }
+  if (autoResumeTimer) { clearInterval(autoResumeTimer); autoResumeTimer = null; }
+  if (config.autoResume) {
+    lastRequestTime = Date.now();
+    // 项目路径自检：自动修正 Win 路径格式
+    for (const proj of config.autoResumeProjects) {
+      if (proj.path) proj.path = normalizePath(proj.path);
+    }
+    autoResumeTimer = setInterval(checkAutoResume, 30000);
+  }
+}
+
+function normalizePath(p) {
+  if (!p) return p;
+  let s = String(p);
+  try { s = require('path').resolve(s); } catch(e) {}
+  s = s.replace(/\\/g, '/');
+  s = s.replace(/^([A-Za-z]):\//, (_, d) => '/mnt/' + d.toLowerCase() + '/');
+  s = s.replace(/\/+$/, '');
+  return s;
+}
+function checkAutoResume() {
+  if (!config.autoResume || !config.autoResumeProjects || config.autoResumeProjects.length === 0) return;
+  const idleMinutes = (Date.now() - lastRequestTime) / 60000;
+  if (idleMinutes < config.autoResumeIdleMinutes) return;
+  const sinceLastResume = (Date.now() - lastResumeTime) / 60000;
+  if (sinceLastResume < config.autoResumeDebounceMinutes) return;
+  lastResumeTime = Date.now();
+  console.log("[proxy] autoResume triggered after " + Math.round(idleMinutes) + "min idle");
+  for (const proj of config.autoResumeProjects) {
+    if (proj.path && proj.cmd) triggerResume(proj);
+  }
+}
+function triggerResume(proj) {
+  try {
+    const spawn = require('child_process').spawn;
+    const sanitized = (proj.name || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const pidFile = '/tmp/codex-resume-' + sanitized + '.pid';
+    try { const oldPid = fs.readFileSync(pidFile, 'utf8').trim(); if (oldPid) try { process.kill(parseInt(oldPid)); } catch(e) {} } catch(e) {}
+    const normalizedPath = normalizePath(proj.path);
+    const escapedCmd = proj.cmd.replace(/'/g, "'\\''");
+    const wrapperCmd = 'echo $$ > ' + pidFile + '; cd ' + JSON.stringify(normalizedPath).slice(1,-1) + ' && ' + proj.cmd + '; rm -f ' + pidFile;
+    const cmdPath = config.cmdPath || '/mnt/c/Windows/System32/cmd.exe';
+    const title = 'Codex Resume - ' + (proj.name || 'default');
+    const args = ['/c', 'start', title, cmdPath, '/c', '/mnt/c/Windows/System32/wsl.exe', 'bash', '-l', '-c', wrapperCmd];
+    spawn(cmdPath, args, { detached: true, stdio: 'ignore' }).unref();
+    console.log('[proxy] triggerResume: ' + proj.name + ' (' + normalizedPath + ')');
+  } catch(e) { console.error('[proxy] triggerResume error:', e); }
 }
 
 function calcNextDailyRun(from, days, hour, min){
@@ -904,7 +959,7 @@ function setupWebSocket(server) {
 
 function broadcastStatus() {
   const data = buildStatusData();
-  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1 });
+  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, lastRequestTime, lastResumeTime });
   lastBroadcast = msg;
   for (const ws of wsClients) {
     if (ws.readyState === 1) ws.send(msg);
@@ -1176,6 +1231,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <input id="modelSearchBox" placeholder="模型名" style="width:80px">
   <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
   <span style="color:#94a3b8;font-size:11px;margin-left:8px" id="filterCount"></span>
+  <span style="color:#64748b;font-size:10px;margin-left:8px" id="dashResumeStatus"></span>
 </div>
 <div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
   <span style="color:#94a3b8;font-size:12px" id="batchCount">已选 0 个</span>
@@ -1278,6 +1334,17 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgAutoRecoverPollCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="500,502,503,504" placeholder="500,502,503,504"></div>
   <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
   <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🧬 闲置自动恢复（autoResume）</div>
+  <div style="color:#94a3b8;padding:4px 0">启用闲置恢复</div>
+  <div><label><input type="checkbox" id="cfgAutoResume"> 代理空闲时自动在 Windows 中打开终端运行项目命令</label></div>
+  <div style="color:#94a3b8;padding:4px 0">空闲阈值（分钟）</div>
+  <div><input id="cfgAutoResumeIdle" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="10"> 分钟无请求视为空闲</div>
+  <div style="color:#94a3b8;padding:4px 0">防抖间隔（分钟）</div>
+  <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"> 两次触发最小间隔</div>
+  <div style="color:#94a3b8;padding:4px 0">cmd.exe 路径</div>
+  <div><input id="cfgCmdPath" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="/mnt/c/Windows/System32/cmd.exe"></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;margin-bottom:4px">项目列表（最多 10 个）<button class="btn" style="font-size:10px;margin-left:6px" onclick="addResumeProject()">+ 添加项目</button></div>
+  <div id="cfgResumeProjects" style="grid-column:1/-1"></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">📋 日志配置</div>
   <div style="color:#94a3b8;padding:4px 0">启用文件日志</div>
   <div><label><input type="checkbox" id="cfgLogFile" checked> 保留 <input id="cfgLogRetention" type="number" min="0" max="365" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天自动清理</label></div>
@@ -1292,7 +1359,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
-<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoResumeStatus">🧬 闲置恢复: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
@@ -1323,13 +1391,14 @@ let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="",model
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
+let lastRequestTime=0,lastResumeTime=0;
 let collapsedCards={};
 
 async function httpLoad(){
   try{
     const r=await fetch("http://localhost:3456/__status");
     if(!r.ok)throw new Error("HTTP "+r.status);
-    const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;render();
+    const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;if(j.lastRequestTime)lastRequestTime=j.lastRequestTime;if(j.lastResumeTime)lastResumeTime=j.lastResumeTime;render();
   }catch(e){
     if(!wsFailed)document.getElementById("sub").textContent="连接失败，正在重试...";
   }
@@ -1341,7 +1410,7 @@ function connectWS(){
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
-      if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;render()}
+      if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
       if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
         const tbody=document.getElementById("logBody");
@@ -1398,9 +1467,16 @@ async function loadConfigUI(){
     document.getElementById("cfgLogRetention").value=c.logRetentionDays||7;
     document.getElementById("cfgLogDetail").value=c.logDetail||"full";
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
+    document.getElementById("cfgAutoResume").checked=c.autoResume===true;
+    document.getElementById("cfgAutoResumeIdle").value=c.autoResumeIdleMinutes||10;
+    document.getElementById("cfgAutoResumeDebounce").value=c.autoResumeDebounceMinutes||3;
+    document.getElementById("cfgCmdPath").value=c.cmdPath||"/mnt/c/Windows/System32/cmd.exe";
+    renderResumeProjects(c.autoResumeProjects||[]);
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(c.autoRecoverDailyNextTime)autoRecoverDailyNextTime=parseInt(c.autoRecoverDailyNextTime);else autoRecoverDailyNextTime=0;
     if(c.autoRecoverPollNextTime)autoRecoverPollNextTime=parseInt(c.autoRecoverPollNextTime);else autoRecoverPollNextTime=0;
+    if(c.lastRequestTime)lastRequestTime=parseInt(c.lastRequestTime);else lastRequestTime=Date.now();
+    if(c.lastResumeTime)lastResumeTime=parseInt(c.lastResumeTime);else lastResumeTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
     updateAutoCountdown();
@@ -1421,6 +1497,66 @@ function updateAutoCountdown(){
   if(pollEl){
     if(!autoRecoverPollNextTime||autoRecoverPollNextTime<=Date.now()){pollEl.textContent="⏳ 下次检测（快速）: --";}
     else{const diff=Math.ceil((autoRecoverPollNextTime-Date.now())/1000);const m=Math.floor(diff/60),s=diff%60;pollEl.textContent="⏳ 下次检测（快速）: "+m+"m "+String(s).padStart(2,"0")+"s";}
+  }
+  const resumeEl=document.getElementById("cfgAutoResumeStatus");
+  if(resumeEl){
+    if(typeof lastResumeTime==='number'&&lastResumeTime>0&&typeof lastRequestTime==='number'){
+      const idleMin=Math.round((Date.now()-lastRequestTime)/60000);
+      const sinceResume=Math.round((Date.now()-lastResumeTime)/60000);
+      resumeEl.textContent="🧬 闲置恢复: 空闲 "+idleMin+"m，上次触发 "+sinceResume+"m 前";
+    }else{
+      resumeEl.textContent="🧬 闲置恢复: 等待中";
+    }
+  }
+}
+
+function renderResumeProjects(projects){
+  const container=document.getElementById("cfgResumeProjects");
+  if(!container)return;
+  let html='<div style="display:flex;flex-direction:column;gap:6px">';
+  const list=projects&&projects.length?projects:[{name:"",path:"",cmd:""}];
+  for(let i=0;i<list.length&&i<10;i++){
+    const p=list[i];
+    html+='<div class="resume-proj-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px">'+
+      '<input placeholder="项目名" class="rp-name" value="'+esc(p.name||'')+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+      '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+      '<input placeholder="命令 codex ..." class="rp-cmd" value="'+esc(p.cmd||'')+'" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+      '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button></div>';
+  }
+  html+='</div>';
+  container.innerHTML=html;
+}
+function addResumeProject(){
+  const container=document.getElementById("cfgResumeProjects");
+  if(!container)return;
+  const rows=container.querySelectorAll(".resume-proj-row");
+  if(rows.length>=10)return;
+  const div=document.createElement("div");
+  div.className="resume-proj-row";
+  div.style.cssText="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px";
+  div.innerHTML='<input placeholder="项目名" class="rp-name" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+    '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+    '<input placeholder="命令 codex ..." class="rp-cmd" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+    '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button>';
+  container.querySelector("div").appendChild(div);
+}
+function collectResumeProjects(){
+  const rows=document.querySelectorAll("#cfgResumeProjects .resume-proj-row");
+  const projects=[];
+  for(const row of rows){
+    const name=row.querySelector(".rp-name").value.trim();
+    const path=row.querySelector(".rp-path").value.trim();
+    const cmd=row.querySelector(".rp-cmd").value.trim();
+    if(path&&cmd)projects.push({name:name||path.split("/").pop(),path,cmd});
+  }
+  return projects;
+}
+function removeResumeProject(btn){
+  const row=btn.closest(".resume-proj-row");
+  if(row){
+    const container=document.getElementById("cfgResumeProjects");
+    if(container&&container.querySelectorAll(".resume-proj-row").length<=1)return;
+    row.remove();
   }
 }
 
@@ -1524,6 +1660,13 @@ function render(){
   document.getElementById("filterCount").textContent="显示 "+filtered.length+" / "+data.length+" 个";
   const shieldedCount=data.filter(x=>x.shielded).length;
   if(shieldedCount>0)document.getElementById("filterCount").textContent+="，屏蔽 "+shieldedCount+" 个";
+  const dashResume=document.getElementById("dashResumeStatus");
+  if(dashResume&&typeof lastRequestTime==='number'&&lastRequestTime>0){
+    const idleMin=Math.round((Date.now()-lastRequestTime)/60000);
+    const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
+    if(sinceResume!==null)dashResume.textContent="🧬空闲"+idleMin+"m/恢复"+sinceResume+"m前";
+    else dashResume.textContent="🧬空闲"+idleMin+"m";
+  }
   if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
   else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
   else if(sortBy==="rate5m"){
@@ -2093,7 +2236,12 @@ async function saveConfig(){
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
     logFile:document.getElementById("cfgLogFile").checked,
     logRetentionDays:parseInt(document.getElementById("cfgLogRetention").value)||7,
-    logDetail:document.getElementById("cfgLogDetail").value
+    logDetail:document.getElementById("cfgLogDetail").value,
+    autoResume:document.getElementById("cfgAutoResume").checked,
+    autoResumeIdleMinutes:parseInt(document.getElementById("cfgAutoResumeIdle").value)||10,
+    autoResumeDebounceMinutes:parseInt(document.getElementById("cfgAutoResumeDebounce").value)||3,
+    cmdPath:document.getElementById("cfgCmdPath").value.trim()||"/mnt/c/Windows/System32/cmd.exe",
+    autoResumeProjects:collectResumeProjects()
   };
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
@@ -2141,6 +2289,7 @@ function updateBatchBar(){
 // --- HTTP Server ---
 const server = http.createServer((req, res) => {
   const pathname = (req.url || "/").split("?")[0];
+  lastRequestTime = Date.now();
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -2162,7 +2311,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && pathname === "/__status") {
     res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
     const data = buildStatusData();
-    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1 }, null, 2));
+    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, lastRequestTime, lastResumeTime }, null, 2));
     return;
   }
 
@@ -2171,7 +2320,7 @@ const server = http.createServer((req, res) => {
   if (pathname === "/__config") {
     if (req.method === "GET") {
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime }, null, 2));
+      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime, lastRequestTime, lastResumeTime }, null, 2));
       return;
     }
     if (req.method === "PUT") {
