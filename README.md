@@ -17,6 +17,9 @@ codex-proxy/
 ├── edit-keys.sh          # 命令行快速编辑 keys.json 的辅助脚本
 ├── package.json          # npm 依赖（仅 ws）
 ├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
+├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
+├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
+├── proxy.pid             # 自动生成，记录代理进程 PID（watchdog 依赖此文件检测存活）
 └── README.md             # 本文件
 ```
 
@@ -300,6 +303,7 @@ codex
 - **屏蔽/恢复**：🔇 屏蔽（不参与调度）、🔓 恢复
 - **重置冷却**：🔄 清除冷却/废弃状态
 - **搜索过滤**：实时搜索 ID/备注/地址
+- **排序**：下拉选择「默认顺序」或「按重置日（周一→周日）」，weekly 类型的 Key 按周几分组内排序，便于管理不同重置日的 Key
 - **状态码筛选**：输入 `401` 等过滤指定失败码的 Key
 - **状态筛选**：下拉选择 全部/可用/冷却中/废弃/锁死
 - **隐藏已屏蔽**：🙈 按钮一键隐藏所有「已屏蔽」的 Key，方便对非屏蔽 Key 批量操作。状态跨模态打开保持。再次点击 🙉 恢复显示
@@ -570,7 +574,9 @@ tokens ≈ bytes / bytesPerToken
 - 最长等待 30 秒 → 超时返回 `503`
 - 请求端主动断开 → 自动移除
 
-## systemd 服务管理
+## 进程守护
+
+### systemd 环境（Linux 服务器）
 
 ```bash
 # 安装
@@ -583,6 +589,52 @@ systemctl restart codex-proxy   # 重启
 systemctl stop codex-proxy      # 停止
 systemctl disable codex-proxy   # 取消开机自启
 ```
+
+服务模板 `codex-proxy.service` 已内置 `Restart=always` + `RestartSec=5`，进程崩溃后 systemd 自动拉起。
+
+### WSL2 环境（无 systemd）
+
+WSL2 默认不使用 systemd，使用内置的 watchdog 脚本实现同等守护能力：
+
+```bash
+# 一键启动 watchdog + 代理
+bash start-proxy.sh
+
+# 查看状态
+curl http://localhost:3456/__status
+
+# 停止代理（watchdog 会在 10 秒内重新拉起）
+pkill -f 'node.*proxy\.js'
+
+# 完全停止 watchdog + 代理
+pkill -f watchdog.sh
+```
+
+#### 工作原理
+
+| 组件 | 作用 |
+|---|---|
+| `watchdog.sh` | 每 10 秒检查 `proxy.pid` 中的 PID 是否存活。进程消失则自动 `nohup node proxy.js &` 拉起并写入日志 |
+| `start-proxy.sh` | 前台启动 watchdog（手动用）。`bash start-proxy.sh --boot` 后台启动（WSL 开机用） |
+| `proxy.pid` | `proxy.js` 启动时自动写入 `process.pid`，退出时自动清理 |
+| `/etc/wsl.conf` | 已配置 `[boot] command = /usr/local/bin/codex-watchdog.sh`，Windows 启动 WSL 时自动加载 watchdog |
+
+#### 开机自启
+
+`/etc/wsl.conf` 已配置：
+
+```ini
+[boot]
+command = /usr/local/bin/codex-watchdog.sh
+```
+
+`codex-watchdog.sh` 依次执行：修复 opencode 网络路由 → `start-proxy.sh --boot` → watchdog 驻留后台。
+
+**使其生效**：需在 Windows PowerShell 中执行一次 `wsl --shutdown` 后重新打开 WSL 终端，或重启 Windows。
+
+#### 资源占用
+
+watchdog 99.9% 时间处于 `sleep 10` 阻塞态，**CPU 占用为 0**，内存约 **500KB**。
 
 ## install.sh 工作原理
 
@@ -601,6 +653,10 @@ WRAPPER_DIR=/custom/bin CODEX_BIN=/opt/codex/bin/codex.js bash install.sh
 
 **Q: 启动后 `http://localhost:3456/` 没反应？**
 A: 代理是否运行？检查 `ps aux | grep proxy.js`。没运行则 `node proxy.js &`。
+
+**Q: 代理进程崩溃了怎么办？会自动重启吗？**
+A: 已配置 watchdog 进程守护。watchdog 每 10 秒检测一次代理进程，发现崩溃自动 `nohup node proxy.js &` 拉起。终端输入 `codex` 时包装脚本也会自动检测并启动 watchdog。
+运行 `ps aux | grep watchdog` 确认 watchdog 在线。
 
 **Q: WSL2 中面板打不开？**
 A: 用 `localhost` 而非 `127.0.0.1`。WSL2 的 `127.0.0.1` 指向 Windows 自身回环。

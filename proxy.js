@@ -17,6 +17,7 @@ const TZ = "Asia/Shanghai";
 const MAX_LOG = 2000;
 const QUEUE_TIMEOUT = 30000;
 const LOG_DIR = path.join(__dirname, "logs");
+const PID_FILE = path.join(__dirname, "proxy.pid");
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
 let LOG_DETAIL = "full";
@@ -51,6 +52,7 @@ process.on("uncaughtException", err => {
 process.on("unhandledRejection", (reason) => {
   console.error("[proxy] UNHANDLED REJECTION:", reason instanceof Error ? reason.stack : reason);
 });
+process.on("exit", () => { try { fs.unlinkSync(PID_FILE); } catch {} });
 
 // Periodic cleanup to prevent memory leaks
 setInterval(() => {
@@ -1204,6 +1206,10 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="locked">锁死</option>
     <option value="shielded">屏蔽</option>
   </select>
+  <select id="mgrSortBy" onchange="mgrSortBy=this.value;renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
+    <option value="default">默认顺序</option>
+    <option value="resetDay">按重置日（周一→周日）</option>
+  </select>
   <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)">全选</button>
   <button class="btn" style="font-size:11px" onclick="clearMgrSearch()">取消</button>
   <button class="btn" style="font-size:11px" onclick="batchShieldMgr()">🔇 批量屏蔽</button>
@@ -1687,7 +1693,7 @@ async function openMgr(){
   document.getElementById("mgrModal").classList.add("on");
 }
 function closeMgr(){document.getElementById("mgrModal").classList.remove("on")}
-let mgrSearchCache=[],dragIdx=-1,grpCache=null;
+let mgrSearchCache=[],dragIdx=-1,grpCache=null,mgrSortBy="default";
 let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=false;
 function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
@@ -1738,6 +1744,16 @@ function renderMgr(){
   mgrSearchCache=filtered;
   const shieldedCount=mgrKeys.filter(k=>k.status==="shielded").length;
   document.getElementById("mgrCount").textContent="共 "+mgrKeys.length+" 个，已屏蔽 "+shieldedCount+" 个"+(filtered.length<mgrKeys.length?"，筛选后 "+filtered.length+" 个":"")+(mgrHideShielded?"（已屏蔽已隐藏）":"");
+  if(mgrSortBy==="resetDay"){
+    Object.keys(grp).forEach(g=>{
+      grp[g].sort((a,b)=>{
+        const ka=mgrKeys[a],kb=mgrKeys[b];
+        const da=ka.reset==="weekly"?(parseInt(ka.resetDay)||99):99;
+        const db=kb.reset==="weekly"?(parseInt(kb.resetDay)||99):99;
+        return da-db;
+      });
+    });
+  }
   const groups=Object.keys(grp);
   for(let gi=0;gi<groups.length;gi++){
     const g=groups[gi],items=grp[g];
@@ -1820,6 +1836,8 @@ function clearMgrSearch(){
   document.getElementById("mgrCodeFilter").value="";
   document.getElementById("mgrModelFilter").value="";
   document.getElementById("mgrStatusFilter").value="";
+  mgrSortBy="default";
+  document.getElementById("mgrSortBy").value="default";
   renderMgr();
 }
 function selectAllMgr(sel){
@@ -2697,6 +2715,7 @@ server.on("error", (e) => console.error(`[proxy] ${e.message}`));
 cleanOldLogs();
 
 server.listen(PORT, "localhost", () => {
+  fs.writeFileSync(PID_FILE, String(process.pid));
   setupWebSocket(server);
   const n = (() => { try { return JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8")).length; } catch { return 0; } })();
   console.log(`
