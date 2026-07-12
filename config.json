@@ -1,25 +1,30 @@
 {
   "webhookUrl": "",
-  "prices": {
-    "inputPer1M": 0,
-    "outputPer1M": 0
-  },
+  "prices": { "inputPer1M": 0, "outputPer1M": 0 },
   "bytesPerToken": 3,
-  "notifications": {
-    "desktop": true,
-    "sound": true
-  },
+  "notifications": { "sound": true, "desktop": true },
   "autoRecover": true,
-  "autoRecoverInterval": 24,
-  "autoRecoverCodes": [
-    429
-  ],
+  "autoRecoverInterval": 1,
+  "autoRecoverCodes": [401, 402, 403, 429, 500, 502, 503, 504],
   "autoRecoverDiscarded": false,
+  "autoRecoverDaily": false,
+  "autoRecoverDailyDays": 1,
+  "autoRecoverDailyHour": 0,
+  "autoRecoverDailyMinute": 3,
+  "autoRecoverPoll": false,
+  "autoRecoverPollInterval": 5,
+  "autoRecoverPollCodes": [500, 502, 503, 504],
   "roundRobin": false,
   "lockAfterFailCount": 3,
-  "lockFailCodes": [
-    "401",
-    "403"
-  ],
-  "enableAutoLock": true
+  "lockFailCodes": ["401", "403"],
+  "enableAutoLock": true,
+  "logFile": true,
+  "logRetentionDays": 7,
+  "logDetail": "full",
+  "weeklySortBy": "priority",
+  "autoResume": false,
+  "autoResumeIdleMinutes": 10,
+  "autoResumeDebounceMinutes": 3,
+  "cmdPath": "/mnt/c/Windows/System32/cmd.exe",
+  "autoResumeProjects": []
 }
