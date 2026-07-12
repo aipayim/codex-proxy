@@ -1168,6 +1168,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
   <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
   <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
+  <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn">🙈 隐藏已屏蔽</button>
 </div>
 <div style="font-size:11px;color:#94a3b8;margin-bottom:6px" id="mgrCount">共 0 个</div>
 <div id="batchTestResults" style="display:none;margin-bottom:8px;padding:8px;background:#1e293b;border:1px solid #475569;border-radius:6px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace">
@@ -1627,7 +1628,7 @@ async function openMgr(){
 }
 function closeMgr(){document.getElementById("mgrModal").classList.remove("on")}
 let mgrSearchCache=[],dragIdx=-1,grpCache=null;
-let mgrCollapsed={},mgrCollapsedExpandedAll=true;
+let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=false;
 function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
   renderMgr();
@@ -1637,6 +1638,11 @@ function toggleAllMgrGroups(){
   const allCollapsed=mgrCollapsedExpandedAll;
   groups.forEach(g=>mgrCollapsed[g]=allCollapsed);
   mgrCollapsedExpandedAll=!allCollapsed;
+  renderMgr();
+}
+function toggleHideShielded(){
+  mgrHideShielded=!mgrHideShielded;
+  document.getElementById("mgrHideBtn").textContent=mgrHideShielded?"🙉 显示已屏蔽":"🙈 隐藏已屏蔽";
   renderMgr();
 }
 function unlockKey(i){
@@ -1662,6 +1668,7 @@ function renderMgr(){
     if(statusFilter==="discarded"&&k.status!=="discarded")continue;
     if(statusFilter==="locked"&&k._locked!==true)continue;
     if(statusFilter==="shielded"&&k.status!=="shielded")continue;
+    if(mgrHideShielded&&k.status==="shielded")continue;
     filtered.push(i);
     const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
     if(!grp[g])grp[g]=[];
@@ -1669,7 +1676,8 @@ function renderMgr(){
   }
   grpCache=grp;
   mgrSearchCache=filtered;
-  document.getElementById("mgrCount").textContent="共 "+mgrKeys.length+" 个"+(filtered.length<mgrKeys.length?"，筛选后 "+filtered.length+" 个":"");
+  const shieldedCount=mgrKeys.filter(k=>k.status==="shielded").length;
+  document.getElementById("mgrCount").textContent="共 "+mgrKeys.length+" 个，已屏蔽 "+shieldedCount+" 个"+(filtered.length<mgrKeys.length?"，筛选后 "+filtered.length+" 个":"")+(mgrHideShielded?"（已屏蔽已隐藏）":"");
   const groups=Object.keys(grp);
   for(let gi=0;gi<groups.length;gi++){
     const g=groups[gi],items=grp[g];
