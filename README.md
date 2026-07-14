@@ -499,6 +499,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "autoRecoverPoll": false,
   "autoRecoverPollInterval": 5,
   "autoRecoverPollCodes": [500, 502, 503, 504],
+  "autoRecoverDelays": [800],
   "autoResume": false,
   "autoResumeIdleMinutes": 10,
   "autoResumeDebounceMinutes": 3,
@@ -534,6 +535,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoRecoverPoll` | 是否启用快速恢复（true/false，默认 false）。Key 出现指定失败码时，自动启动短间隔轮询检测，全部恢复后停止 |
 | `autoRecoverPollInterval` | 轮询间隔（分钟，默认 5，最小 1） |
 | `autoRecoverPollCodes` | 触发的失败码数组，如 `[500,502,503,504]`。Key 出现其中任意状态码即激活快速轮询 |
+| `autoRecoverDelays` | 检测间隔数组（毫秒），默认 `[800]`。所有检测模式共用，每个 Key 测试完随机选一个值作为下一 Key 的等待时间。最多 10 个，范围 100–10000。推荐 `[800,1200,500]` 模拟人工操作节奏，降低批量风控概率 |
 | `autoResume` | 是否启用闲置自动恢复（true/false，默认 false） |
 | `autoResumeIdleMinutes` | 空闲阈值（分钟，默认 10） |
 | `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3） |
@@ -559,6 +561,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 - 探测成功（200 OK）→ 自动清除 `failCode`/`failTime`/`failPeriod`，若 `discarded` 恢复 `active`
 - 日志输出 `[proxy] auto-recover: #N recovered`
 - 配置保存后立即生效，无需重启（定时器自动重置）
+- 批量检测时按 `autoRecoverDelays` 配置的间隔串行执行，每 Key 测试完随机选一个间隔值再测下一个（默认 800ms），避免同时批量请求触发上游风控
 
 ### 三种模式
 

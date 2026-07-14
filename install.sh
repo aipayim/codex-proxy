@@ -58,6 +58,7 @@ if [ ! -f "config.json" ]; then
   "autoRecoverPoll": false,
   "autoRecoverPollInterval": 5,
   "autoRecoverPollCodes": [500, 502, 503, 504],
+  "autoRecoverDelays": [800],
   "roundRobin": false,
   "lockAfterFailCount": 3,
   "lockFailCodes": ["401", "403"],

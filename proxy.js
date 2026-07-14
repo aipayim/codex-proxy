@@ -90,6 +90,9 @@ function loadConfig() {
     config.autoRecoverPoll = c.autoRecoverPoll === true;
     config.autoRecoverPollInterval = Math.max(1, parseInt(c.autoRecoverPollInterval) || 5);
     config.autoRecoverPollCodes = Array.isArray(c.autoRecoverPollCodes) ? c.autoRecoverPollCodes : [500,502,503,504];
+    config.autoRecoverDelays = (Array.isArray(c.autoRecoverDelays) ? c.autoRecoverDelays : [800])
+      .map(v => parseInt(v)).filter(v => !isNaN(v) && v >= 100 && v <= 10000).slice(0, 10);
+    if (!config.autoRecoverDelays.length) config.autoRecoverDelays = [800];
     config.autoResume = c.autoResume === true;
     config.autoResumeIdleMinutes = Math.max(1, parseInt(c.autoResumeIdleMinutes) || 10);
     config.autoResumeDebounceMinutes = Math.max(1, parseInt(c.autoResumeDebounceMinutes) || 3);
@@ -235,9 +238,13 @@ function autoRecover(optCodes){
   }
   if (!toCheck.length) { console.log(`[proxy] auto-recover: 0 keys to check`); return; }
   console.log(`[proxy] auto-recover: checking ${toCheck.length} key(s)...`);
-  toCheck.forEach(i => {
+  const delays = config.autoRecoverDelays || [800];
+  let idx = 0;
+  function checkNext(){
+    if (idx >= toCheck.length) { console.log(`[proxy] auto-recover: all ${toCheck.length} key(s) done`); return; }
+    const i = toCheck[idx++];
     const acct = accounts[i];
-    if (!acct) return;
+    if (!acct) { setTimeout(checkNext, delays[Math.random()*delays.length|0]); return; }
     const targetUrl = new URL(acct.url);
     const mod = HTTP_MOD[targetUrl.protocol] || https;
     const opts = {
@@ -265,12 +272,14 @@ function autoRecover(optCodes){
         } else {
           console.log(`[proxy] auto-recover: #${i+1} test returned ${testRes.statusCode}, not recovered`);
         }
+        setTimeout(checkNext, delays[Math.random()*delays.length|0]);
       });
     });
-    testReq.on("error", () => {});
-    testReq.on("timeout", () => { testReq.destroy(); });
+    testReq.on("error", () => { setTimeout(checkNext, delays[Math.random()*delays.length|0]); });
+    testReq.on("timeout", () => { testReq.destroy(); setTimeout(checkNext, delays[Math.random()*delays.length|0]); });
     testReq.end();
-  });
+  }
+  checkNext();
 }
 
 function addLog(entry) {
@@ -1342,6 +1351,10 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgAutoCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="401,402,403,429,500,502,503,504" title="401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时"></div>
   <div style="color:#94a3b8;padding:4px 0">🚫 包含 discarded Key</div>
   <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
+  <div style="color:#94a3b8;padding:4px 0">⏱ 检测间隔（毫秒）<span style="color:#64748b;font-size:9px">每 Key 间等待，多个值用逗号分隔（最多 10 个），程序随机选取，模拟人工节奏</span></div>
+  <div><input id="cfgAutoRecoverDelays" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="800" placeholder="800,1200,500">
+    <div style="color:#64748b;font-size:9px;margin-top:2px">推荐 800,1200,500 等值，范围 100–10000。所有检测模式共用此设置</div>
+  </div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">⚡ 快速恢复（针对 5xx 等异常）</div>
   <div style="color:#94a3b8;padding:4px 0">启用快速恢复</div>
   <div><label><input type="checkbox" id="cfgAutoRecoverPoll"> 当 Key 出现以下状态码时快速轮询检测</label></div>
@@ -1487,6 +1500,7 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoRecoverPoll").checked=c.autoRecoverPoll===true;
     document.getElementById("cfgAutoRecoverPollInterval").value=c.autoRecoverPollInterval||5;
     document.getElementById("cfgAutoRecoverPollCodes").value=(c.autoRecoverPollCodes||[500,502,503,504]).join(",");
+    document.getElementById("cfgAutoRecoverDelays").value=(Array.isArray(c.autoRecoverDelays)?c.autoRecoverDelays:[800]).join(",");
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
     document.getElementById("cfgWeeklySortBy").checked=c.weeklySortBy==="expiry";
     document.getElementById("cfgLockCount").value=c.lockAfterFailCount||3;
@@ -2264,6 +2278,7 @@ async function saveConfig(){
     autoRecoverPoll:document.getElementById("cfgAutoRecoverPoll").checked,
     autoRecoverPollInterval:parseInt(document.getElementById("cfgAutoRecoverPollInterval").value)||5,
     autoRecoverPollCodes:(document.getElementById("cfgAutoRecoverPollCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
+    autoRecoverDelays:(document.getElementById("cfgAutoRecoverDelays").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)&&n>=100&&n<=10000).slice(0,10),
     roundRobin:document.getElementById("cfgRoundRobin").checked,
     weeklySortBy:document.getElementById("cfgWeeklySortBy").checked?"expiry":"priority",
     enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
