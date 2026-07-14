@@ -2402,6 +2402,14 @@ const server = http.createServer((req, res) => {
             autoRecoverDailyNextTime = savedDailyNextTime;
             if (autoRecoverDailyTimer) clearTimeout(autoRecoverDailyTimer);
             scheduleDailyRecover();
+          } else if (config.autoRecoverDaily && savedDailyNextTime > 0 && savedDailyNextTime <= Date.now() &&
+              savedDailyDays === config.autoRecoverDailyDays &&
+              savedDailyHour === config.autoRecoverDailyHour &&
+              savedDailyMin === config.autoRecoverDailyMinute) {
+            if (autoRecoverDailyTimer) clearTimeout(autoRecoverDailyTimer);
+            autoRecover();
+            autoRecoverDailyNextTime = calcNextDailyRun(Date.now(), savedDailyDays, savedDailyHour, savedDailyMin);
+            scheduleDailyRecover();
           }
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true }));
