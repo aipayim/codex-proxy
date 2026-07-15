@@ -1323,7 +1323,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
-<div class="trend-title"><span>流量趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
+<div class="trend-title"><span id="trendModeLabel" style="cursor:pointer;user-select:none" onclick="toggleTrendMode()">📊 流量趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
 <div class="trend-bars" id="trendBars"></div>
 <div class="trend-labels" id="trendLabels"></div>
 </div>
@@ -1374,7 +1374,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th><th style="max-width:80px">备注</th><th style="width:80px"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th><th style="max-width:80px;white-space:nowrap">备注 <span onclick="toggleRemarkMode()" style="cursor:pointer;font-size:9px;color:#94a3b8;user-select:none" title="点击切换显示模式">🔄</span></th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -1487,7 +1487,7 @@ function daysUntilResetClient(resetDay) {
   return (target - isoDay + 7) % 7 || 7;
 }
 let data=[],curDate="",fullKeys={};
-let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",statusCodeQ="",modelSQ="";
+let sortBy="idx",filterBy="all",trendRange="24h",trendMode="bytes",searchQ="",statusCodeQ="",modelSQ="";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
@@ -1663,6 +1663,11 @@ function removeResumeProject(btn){
   }
 }
 
+function toggleTrendMode(){
+  trendMode=trendMode==="bytes"?"req":"bytes";
+  document.getElementById("trendModeLabel").textContent=trendMode==="bytes"?"📊 流量趋势":"📈 次数趋势";
+  renderTrend();
+}
 function renderTrend(){
   const now=new Date();
   const hours=trendRange==="7d"?168:(trendRange==="30d"?720:24);
@@ -1686,7 +1691,7 @@ function renderTrend(){
     }
   }
   const keys=Object.keys(hMap);
-  const vals=keys.map(k=>hMap[k].bytes);
+  const vals=keys.map(k=>hMap[k][trendMode]);
   const max=Math.max(...vals,1);
   const bars=document.getElementById("trendBars");
   const labels=document.getElementById("trendLabels");
@@ -1701,7 +1706,7 @@ function renderTrend(){
       const kv=h.keys[ki];
       lines.push("  #"+ki+"  "+fmtBytes(kv.bytes)+"  "+kv.req+"次");
     }
-    return '<div class="trend-bar" style="height:'+Math.max(2,h.bytes/max*80)+'px" title="'+esc(lines.join("\\n"))+'"></div>';
+    return '<div class="trend-bar" style="height:'+Math.max(2,hMap[k][trendMode]/max*80)+'px" title="'+esc(lines.join("\\n"))+'"></div>';
   }).join("");
   const labelStep=trendRange==="30d"?24:(trendRange==="7d"?12:1);
   labels.innerHTML=keys.map((k,i)=>{
@@ -1956,7 +1961,19 @@ async function openMgr(){
   document.getElementById("mgrModal").classList.add("on");
 }
 function closeMgr(){document.getElementById("mgrModal").classList.remove("on")}
-let mgrSearchCache=[],dragIdx=-1,grpCache=null,mgrSortBy="default";
+function toggleRemarkMode(){
+  const rows=document.getElementById("mgrBody").children;
+  for(let i=0;i<rows.length;i++){
+    const r=rows[i];if(r.tagName!=="TR")continue;
+    const sidx=parseInt(r.querySelector(".mgr-cb")?.value||"-1");
+    if(sidx<0||sidx>=mgrKeys.length)continue;
+    const el=r.querySelector(".kremark");
+    if(el&&el.tagName==="INPUT")mgrKeys[sidx].remark=el.value.trim();
+  }
+  mgrRemarkMode=mgrRemarkMode==="remark"?"activated":"remark";
+  renderMgr();
+}
+let mgrSearchCache=[],dragIdx=-1,grpCache=null,mgrSortBy="default",mgrRemarkMode="remark";
 let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=false;
 function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
@@ -2072,7 +2089,7 @@ function renderMgr(){
         '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
         '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="指定模型名" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="逗号分隔，如 gpt-5.5, gpt-5.4-mini"></td>'+
         '<td><input class="kmodel" value="'+esc(k.model||"")+'" placeholder="覆盖模型" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="非空时转发请求时强制替换 model 为此值"></td>'+
-        '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"'+(k._activatedAt?' title="首次启用: '+fmtDate(k._activatedAt)+' | 启用至今: '+fmtDuration(Date.now()-k._activatedAt)+'"':'')+'></td>'+
+        '<td>'+(mgrRemarkMode==="activated"&&k._activatedAt?'<span class="kremark" style="font-size:10px;color:#94a3b8;cursor:default"'+(k.remark?' title="'+esc(k.remark)+'"':'')+'>'+fmtDate(k._activatedAt)+' / '+fmtDuration(Date.now()-k._activatedAt)+'</span>':'<input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"'+(k._activatedAt?' title="首次启用: '+fmtDate(k._activatedAt)+' | 启用至今: '+fmtDuration(Date.now()-k._activatedAt)+'"':'')+'>')+'</td>'+
         '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
           '<span class="del" onclick="testKey('+i+')" title="#'+(i+1)+' 测试连通性">🔍</span>'+
           '<span class="del" onclick="resetKeyStatus('+i+')" title="#'+(i+1)+' 重置状态（清除冷却/废弃/锁死）">🔄</span>'+
@@ -2160,7 +2177,7 @@ function collectMgr(){
     result[sidx].models=raw?raw.split(",").map(s=>s.trim()).filter(Boolean):[];
     const modelEl=r.querySelector(".kmodel");
     result[sidx].model=modelEl?modelEl.value.trim()||null:result[sidx].model;
-    result[sidx].remark=r.querySelector(".kremark").value.trim();
+    const remEl=r.querySelector(".kremark");result[sidx].remark=remEl&&remEl.tagName==="INPUT"?remEl.value.trim():(mgrKeys[sidx].remark||"");
     result[sidx].status=mgrKeys[sidx].status&&mgrKeys[sidx].status!=="active"?mgrKeys[sidx].status:void 0;
   }
   return result.filter(k=>k.key&&k.url);
