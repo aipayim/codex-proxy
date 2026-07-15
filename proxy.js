@@ -1269,7 +1269,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="top-row" id="summary"></div>
 <div class="controls" id="controls">
   <label>排序</label>
-  <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
+  <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="activatedAt">首次启用（早→晚）</option><option value="duration">使用时长（长→短）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
   <label>筛选</label>
    <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
   <label>重置</label>
@@ -1318,6 +1318,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <select id="mgrSortBy" onchange="mgrSortBy=this.value;renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
     <option value="default">默认顺序</option>
     <option value="resetDay">按重置日（周一→周日）</option>
+    <option value="activatedAt">首次启用（早→晚）</option>
+    <option value="duration">使用时长（长→短）</option>
   </select>
   <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)">全选</button>
   <button class="btn" style="font-size:11px" onclick="clearMgrSearch()">取消</button>
@@ -1750,6 +1752,10 @@ function render(){
       const db=b.reset==="weekly"?daysUntilResetClient(b.resetDay):99;
       return da-db;
     });
+  }else if(sortBy==="activatedAt"){
+    filtered.sort((a,b)=>(a.activatedAt||0)-(b.activatedAt||0));
+  }else if(sortBy==="duration"){
+    filtered.sort((a,b)=>(b.activatedAt||0)-(a.activatedAt||0));
   }
 
   let html="";
@@ -1809,7 +1815,9 @@ function render(){
       (avgD?'<div class="row"><div class="label">平均延迟</div><div class="val">'+avgD+'</div></div>':"")+
       (avgT?'<div class="row"><div class="label">平均首字节</div><div class="val">'+avgT+'</div></div>':"")+
       '<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px"><div class="label">P50 / P95 / P99</div><div class="val">'+p50+' / '+p95+' / '+p99+'</div></div>'+
-      '<div class="row"><div class="label">滑动成功率</div><div class="val">5分钟: '+r5+' | 1小时: '+r1+'</div></div>';
+      '<div class="row"><div class="label">滑动成功率</div><div class="val">5分钟: '+r5+' | 1小时: '+r1+'</div></div>'+
+      (a.activatedAt?'<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px"><span class="label">首次启用</span><span class="val">'+fmtDate(a.activatedAt)+'</span></div>':'')+
+      (a.activatedAt?'<div class="row"><span class="label">启用至今</span><span class="val">'+fmtDuration(Date.now()-a.activatedAt)+'</span></div>':'');
 
     if(daily){
       const db=daily.inputBytes||0,do_=daily.outputBytes||0;
@@ -1849,6 +1857,8 @@ function toggleCollapse(idx){
 function todayStr(){return new Date().toISOString().slice(0,10)}
 function fmtBytes(n){if(!n)return"0B";if(n>=1048576)return(n/1048576).toFixed(1)+"MB";if(n>=1024)return(n/1024).toFixed(1)+"KB";return n+"B"}
 function fmtDur(ms){if(ms>=1000)return(ms/1000).toFixed(2)+"s";return ms+"ms"}
+function fmtDate(ts){const d=new Date(ts);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
+function fmtDuration(ms){if(ms<=0)return'刚刚';const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+'d '+(h%24)+'h':h>0?h+'h '+(m%60)+'m':m>0?m+'m '+(s%60)+'s':s+'s'}
 function maskKey(k){return k&&k.length>12?k.slice(0,6)+'...'+k.slice(-4):(k||'')}
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 const FAIL_MEAN={"401":"API Key 无效或已过期","402":"额度不足，账号已欠费","403":"权限不足，Key 无访问权限","429":"请求过频繁，触发了速率限制","500":"上游服务器内部错误","502":"上游网关错误","503":"服务暂时不可用","504":"上游超时"};
@@ -1971,6 +1981,10 @@ function renderMgr(){
         return da-db;
       });
     });
+  }else if(mgrSortBy==="activatedAt"){
+    Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>(mgrKeys[a]._activatedAt||0)-(mgrKeys[b]._activatedAt||0))});
+  }else if(mgrSortBy==="duration"){
+    Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>(mgrKeys[b]._activatedAt||0)-(mgrKeys[a]._activatedAt||0))});
   }
   const groups=Object.keys(grp);
   for(let gi=0;gi<groups.length;gi++){
@@ -2023,7 +2037,7 @@ function renderMgr(){
         '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
         '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="指定模型名" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="逗号分隔，如 gpt-5.5, gpt-5.4-mini"></td>'+
         '<td><input class="kmodel" value="'+esc(k.model||"")+'" placeholder="覆盖模型" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="非空时转发请求时强制替换 model 为此值"></td>'+
-        '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"></td>'+
+        '<td><input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"'+(k._activatedAt?' title="首次启用: '+fmtDate(k._activatedAt)+' | 启用至今: '+fmtDuration(Date.now()-k._activatedAt)+'"':'')+'></td>'+
         '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
           '<span class="del" onclick="testKey('+i+')" title="#'+(i+1)+' 测试连通性">🔍</span>'+
           '<span class="del" onclick="resetKeyStatus('+i+')" title="#'+(i+1)+' 重置状态（清除冷却/废弃/锁死）">🔄</span>'+
@@ -2531,6 +2545,7 @@ const server = http.createServer((req, res) => {
         const ks = i < accounts.length ? getKeyState(i) : state.keys[i];
         if (ks && ks.status === "locked") raw[i]._locked = true;
         if (ks && (ks.failCode || ks.failCode === 0)) raw[i]._failCode = ks.failCode;
+        if (ks && ks.activatedAt) raw[i]._activatedAt = ks.activatedAt;
         if (i < accounts.length && accounts[i]) { raw[i]._available = !inCooldown(i); if (accounts[i].models && accounts[i].models.length) raw[i]._models = accounts[i].models; }
       }
       res.writeHead(200, cors);
