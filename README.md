@@ -357,14 +357,14 @@ codex
 - 状态码筛选：输入 `401` 等过滤指定失败码的 Key
 - 搜索：ID / 备注 / 地址
 - 实时显示筛选后数量：`显示 X / Y 个`
-- 批量：勾选卡片 → 批量重置 / 批量屏蔽
+- 批量：勾选卡片 → 批量重置 / 批量屏蔽 / ⚡优先使用（逐个使用勾选的key，用完恢复常态）/ ⭕优先轮询（勾选的key间轮询，全冷却后恢复常态）
 
 ### 流量趋势图
 24 小时 / 7 天 / 30 天切换，每小时柱状图，X 轴标签密度自适配。
 屏蔽 Key 的流量也纳入趋势图统计。
 
 ### Key 卡片
-脱敏显示（点击明文切换）、重置类型徽章（每周 Key 额外显示具体周几/自动）、并发徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、首次启用时间+启用至今、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮、锁死 Key 紫色标记
+脱敏显示（点击明文切换）、重置类型徽章（每周 Key 额外显示具体周几/自动）、并发徽章、批量优先徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、首次启用时间+启用至今、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮、锁死 Key 紫色标记
 
 ### 状态栏快捷操作
 - 🔍 测试连通性
@@ -399,6 +399,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__apply-test-result` | POST | 应用批量测试结果：`{"idx":1, "failCode":429}` → markFailure；`failCode=null/200` → 清空冷却（`{"idx":1, "failCode":null}`） |
 | `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`） |
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
+| `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |
 | `/__logs` | GET | 请求日志（`?key=11&status=502&model=gpt-5.6-sol&since=ts&until=ts&limit=200&offset=0&format=csv`，支持 `4xx`/`5xx` 通配） |
 | `/__export-logs` | GET | 导出历史日志（`?date=2026-07-10&key=11&status=502&model=gpt-5.6-sol&format=csv`，无 date 时返回内存日志） |
@@ -437,6 +438,8 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `lastUsed` | int/null | 最后使用时间戳 |
 | `daily` | object | 按日统计 `{"YYYY-MM-DD": {...}}` |
 | `hourly` | object | 按小时统计 `{"YYYY-MM-DD-HH": {...}}` |
+| `boostedBatch` | array | 批量优先中的 Key 序号列表（1-based） |
+| `boostedBatchMode` | string | 批量优先模式：`"use"` / `"roundrobin"` / `""` |
 
 ### /metrics Prometheus
 
@@ -455,7 +458,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 连接后自动推送：
 
 ```json
-{"type": "status", "data": [...]}
+{"type": "status", "data": [...], "boostedIdx": -1, "boostedBatch": [], "boostedBatchMode": ""}
 {"type": "notification", "notificationType": "all_keys_failed", "time": "..."}
 ```
 

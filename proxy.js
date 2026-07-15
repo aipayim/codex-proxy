@@ -50,6 +50,9 @@ let _rrCursor = 0;
 let _weeklySubIdx = 0;
 let _weeklySubCursors = {};
 let _boostKey = -1;
+let _boostBatch = [];
+let _boostBatchMode = "";
+let _boostBatchCursor = 0;
 
 process.on("uncaughtException", err => {
   console.error("[proxy] UNCAUGHT EXCEPTION:", err.stack || err.message);
@@ -638,6 +641,23 @@ function pickKey(model) {
     _boostKey = -1;
     broadcastStatus();
   }
+  // Batch Boost
+  if (_boostBatch.length && _boostBatchMode === "use") {
+    for (const idx of _boostBatch) {
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && getKeyState(idx).status !== "discarded") return idx;
+    }
+  }
+  if (_boostBatch.length && _boostBatchMode === "roundrobin") {
+    if (_boostBatchCursor >= _boostBatch.length) _boostBatchCursor = 0;
+    for (let i = 0; i < _boostBatch.length; i++) {
+      const bi = (_boostBatchCursor + i) % _boostBatch.length;
+      const idx = _boostBatch[bi];
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && getKeyState(idx).status !== "discarded") {
+        _boostBatchCursor = (bi + 1) % _boostBatch.length;
+        return idx;
+      }
+    }
+  }
 
   if (config.roundRobin) {
     const groups = [[], [], []];
@@ -759,7 +779,7 @@ function processQueue() {
 }
 
 function loadAccounts() {
-  _boostKey = -1; // clear boost on key reload
+  _boostKey = -1; _boostBatch=[]; _boostBatchMode=""; _boostBatchCursor=0; // clear boost on key reload
   const raw = fs.readFileSync(KEYS_FILE, "utf-8");
   const parsed = JSON.parse(raw);
   const oldAccounts = accounts;
@@ -1010,7 +1030,7 @@ function setupWebSocket(server) {
   wss.on("connection", (ws) => {
     wsClients.add(ws);
     const data = buildStatusData();
-    const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1 });
+    const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch, boostedBatchMode: _boostBatchMode });
     ws.send(msg);
     ws.on("close", () => wsClients.delete(ws));
     ws.on("error", () => wsClients.delete(ws));
@@ -1019,7 +1039,7 @@ function setupWebSocket(server) {
 
 function broadcastStatus() {
   const data = buildStatusData();
-  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, lastRequestTime, lastResumeTime });
+  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch, boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime });
   lastBroadcast = msg;
   for (const ws of wsClients) {
     if (ws.readyState === 1) ws.send(msg);
@@ -1295,8 +1315,12 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
   <span style="color:#94a3b8;font-size:12px" id="batchCount">已选 0 个</span>
+  <span id="batchModeStatus" style="display:none;color:#facc15;font-size:12px;font-weight:500"></span>
   <button class="btn" style="font-size:11px" onclick="batchActionCards('reset')">🔄 批量重置</button>
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchActionCards('shield')">🔇 批量屏蔽</button>
+  <button class="btn" id="batchBoostUseBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('use')">⚡ 优先使用</button>
+  <button class="btn" id="batchBoostRRBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('roundrobin')">⭕ 优先轮询</button>
+  <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
 <div class="trend-title"><span>流量趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
@@ -1469,12 +1493,13 @@ let wsFailed=false;
 let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
 let lastRequestTime=0,lastResumeTime=0;
 let collapsedCards={};
+boostedBatch=[];boostedBatchMode="";
 
 async function httpLoad(){
   try{
     const r=await fetch("http://localhost:3456/__status");
     if(!r.ok)throw new Error("HTTP "+r.status);
-    const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;if(j.lastRequestTime)lastRequestTime=j.lastRequestTime;if(j.lastResumeTime)lastResumeTime=j.lastResumeTime;render();
+    const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;boostedBatch=j.boostedBatch||[];boostedBatchMode=j.boostedBatchMode||"";if(j.lastRequestTime)lastRequestTime=j.lastRequestTime;if(j.lastResumeTime)lastResumeTime=j.lastResumeTime;render();
   }catch(e){
     if(!wsFailed)document.getElementById("sub").textContent="连接失败，正在重试...";
   }
@@ -1486,7 +1511,7 @@ function connectWS(){
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
-      if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
+      if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;boostedBatch=msg.boostedBatch||[];boostedBatchMode=msg.boostedBatchMode||"";if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
       if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
         const tbody=document.getElementById("logBody");
@@ -1804,6 +1829,7 @@ function render(){
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
+      (boostedBatch.includes(a.idx)?' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+(boostedBatchMode==="use"?"队列":"轮询")+'</span>':'')+
       ' <span class="badge bd-score">'+score+'分</span>'+
       '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="折叠">▼</span></span></div>'+
       '<div class="meter"><div class="meter-fill" style="width:'+score+'%;background:'+meterColor+'"></div></div>'+
@@ -1851,7 +1877,9 @@ function render(){
       '<span class="btn-act" onclick="cardTest('+a.idx+')" title="测试连通性">🔍</span>'+
       '</span></div></div>';
   }
+  const checkedIdxs=[...document.querySelectorAll("#grid .card-cb:checked")].map(c=>parseInt(c.dataset.idx));
   document.getElementById("grid").innerHTML=html;
+  checkedIdxs.forEach(i=>{const cb=document.querySelector('#grid .card-cb[data-idx="'+i+'"]');if(cb)cb.checked=true});
   updateBatchBar();
   for(const idx in collapsedCards){const b=document.getElementById("body-"+idx);if(b)b.classList.toggle("collapsed",collapsedCards[idx])}
 }
@@ -2357,6 +2385,10 @@ function selectAllCards(sel){
   document.querySelectorAll("#grid .card-cb").forEach(c=>c.checked=sel);
 }
 function batchActionCards(action){
+  if(action==="cancelboost"){
+    fetch("http://localhost:3456/__boost-batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:""})}).then(()=>setTimeout(loadKeys,100)).catch(()=>{});
+    return;
+  }
   const cbs=document.querySelectorAll("#grid .card-cb:checked");
   const sel=[...cbs].map(c=>parseInt(c.dataset.idx)).filter(i=>i>0);
   if(!sel.length){alert("请先勾选要操作的 Key");return}
@@ -2365,6 +2397,8 @@ function batchActionCards(action){
     sel.forEach(i=>fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i,status:"shielded"})}).catch(()=>{}));
   }else if(action==="reset"){
     sel.forEach(i=>fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i})}).catch(()=>{}));
+  }else if(action==="use"||action==="roundrobin"){
+    fetch("http://localhost:3456/__boost-batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:action,idxs:sel})}).then(()=>setTimeout(loadKeys,100)).catch(()=>{});
   }
 }
 function cardShield(idx){
@@ -2375,9 +2409,26 @@ function updateBatchBar(){
   const cbs=document.querySelectorAll("#grid .card-cb:checked");
   const bar=document.getElementById("batchBar");
   const cnt=document.getElementById("batchCount");
+  const modeStatus=document.getElementById("batchModeStatus");
+  const useBtn=document.getElementById("batchBoostUseBtn");
+  const rrBtn=document.getElementById("batchBoostRRBtn");
+  const cancelBtn=document.getElementById("batchCancelBoostBtn");
   if(!bar||!cnt)return;
-  if(cbs.length){bar.style.display="flex";cnt.textContent="已选 "+cbs.length+" 个"}
-  else bar.style.display="none";
+  if(boostedBatchMode){
+    bar.style.display="flex";cnt.style.display="none";
+    if(modeStatus){modeStatus.style.display="inline";modeStatus.textContent="⏳ 批量优先 ("+(boostedBatchMode==="use"?"队列":"轮询")+") 中"}
+    if(useBtn)useBtn.style.display="none";
+    if(rrBtn)rrBtn.style.display="none";
+    if(cancelBtn)cancelBtn.style.display="inline";
+  }else if(cbs.length){
+    bar.style.display="flex";cnt.style.display="inline";cnt.textContent="已选 "+cbs.length+" 个";
+    if(modeStatus)modeStatus.style.display="none";
+    if(useBtn)useBtn.style.display="inline";
+    if(rrBtn)rrBtn.style.display="inline";
+    if(cancelBtn)cancelBtn.style.display="none";
+  }else{
+    bar.style.display="none";
+  }
 }
 </script>
 </body>
@@ -2411,7 +2462,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && pathname === "/__status") {
     res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
     const data = buildStatusData();
-    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, lastRequestTime, lastResumeTime }, null, 2));
+    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch, boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime }, null, 2));
     return;
   }
 
@@ -2792,6 +2843,39 @@ const server = http.createServer((req, res) => {
           broadcastStatus();
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true, boosted: _boostKey >= 0 }));
+        } catch (e) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__boost-batch") {
+    if (req.method === "POST") {
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
+        try {
+          const { mode, idxs } = JSON.parse(body);
+          if (!mode) {
+            _boostBatch = []; _boostBatchMode = ""; _boostBatchCursor = 0;
+          } else {
+            if (mode !== "use" && mode !== "roundrobin") throw new Error("mode must be 'use', 'roundrobin', or empty");
+            if (!Array.isArray(idxs) || !idxs.length) throw new Error("idxs required");
+            const arr = [...new Set(idxs)].map(i => { const n = parseInt(i); if (isNaN(n) || n < 1) throw new Error("invalid idx"); return n - 1; }).sort((a, b) => a - b);
+            _boostBatch = arr; _boostBatchMode = mode; _boostBatchCursor = 0;
+            _boostKey = -1; // mutually exclusive with single boost
+            console.log(`[proxy] batch boost set: mode=${mode} idxs=[${arr.map(i=>i+1).join(",")}]`);
+          }
+          broadcastStatus();
+          res.writeHead(200, cors);
+          res.end(JSON.stringify({ ok: true, batch: _boostBatch.map(i => i + 1), mode: _boostBatchMode }));
         } catch (e) {
           res.writeHead(400, cors);
           res.end(JSON.stringify({ error: e.message }));
