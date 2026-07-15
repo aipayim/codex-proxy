@@ -47,6 +47,8 @@ let lastRequestTime = Date.now();
 let lastResumeTime = 0;
 let autoResumeTimer = null;
 let _rrCursor = 0;
+let _weeklySubIdx = 0;
+let _weeklySubCursors = {};
 let _boostKey = -1;
 
 process.on("uncaughtException", err => {
@@ -655,6 +657,31 @@ function pickKey(model) {
     for (let gi = 0; gi <= 2; gi++) {
       const g = groups[gi];
       if (!g.length) continue;
+      if (gi === 1) {
+        const sub = {};
+        for (const idx of g) {
+          const d = accounts[idx].resetDay != null ? String(accounts[idx].resetDay) : 'auto';
+          if (!sub[d]) sub[d] = [];
+          sub[d].push(idx);
+        }
+        const days = Object.keys(sub).sort((a, b) => {
+          if (a === 'auto') return 1;
+          if (b === 'auto') return -1;
+          return daysUntilReset(parseInt(a)) - daysUntilReset(parseInt(b));
+        });
+        if (_weeklySubIdx >= days.length) _weeklySubIdx = 0;
+        for (let s = 0; s < days.length; s++) {
+          const di = (_weeklySubIdx + s) % days.length;
+          const pool = sub[days[di]];
+          const avail = pool.filter(i => !inCooldown(i));
+          if (!avail.length) continue;
+          if (!_weeklySubCursors[days[di]]) _weeklySubCursors[days[di]] = 0;
+          if (_weeklySubCursors[days[di]] >= avail.length) _weeklySubCursors[days[di]] = 0;
+          _weeklySubIdx = di;
+          return avail[_weeklySubCursors[days[di]]++];
+        }
+        continue;
+      }
       const avail = g.filter(i => !inCooldown(i));
       const pool = avail.length ? avail : g;
       if (_rrCursor >= pool.length) _rrCursor = 0;

@@ -186,6 +186,8 @@ codex
 
 例：`priority: 10` 的 daily Key 在 daily 组内独享轮询，冷却后自动切换到 daily 组内 `priority: 0` 的 Key 轮询；daily 组全部冷却后切入 weekly 组。
 
+> **启用「每周 Key 按到期日排序」时**（`weeklySortBy: "expiry"`），weekly 组内部进一步按 `resetDay` 拆分为亚组（周一/周二/…/周日/自动）。每亚组内的 Key **轮询用完（全部冷却）后才切入下一亚组**，同一周内不同天的 Key 不会混杂使用，流量更均衡。
+
 ### 每周 Key 按到期日排序
 
 可在系统配置中勾选「每周 Key 按到期日排序」。启用后 `pickKey()` 从 weekly 组选取 Key 时，不再按 priority 排序，而是按**下次重置时间最近优先**：
@@ -196,6 +198,8 @@ codex
 | 周三 | 周四 → 周五 → ... → 周二 → 周三（当天）→ 无 resetDay |
 
 算法：计算每个 weekly Key 的 `resetDay` 距今天数，**距离下次重置越近的 Key 越先使用**，当天重置的 Key 排在同组最后，`resetDay` 未设置的 Key 排最后。
+
+> **轮询均摊模式下**（`roundRobin: true` + `weeklySortBy: "expiry"`），weekly 组会按 `resetDay` 拆为独立亚组，按到期日顺序逐组轮询。当前亚组全部冷却后才进入下一亚组，避免不同重置日的 Key 混杂使用。亚组内独立维护轮询游标，确保同一亚组内各 Key 被均匀使用。
 
 配置字段：`weeklySortBy`（`"priority"` / `"expiry"`），默认 `"priority"`。
 
