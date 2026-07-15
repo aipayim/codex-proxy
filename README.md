@@ -378,7 +378,9 @@ codex
 
 ### 日志查看器
 最近 2000 条请求记录，WebSocket 实时推送（日志弹窗打开时自动追加），时间/Key/方法/模型/路径/状态码/流量/延迟。
-支持筛选：按 Key 序号、状态码（支持 `4xx` `5xx` 通配）、模型名子串、时间范围（5 分钟/15 分钟/1 小时/全部）。
+支持筛选：按 Key 序号、状态码（支持 `4xx` `5xx` 通配）、模型名子串、时间范围（5 分钟/15 分钟/1 小时/24 小时/7 天/30 天/自定义范围）。
+自定义范围使用 `<input type="datetime-local">` 选择起止时间，选中「自定义范围」后显示输入框。
+选择 24h/7d/30d 或自定义范围时，服务端自动读取 `logs/` 目录下的历史 JSONL 文件与内存日志合并去重，支持回溯已保存的日志文件。
 支持 CSV 导出当前筛选结果。
 
 ### Key 管理
@@ -394,7 +396,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/` 或 `/dashboard` | GET | 监控面板 HTML |
 | `/__status` | GET | JSON 状态（所有 Key 的完整指标） |
 | `/__keys` | GET | 读取 keys.json（富化 `_locked`/`_failCode`/`_activatedAt`/`_available` 字段） |
-| `/__keys` | PUT | 写入 keys.json（自动重载） |
+| `/__keys` | PUT | 写入 keys.json（自动重载；自动清除因 reset/resetDay 变更导致的过期 failCode） |
 | `/__config` | GET | 读取 config.json |
 | `/__config` | PUT | 写入 config.json（自动重载） |
 | `/__reset-key` | POST | 重置指定 Key 的冷却/废弃状态（`{"idx": 1}`） |

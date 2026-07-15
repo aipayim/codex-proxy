@@ -1464,9 +1464,14 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <input id="logKeyFilter" placeholder="Key #" style="width:50px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logStatusFilter" placeholder="状态码" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logModelFilter" placeholder="模型" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<select id="logTimeFilter" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<option value="">全部时间</option><option value="5">最近 5 分钟</option><option value="15">最近 15 分钟</option><option value="60">最近 1 小时</option>
+<select id="logTimeFilter" onchange="toggleLogCustomRange()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<option value="">全部时间</option><option value="5m">最近 5 分钟</option><option value="15m">最近 15 分钟</option><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="custom">自定义范围</option>
 </select>
+<span id="logCustomRange" style="display:none">
+<input type="datetime-local" id="logStartTime" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px;width:160px">
+<span style="color:#94a3b8;font-size:11px"> ~ </span>
+<input type="datetime-local" id="logEndTime" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px;width:160px">
+</span>
 <button class="btn" onclick="reloadLogs()" style="font-size:11px;padding:2px 8px">🔍 搜索</button>
 <button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px">⬇ CSV</button>
 </div>
@@ -2319,7 +2324,15 @@ function buildLogFilterQuery(){
   const m=document.getElementById("logModelFilter")?.value.trim();
   if(m)p.set("model",m);
   const t=document.getElementById("logTimeFilter")?.value;
-  if(t){const ms=parseInt(t)*60000;p.set("since",Date.now()-ms)}
+  if(t==="custom"){
+    const st=document.getElementById("logStartTime")?.value;
+    const et=document.getElementById("logEndTime")?.value;
+    if(st)p.set("since",new Date(st).getTime());
+    if(et)p.set("until",new Date(et).getTime());
+  }else if(t){
+    const ms={"5m":3e5,"15m":9e5,"1h":36e5,"24h":864e5,"7d":6048e5,"30d":2592e6}[t];
+    if(ms)p.set("since",Date.now()-ms);
+  }
   p.set("limit","500");
   return p.toString();
 }
@@ -2333,6 +2346,10 @@ async function loadLogs(){
   }catch(e){}
 }
 function reloadLogs(){loadLogs()}
+function toggleLogCustomRange(){
+  document.getElementById("logCustomRange").style.display=
+    document.getElementById("logTimeFilter").value==="custom"?"inline":"none";
+}
 function exportLogs(){
   const q=buildLogFilterQuery();
   window.open("http://localhost:3456/__logs?"+q+"&format=csv");
@@ -2642,6 +2659,20 @@ const server = http.createServer((req, res) => {
           const raw = JSON.stringify(arr, null, 2);
           fs.writeFileSync(KEYS_FILE, raw, "utf-8");
           loadAccounts();
+          for (let i = 0; i < accounts.length; i++) {
+            const ks = getKeyState(i);
+            if (ks && ks.failCode && ks.failPeriod) {
+              const curr = keyPeriod(accounts[i].reset, i);
+              if (ks.failPeriod !== curr) {
+                delete ks.failCode;
+                delete ks.failTime;
+                delete ks.failPeriod;
+                delete ks.failCount;
+              }
+            }
+          }
+          saveState();
+          broadcastStatus();
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true, count: arr.length }));
         } catch (e) {
@@ -2738,12 +2769,49 @@ const server = http.createServer((req, res) => {
       const until = u.searchParams.get("until");
       const offset = parseInt(u.searchParams.get("offset") || "0", 10);
       const format = u.searchParams.get("format");
-      let entries = requestLog;
+      let entries;
+      if (since || until) {
+        const sTime = since ? parseInt(since, 10) : 0;
+        const uTime = until ? parseInt(until, 10) : 9e15;
+        const fileEntries = [];
+        try {
+          if (fs.existsSync(LOG_DIR)) {
+            const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
+            for (const f of files) {
+              const dateStr = f.replace(".jsonl", "");
+              const fd = new Date(dateStr + "T00:00:00");
+              const fdEnd = fd.getTime() + 86400000;
+              if (fdEnd < sTime || fd.getTime() > uTime) continue;
+              const lines = fs.readFileSync(path.join(LOG_DIR, f), "utf-8").trim().split("\n");
+              for (const line of lines) {
+                if (!line) continue;
+                try { const e = JSON.parse(line); if (e.time >= sTime && e.time <= uTime) fileEntries.push(e); } catch (e2) {}
+              }
+            }
+          }
+        } catch (e) { /* log dir read error */ }
+        const seen = new Set();
+        const merged = [];
+        for (const e of fileEntries) {
+          const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+          if (!seen.has(k)) { seen.add(k); merged.push(e); }
+        }
+        for (const e of requestLog) {
+          if (e.time >= sTime && e.time <= uTime) {
+            const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+            if (!seen.has(k)) { seen.add(k); merged.push(e); }
+          }
+        }
+        entries = merged;
+      } else {
+        entries = requestLog;
+      }
       if (since) { const t = parseInt(since, 10); if (t) entries = entries.filter(e => e.time >= t); }
       if (until) { const t = parseInt(until, 10); if (t) entries = entries.filter(e => e.time <= t); }
       if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length) entries = entries.filter(e => keys.includes(e.idx)); }
       if (status) { entries = entries.filter(e => { const s = e.status || 0; if (status.endsWith("xx")) { const prefix = parseInt(status, 10); return !isNaN(prefix) && Math.floor(s / 100) === prefix; } return String(s) === status; }); }
       if (model) { const ml = model.toLowerCase(); entries = entries.filter(e => (e.reqModel||"").toLowerCase().includes(ml) || (e.overrideModel||"").toLowerCase().includes(ml)); }
+      if (since || until) entries.sort((a, b) => b.time - a.time);
       entries = entries.slice(-limit - offset, entries.length - offset);
       if (entries.length > limit) entries = entries.slice(entries.length - limit);
       if (format === "csv") {
