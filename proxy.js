@@ -661,8 +661,10 @@ function pickKey(model) {
         const sub = {};
         for (const idx of g) {
           const d = accounts[idx].resetDay != null ? String(accounts[idx].resetDay) : 'auto';
-          if (!sub[d]) sub[d] = [];
-          sub[d].push(idx);
+          if (!sub[d]) sub[d] = {};
+          const p = accounts[idx].priority || 0;
+          if (!sub[d][p]) sub[d][p] = [];
+          sub[d][p].push(idx);
         }
         const days = Object.keys(sub).sort((a, b) => {
           if (a === 'auto') return 1;
@@ -672,13 +674,18 @@ function pickKey(model) {
         if (_weeklySubIdx >= days.length) _weeklySubIdx = 0;
         for (let s = 0; s < days.length; s++) {
           const di = (_weeklySubIdx + s) % days.length;
-          const pool = sub[days[di]];
-          const avail = pool.filter(i => !inCooldown(i));
-          if (!avail.length) continue;
-          if (!_weeklySubCursors[days[di]]) _weeklySubCursors[days[di]] = 0;
-          if (_weeklySubCursors[days[di]] >= avail.length) _weeklySubCursors[days[di]] = 0;
-          _weeklySubIdx = di;
-          return avail[_weeklySubCursors[days[di]]++];
+          const prioGroups = sub[days[di]];
+          const prios = Object.keys(prioGroups).map(Number).sort((a, b) => b - a);
+          for (const p of prios) {
+            const pool = prioGroups[p];
+            const avail = pool.filter(i => !inCooldown(i));
+            if (!avail.length) continue;
+            const ck = days[di] + ':' + p;
+            if (!_weeklySubCursors[ck]) _weeklySubCursors[ck] = 0;
+            if (_weeklySubCursors[ck] >= avail.length) _weeklySubCursors[ck] = 0;
+            _weeklySubIdx = di;
+            return avail[_weeklySubCursors[ck]++];
+          }
         }
         continue;
       }

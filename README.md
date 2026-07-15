@@ -184,9 +184,11 @@ codex
 | daily 用完后 → weekly 组 | 同上分层逻辑 |
 | weekly 用完后 → never 组 | 同上分层逻辑 |
 
-例：`priority: 10` 的 daily Key 在 daily 组内独享轮询，冷却后自动切换到 daily 组内 `priority: 0` 的 Key 轮询；daily 组全部冷却后切入 weekly 组。
+例：`priority: 10` 的 daily Key 在 daily 组内轮询使用，冷却后自动切换到 daily 组内 `priority: 0` 的 Key 轮询；daily 组全部冷却后切入 weekly 组。
 
-> **启用「每周 Key 按到期日排序」时**（`weeklySortBy: "expiry"`），weekly 组内部进一步按 `resetDay` 拆分为亚组（周一/周二/…/周日/自动）。每亚组内的 Key **轮询用完（全部冷却）后才切入下一亚组**，同一周内不同天的 Key 不会混杂使用，流量更均衡。
+> **轮询均摊模式下**（`roundRobin: true`），weekly 组内部进一步按 `resetDay` 拆分为亚组（周一/周二/…/周日/自动）。每亚组内的 Key **全部冷却后才切入下一亚组**，同一周内不同天的 Key 不会混杂使用，流量更均衡。
+> 
+> 亚组内再按 `priority` 拆分为多层，每层独立轮询。每次 pickKey 从最高 priority 层开始扫描，有可用即取，用尽（全部冷却）后才切到低 priority 层。高 priority 层的 Key 一旦恢复就立即被重新使用，不会因低 priority 层未用完而被忽略。
 
 ### 每周 Key 按到期日排序
 
@@ -199,7 +201,7 @@ codex
 
 算法：计算每个 weekly Key 的 `resetDay` 距今天数，**距离下次重置越近的 Key 越先使用**，当天重置的 Key 排在同组最后，`resetDay` 未设置的 Key 排最后。
 
-> **轮询均摊模式下**（`roundRobin: true` + `weeklySortBy: "expiry"`），weekly 组会按 `resetDay` 拆为独立亚组，按到期日顺序逐组轮询。当前亚组全部冷却后才进入下一亚组，避免不同重置日的 Key 混杂使用。亚组内独立维护轮询游标，确保同一亚组内各 Key 被均匀使用。
+> **轮询均摊模式下**（`roundRobin: true`），weekly 组会按 `resetDay` 拆为独立亚组，按到期日顺序逐组亚组。每个亚组内再按 `priority` 分层，每层独立轮询。从高 priority 层到低 priority 层逐层扫描，当前层全部冷却才切到下一层，高 priority 一旦恢复立即切回。
 
 配置字段：`weeklySortBy`（`"priority"` / `"expiry"`），默认 `"priority"`。
 
