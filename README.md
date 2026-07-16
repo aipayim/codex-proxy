@@ -358,7 +358,7 @@ codex
 - 状态码筛选：输入 `401` 等过滤指定失败码的 Key
 - 搜索：ID / 备注 / 地址
 - 实时显示筛选后数量：`显示 X / Y 个`
-- 批量：勾选卡片 → 批量重置 / 批量屏蔽 / ⚡优先使用（逐个使用勾选的key，用完恢复常态）/ ⭕优先轮询（勾选的key间轮询，全冷却后恢复常态）
+- 批量：勾选卡片 → 批量操作栏出现（含「全选」「全取消」按钮）/ 批量重置 / 批量屏蔽 / ⚡优先使用（逐个使用勾选的key，用完恢复常态）/ ⭕优先轮询（勾选的key间轮询，全冷却后恢复常态）
 
 ### 流量趋势图
 24 小时 / 7 天 / 30 天切换，每小时柱状图，X 轴标签密度自适配。
@@ -442,7 +442,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `lastUsed` | int/null | 最后使用时间戳 |
 | `daily` | object | 按日统计 `{"YYYY-MM-DD": {...}}` |
 | `hourly` | object | 按小时统计 `{"YYYY-MM-DD-HH": {...}}` |
-| `boostedBatch` | array | 批量优先中的 Key 序号列表（1-based） |
+| `boostedBatch` | array | 批量优先中的 Key 序号列表（始终为 1-based） |
 | `boostedBatchMode` | string | 批量优先模式：`"use"` / `"roundrobin"` / `""` |
 
 ### /metrics Prometheus

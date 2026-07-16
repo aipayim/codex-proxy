@@ -1030,7 +1030,7 @@ function setupWebSocket(server) {
   wss.on("connection", (ws) => {
     wsClients.add(ws);
     const data = buildStatusData();
-    const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch, boostedBatchMode: _boostBatchMode });
+    const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode });
     ws.send(msg);
     ws.on("close", () => wsClients.delete(ws));
     ws.on("error", () => wsClients.delete(ws));
@@ -1039,7 +1039,7 @@ function setupWebSocket(server) {
 
 function broadcastStatus() {
   const data = buildStatusData();
-  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch, boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime });
+  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime });
   lastBroadcast = msg;
   for (const ws of wsClients) {
     if (ws.readyState === 1) ws.send(msg);
@@ -1318,6 +1318,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <span id="batchModeStatus" style="display:none;color:#facc15;font-size:12px;font-weight:500"></span>
   <button class="btn" style="font-size:11px" onclick="batchActionCards('reset')">🔄 批量重置</button>
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchActionCards('shield')">🔇 批量屏蔽</button>
+  <button class="btn" style="font-size:11px;color:#94a3b8;border-color:#64748b" onclick="selectAllCards()">☐ 全选</button>
+  <button class="btn" style="font-size:11px;color:#94a3b8;border-color:#64748b" onclick="deselectAllCards()">☐ 全取消</button>
   <button class="btn" id="batchBoostUseBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('use')">⚡ 优先使用</button>
   <button class="btn" id="batchBoostRRBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('roundrobin')">⭕ 优先轮询</button>
   <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
@@ -2415,9 +2417,6 @@ function restartProxy(){
     .then(r=>r.json()).then(j=>{if(j.ok)setTimeout(function(){location.reload()},1500)})
     .catch(()=>{});
 }
-function selectAllCards(sel){
-  document.querySelectorAll("#grid .card-cb").forEach(c=>c.checked=sel);
-}
 function batchActionCards(action){
   if(action==="cancelboost"){
     fetch("http://localhost:3456/__boost-batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:""})}).then(()=>setTimeout(loadKeys,100)).catch(()=>{});
@@ -2438,6 +2437,14 @@ function batchActionCards(action){
 function cardShield(idx){
   if(!confirm("确定屏蔽 Key #"+idx+"？屏蔽后不再参与调度，可在管理弹窗恢复。"))return;
   fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx,status:"shielded"})}).then(()=>setTimeout(loadKeys,200)).catch(()=>{});
+}
+function selectAllCards(){
+  document.querySelectorAll("#grid .card-cb").forEach(cb => cb.checked = true);
+  updateBatchBar();
+}
+function deselectAllCards(){
+  document.querySelectorAll("#grid .card-cb").forEach(cb => cb.checked = false);
+  updateBatchBar();
 }
 function updateBatchBar(){
   const cbs=document.querySelectorAll("#grid .card-cb:checked");
@@ -2496,7 +2503,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && pathname === "/__status") {
     res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
     const data = buildStatusData();
-    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch, boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime }, null, 2));
+    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime }, null, 2));
     return;
   }
 
