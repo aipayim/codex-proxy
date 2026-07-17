@@ -401,7 +401,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__config` | PUT | 写入 config.json（自动重载） |
 | `/__reset-key` | POST | 重置指定 Key 的冷却/废弃状态（`{"idx": 1}`） |
 | `/__apply-test-result` | POST | 应用批量测试结果：`{"idx":1, "failCode":429}` → markFailure；`failCode=null/200` → 清空冷却（`{"idx":1, "failCode":null}`） |
-| `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`） |
+| `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`），返回 `model`（逗号分隔可用模型列表）和 `modelCount`（模型数量） |
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |

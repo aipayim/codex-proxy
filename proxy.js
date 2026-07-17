@@ -1931,7 +1931,7 @@ function cardTest(idx){
   fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:fullKey,url:d.url})})
     .then(r=>r.json()).then(j=>{
       if(btn)btn.textContent="🔍";
-      if(j.ok)alert("Key #"+idx+" 测试成功！"+(j.model?" 模型: "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""));
+      if(j.ok)alert("Key #"+idx+" 测试成功！"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""));
       else alert("Key #"+idx+" 测试失败: "+(j.error||"未知错误"));
     }).catch(e=>{
       if(btn)btn.textContent="🔍";
@@ -2231,7 +2231,7 @@ async function testKey(i){
     const r=await fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:k.key,url:k.url})});
     const j=await r.json();
     if(btn)btn.textContent="🔍";
-    if(j.ok){alert("Key #"+(i+1)+" 测试成功！"+(j.model?" 模型: "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""))}
+    if(j.ok){alert("Key #"+(i+1)+" 测试成功！"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""))}
     else{alert("Key #"+(i+1)+" 测试失败: "+(j.error||"未知错误"))}
   }catch(e){
     if(btn)btn.textContent="🔍";
@@ -2269,7 +2269,7 @@ async function batchTestMgr(){
       if(j.ok){
         batchTestPassed.push(i);
         if(cr){cr.ok=true;cr.status=j.status}
-        line.textContent="✅ #"+(i+1)+" 成功"+(j.model?" 模型: "+j.model:"")+(j.duration?" ("+j.duration+"ms)":"");
+         line.textContent="✅ #"+(i+1)+" 成功"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+(j.duration?" ("+j.duration+"ms)":"");
       }else{
         if(cr)cr.status=j.status||null;
         line.textContent="❌ #"+(i+1)+" 失败: "+(j.error||"未知错误");
@@ -2595,16 +2595,18 @@ const server = http.createServer((req, res) => {
               responded = true;
               if (testRes.statusCode === 200) {
                 let model = "";
+                let modelCount = 0;
                 try {
                   const j = JSON.parse(data);
                   if (j.data && j.data.length) {
                     const openaiPrefixes=["gpt-","o1-","o3-","dall-e-","text-embedding-","whisper-","tts-","babbage-","curie-","davinci-"];
-                    const m=j.data.find(item=>openaiPrefixes.some(p=>item.id.startsWith(p)));
-                    model=m?m.id:j.data[0].id;
+                    const filtered=j.data.filter(item=>openaiPrefixes.some(p=>item.id.startsWith(p)));
+                    if(filtered.length){model=filtered.map(m=>m.id).join(", ");modelCount=filtered.length}
+                    else if(j.data.length){model=j.data[0].id;modelCount=1}
                   }
                 } catch (e) {}
                 res.writeHead(200, cors);
-                res.end(JSON.stringify({ ok: true, status: testRes.statusCode, duration: dur, model }));
+                res.end(JSON.stringify({ ok: true, status: testRes.statusCode, duration: dur, model, modelCount }));
               } else {
                 res.writeHead(200, cors);
                 res.end(JSON.stringify({ ok: false, status: testRes.statusCode, error: "HTTP " + testRes.statusCode + ": " + data.slice(0, 200) }));
