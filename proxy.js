@@ -818,9 +818,10 @@ function loadAccounts() {
 
 function makeUsageTransform(idx, inputBytes, reqStart, ttfb) {
   let outputBytes = 0;
-  return new Transform({
+  const tr = new Transform({
     transform(chunk, encoding, cb) {
       outputBytes += chunk.length;
+      tr.accBytes = outputBytes;
       this.push(chunk);
       cb();
     },
@@ -830,6 +831,8 @@ function makeUsageTransform(idx, inputBytes, reqStart, ttfb) {
       cb();
     }
   });
+  tr.accBytes = 0;
+  return tr;
 }
 
 function activeDecr(idx) {
@@ -915,8 +918,9 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone)
       cleaned = true;
       activeDecr(idx);
       const dur = Date.now() - reqStart;
-      recordPath(pathname, method, inputBytes, 0, dur);
-      Object.assign(logEntry, { status: apiRes.statusCode, inputBytes, outputBytes: 0, duration: dur, ttfb });
+      const accBytes = transform.accBytes || 0;
+      recordPath(pathname, method, inputBytes, accBytes, dur);
+      Object.assign(logEntry, { status: apiRes.statusCode, inputBytes, outputBytes: accBytes, duration: dur, ttfb });
       addLog(logEntry);
       broadcastStatus();
     };
@@ -3084,12 +3088,17 @@ const server = http.createServer((req, res) => {
     if (req.method === "POST") {
       res.writeHead(200, cors);
       res.end(JSON.stringify({ ok: true, message: "restarting" }));
-      setTimeout(() => {
-        console.log("[proxy] restarting...");
-        const child = require("child_process").spawn(process.argv[0], process.argv.slice(1), { detached: true, stdio: "inherit" });
-        child.unref();
-        process.exit(0);
-      }, 200);
+      if (global._restarting) return;
+      global._restarting = true;
+      setImmediate(() => {
+        server.close();
+        setTimeout(() => {
+          console.log("[proxy] restarting...");
+          const child = require("child_process").spawn(process.argv[0], process.argv.slice(1), { detached: true, stdio: "inherit" });
+          child.unref();
+          process.exit(0);
+        }, 1000);
+      });
       return;
     }
     res.writeHead(405, cors);

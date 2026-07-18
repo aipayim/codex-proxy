@@ -490,7 +490,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 1. **面板操作**：配置弹窗 → 🔄 重启代理 → 确认
 2. **命令行**：`pkill -f "node.*proxy\.js" && nohup node proxy.js &`
 
-`POST /__restart` 使用 `spawn(..., {detached: true})` 启动新进程后立即退出当前进程，
+`POST /__restart` 先调用 `server.close()` 释放端口，再 `spawn(..., {detached: true})` 启动新进程，最后退出当前进程，避免多进程端口冲突。
 确保重启期间正在处理的请求由 codex 自动重试。
 
 ## config.json 系统配置
