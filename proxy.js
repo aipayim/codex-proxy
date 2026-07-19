@@ -30,6 +30,21 @@ function isResponsesNative(url) {
 function isMessagesNative(url) {
   try { return MESSAGES_NATIVE_HOSTS.includes(new URL(url).hostname); } catch(e) { return false; }
 }
+const CACHE_CONTROL_COMPATIBLE_HOSTS = [
+  "dashscope.aliyuncs.com",
+  "dashscope-intl.aliyuncs.com",
+  "dashscope-us.aliyuncs.com",
+];
+function supportsCacheControl(url) {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname;
+    if (CACHE_CONTROL_COMPATIBLE_HOSTS.includes(host)) return true;
+    if (host.endsWith(".maas.aliyuncs.com")) return true;
+    return false;
+  } catch(e) { return false; }
+}
+function isBailian(url) { return supportsCacheControl(url); }
 // --- End protocol hosts ---
 let logStream = null;
 let logDate = null;
@@ -996,6 +1011,23 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       try {
         const parsed = JSON.parse(body.toString());
         parsed.model = acct.model;
+        bodyToWrite = Buffer.from(JSON.stringify(parsed));
+      } catch(e) {}
+    }
+    if (!supportsCacheControl(acct.url)) {
+      try {
+        const parsed = JSON.parse(bodyToWrite.toString());
+        delete parsed.enable_thinking;
+        delete parsed.thinking_budget;
+        if (Array.isArray(parsed.messages)) {
+          for (const msg of parsed.messages) {
+            if (Array.isArray(msg.content)) {
+              for (const block of msg.content) {
+                delete block.cache_control;
+              }
+            }
+          }
+        }
         bodyToWrite = Buffer.from(JSON.stringify(parsed));
       } catch(e) {}
     }
@@ -2931,6 +2963,10 @@ function createChatToResponsesStream(upstreamUrl) {
         if (parsed.object === "chat.completion.chunk") {
           model = parsed.model || model;
           const delta = parsed.choices?.[0]?.delta;
+          if (delta?.reasoning_content) {
+            fullContent += delta.reasoning_content;
+            this.push(`event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":${JSON.stringify(delta.reasoning_content)}}\n\n`);
+          }
           if (delta?.content) {
             fullContent += delta.content;
             this.push(`event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":${JSON.stringify(delta.content)}}\n\n`);
@@ -2961,6 +2997,7 @@ function createChatToResponsesStream(upstreamUrl) {
 function chatToResponsesResponse(upstreamUrl, chatBody) {
   const choice = chatBody.choices?.[0];
   const message = choice?.message || {};
+  const text = message.reasoning_content ? (message.reasoning_content + "\n\n" + (message.content || "")) : (message.content || "");
   return {
     id: "resp_" + Date.now(),
     object: "response",
@@ -2969,12 +3006,12 @@ function chatToResponsesResponse(upstreamUrl, chatBody) {
     output: [{
       type: "message",
       role: "assistant",
-      content: [{ type: "output_text", text: message.content || "" }]
+      content: [{ type: "output_text", text }]
     }],
     usage: {
       input_tokens: chatBody.usage?.prompt_tokens || 0,
       output_tokens: chatBody.usage?.completion_tokens || 0,
-      output_characters: (message.content || "").length,
+      output_characters: text.length,
       input_characters: 0
     }
   };
@@ -2983,14 +3020,49 @@ function chatToResponsesResponse(upstreamUrl, chatBody) {
 function messagesToChatRequest(upstreamUrl, body) {
   const chatBody = { model: body.model, messages: [], stream: body.stream, max_tokens: body.max_tokens };
   if (body.system) {
-    const sys = typeof body.system === "string" ? body.system : Array.isArray(body.system) ? body.system.map(s => typeof s === "object" ? s.text || "" : s).join("\n") : String(body.system);
-    chatBody.messages.push({ role: "system", content: sys });
+    if (typeof body.system === "string") {
+      chatBody.messages.push({ role: "system", content: body.system });
+    } else if (Array.isArray(body.system)) {
+      const blocks = body.system.map(s => {
+        if (typeof s === "string") return { type: "text", text: s };
+        const block = { type: "text", text: s.text || "" };
+        if (s.cache_control) block.cache_control = s.cache_control;
+        return block;
+      });
+      chatBody.messages.push({ role: "system", content: blocks.length === 1 && !blocks[0].cache_control ? blocks[0].text : blocks });
+    } else {
+      chatBody.messages.push({ role: "system", content: String(body.system) });
+    }
   }
   if (Array.isArray(body.messages)) {
     for (const m of body.messages) {
       let content = "";
-      if (typeof m.content === "string") content = m.content;
-      else if (Array.isArray(m.content)) content = m.content.map(c => c.text || c.source?.data || "").join("\n");
+      if (typeof m.content === "string") {
+        content = m.content;
+      } else if (Array.isArray(m.content)) {
+        const blocks = [];
+        for (const c of m.content) {
+          if (c.type === "text") {
+            const block = { type: "text", text: c.text || "" };
+            if (c.cache_control) block.cache_control = c.cache_control;
+            blocks.push(block);
+          } else if (c.type === "image" || c.type === "image_url") {
+            blocks.push({ type: "image_url", image_url: { url: c.source?.data || c.image_url?.url || "" } });
+          } else if (c.type === "thinking") {
+            // Embed thinking text; forwardRequest will handle per-provider
+            blocks.push({ type: "text", text: `【thinking】${c.thinking || ""}【/thinking】` });
+          } else if (c.type === "tool_use" || c.type === "tool_result") {
+            // handled separately via tool_calls/tool messages
+          }
+        }
+        if (blocks.length === 0) {
+          content = "";
+        } else if (blocks.length === 1 && !blocks[0].cache_control) {
+          content = blocks[0].text;
+        } else {
+          content = blocks;
+        }
+      }
       chatBody.messages.push({ role: m.role === "assistant" ? "assistant" : "user", content });
     }
   }
@@ -3005,16 +3077,24 @@ function messagesToChatRequest(upstreamUrl, body) {
   if (body.stop_sequences) chatBody.stop = body.stop_sequences;
   if (body.temperature !== undefined) chatBody.temperature = body.temperature;
   if (body.top_p !== undefined) chatBody.top_p = body.top_p;
+  // preserve thinking as enable_thinking for providers that support it
+  if (body.thinking && body.thinking.type === "enabled") {
+    chatBody.enable_thinking = true;
+    if (body.thinking.budget_tokens) chatBody.thinking_budget = body.thinking.budget_tokens;
+  }
   return chatBody;
 }
 function createChatToMessagesStream(upstreamUrl) {
   const Transform = require("stream").Transform;
   let buffer = "";
-  let fullContent = "";
+  let thinkingContent = "";
+  let textContent = "";
   let model = "";
   let inputTokens = 0, outputTokens = 0;
   let stopReason = "end_turn";
   let hasStarted = false;
+  let thinkingStarted = false;
+  const TEXT_IDX = 0, THINKING_IDX = 1, TOOL_IDX = 2;
   return new Transform({
     readableObjectMode: false, writableObjectMode: false,
     transform(chunk, encoding, cb) {
@@ -3028,7 +3108,10 @@ function createChatToMessagesStream(upstreamUrl) {
           if (!hasStarted) {
             this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[],"model":${JSON.stringify(model)},"stop_reason":"${stopReason}","usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
           }
-          this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`);
+          if (thinkingStarted) {
+            this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${THINKING_IDX}}\n\n`);
+          }
+          this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${TEXT_IDX}}\n\n`);
           this.push(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${stopReason}","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`);
           this.push(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
           return cb();
@@ -3048,25 +3131,37 @@ function createChatToMessagesStream(upstreamUrl) {
           else if (finishReason === "tool_calls") stopReason = "tool_use";
           else if (finishReason) stopReason = finishReason;
 
+          if (delta?.reasoning_content) {
+            if (!hasStarted) {
+              hasStarted = true;
+              this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[{"type":"text","text":""}],"model":${JSON.stringify(model)},"stop_reason":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
+            }
+            if (!thinkingStarted) {
+              thinkingStarted = true;
+              this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":${THINKING_IDX},"content_block":{"type":"thinking","thinking":""}}\n\n`);
+            }
+            thinkingContent += delta.reasoning_content;
+            this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${THINKING_IDX},"delta":{"type":"thinking_delta","thinking":${JSON.stringify(delta.reasoning_content)}}}\n\n`);
+          }
           if (delta?.content) {
             if (!hasStarted) {
               hasStarted = true;
               this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[{"type":"text","text":""}],"model":${JSON.stringify(model)},"stop_reason":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
-              this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`);
+              this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":${TEXT_IDX},"content_block":{"type":"text","text":""}}\n\n`);
             }
-            fullContent += delta.content;
-            this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":${JSON.stringify(delta.content)}}}\n\n`);
+            textContent += delta.content;
+            this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${TEXT_IDX},"delta":{"type":"text_delta","text":${JSON.stringify(delta.content)}}}\n\n`);
           }
           if (delta?.tool_calls) {
             for (const tc of delta.tool_calls) {
               if (tc.function?.name) {
-                this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"${tc.id || "toolu_"+Date.now()}","name":"${tc.function.name}","input":{}}}\n\n`);
+                this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":${TOOL_IDX},"content_block":{"type":"tool_use","id":"${tc.id || "toolu_"+Date.now()}","name":"${tc.function.name}","input":{}}}\n\n`);
               }
               if (tc.function?.arguments) {
-                this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":${JSON.stringify(tc.function.arguments)}}}\n\n`);
+                this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${TOOL_IDX},"delta":{"type":"input_json_delta","partial_json":${JSON.stringify(tc.function.arguments)}}}\n\n`);
               }
               if (tc.function?.name) {
-                this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n`);
+                this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${TOOL_IDX}}\n\n`);
               }
             }
           }
@@ -3075,8 +3170,11 @@ function createChatToMessagesStream(upstreamUrl) {
       cb();
     },
     flush(cb) {
-      if (fullContent) {
-        this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`);
+      if (textContent || thinkingContent) {
+        if (thinkingStarted) {
+          this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${THINKING_IDX}}\n\n`);
+        }
+        this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${TEXT_IDX}}\n\n`);
         this.push(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${stopReason}","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`);
         this.push(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
       }
@@ -3088,11 +3186,15 @@ function chatToMessagesResponse(upstreamUrl, chatBody) {
   const choice = chatBody.choices?.[0];
   const message = choice?.message || {};
   const usage = chatBody.usage || {};
+  const content = [{ type: "text", text: message.content || "" }];
+  if (message.reasoning_content) {
+    content.unshift({ type: "thinking", thinking: message.reasoning_content });
+  }
   return {
     id: "msg_" + Date.now(),
     type: "message",
     role: "assistant",
-    content: [{ type: "text", text: message.content || "" }],
+    content,
     model: chatBody.model || "",
     stop_reason: choice?.finish_reason === "stop" ? "end_turn" : choice?.finish_reason || "end_turn",
     stop_sequence: null,

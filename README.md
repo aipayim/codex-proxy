@@ -11,6 +11,13 @@
 - **系统级容灾**：自动锁死、自动恢复、废弃检测、队列缓冲、并发管控——无需人工干预
 - **完整监控面板**：实时仪表盘、按 Key 统计、流量趋势、请求日志（含 sparkline/错误聚类/模型分布）、Prometheus 指标、Webhook/桌面通知
 
+**提供商标识智能转换**：不同 API 供应商的协议差异自动适配：
+- **阿里云百炼 (DashScope)** 的 OpenAI 兼容接口支持完整 `cache_control` 透传（Messages 协议中的缓存标记自动保留到 Chat 协议），无需手动配置
+- Bailian DeepSeek / QwQ 等深度思考模型的 `reasoning_content` 字段在 Messages ↔ Chat 协议转换中自动映射为 `thinking` / `thinking_delta` 内容块
+- Streaming 流中 `reasoning_content` → `thinking_delta`、非流响应中 `message.reasoning_content` → `thinking` content block 双向转换
+- `thinking` / `enable_thinking` 参数在 Bailian 上游自动启用，对不兼容的标准 Chat 上游自动剥离
+- 提供商标识可扩展：新增供应商只需扩展 `CACHE_CONTROL_COMPATIBLE_HOSTS` 列表
+
 ## 目录结构
 
 ```
