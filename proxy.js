@@ -21,6 +21,16 @@ const PID_FILE = path.join(__dirname, "proxy.pid");
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
 let LOG_DETAIL = "full";
+// --- Protocol compatibility hosts ---
+const RESPONSES_NATIVE_HOSTS = ["api.openai.com", "api.ofox.ai"];
+const MESSAGES_NATIVE_HOSTS = ["api.anthropic.com"];
+function isResponsesNative(url) {
+  try { return RESPONSES_NATIVE_HOSTS.includes(new URL(url).hostname); } catch(e) { return false; }
+}
+function isMessagesNative(url) {
+  try { return MESSAGES_NATIVE_HOSTS.includes(new URL(url).hostname); } catch(e) { return false; }
+}
+// --- End protocol hosts ---
 let logStream = null;
 let logDate = null;
 
@@ -264,16 +274,18 @@ function autoRecover(optCodes){
       let data = "";
       testRes.on("data", c => data += c);
       testRes.on("end", () => {
-        if (testRes.statusCode === 200) {
-          const ks = getKeyState(i);
-          ks.failCode = null;
-          ks.failTime = null;
-          ks.failPeriod = "";
-          if (ks.status === "discarded") ks.status = "active";
-          allFailedNotified = false;
-          saveState();
-          broadcastStatus();
-          console.log(`[proxy] auto-recover: #${i+1} recovered (was ${ks.status||"cooled"})`);
+          if (testRes.statusCode === 200) {
+            const ks = getKeyState(i);
+            const wasStatus = ks.status || "active";
+            ks.failCode = null;
+            ks.failTime = null;
+            ks.failPeriod = "";
+            if (ks.status === "discarded") ks.status = "active";
+            allFailedNotified = false;
+            saveState();
+            broadcastStatus();
+            console.log(`[proxy] auto-recover: #${i+1} recovered (was ${wasStatus})`);
+            addEventLog("recover", i + 1, `自动恢复成功 (此前状态: ${wasStatus === "discarded" ? "废弃" : "冷却"})`, acct.url);
         } else {
           console.log(`[proxy] auto-recover: #${i+1} test returned ${testRes.statusCode}, not recovered`);
         }
@@ -288,6 +300,14 @@ function autoRecover(optCodes){
 }
 
 function addLog(entry) {
+  requestLog.push(entry);
+  if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  if (LOG_FILE_ENABLED) writeLogEntry(entry);
+  broadcastLog(entry);
+}
+
+function addEventLog(eventType, idx, message, url) {
+  const entry = { time: Date.now(), type: "event", eventType, idx, message, url: url || "" };
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
   if (LOG_FILE_ENABLED) writeLogEntry(entry);
@@ -563,6 +583,7 @@ function markFailure(idx, code) {
     if (ks.failPeriod && ks.failPeriod !== curr && isConsecutivePeriod(ks.failPeriod, curr, acct.reset)) {
       ks.status = "discarded";
       console.log(`[proxy] #${idx+1} DISCARDED (consecutive ${acct.reset} failure: ${ks.failPeriod} → ${curr})`);
+      addEventLog("discard", idx + 1, `连续 ${acct.reset} 周期失败: ${ks.failPeriod} → ${curr}`, acct.url);
     }
   }
 
@@ -576,6 +597,7 @@ function markFailure(idx, code) {
       if (ks.failCount >= (config.lockAfterFailCount || 3)) {
         ks.status = "locked";
         console.log(`[proxy] #${idx+1} LOCKED (${ks.failCount}x ${code})`);
+        addEventLog("lock", idx + 1, `${ks.failCount} 次连续 ${code} 失败自动锁定`, acct.url);
       }
     } else if (ks.failCount) {
       ks.failCount = 0;
@@ -842,7 +864,7 @@ function activeDecr(idx) {
   }
 }
 
-function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone) {
+function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform) {
   activeRequests[idx] = (activeRequests[idx] || 0) + 1;
   const reqStart = Date.now();
   let ttfb = null;
@@ -911,7 +933,11 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone)
 
     const inputBytes = body ? body.length : 0;
     const transform = makeUsageTransform(idx, inputBytes, reqStart, ttfb);
-    apiRes.pipe(transform).pipe(clientRes);
+    if (extraTransform) {
+      apiRes.pipe(transform).pipe(extraTransform).pipe(clientRes);
+    } else {
+      apiRes.pipe(transform).pipe(clientRes);
+    }
     let cleaned = false;
     const cleanup = () => {
       if (cleaned) return;
@@ -978,7 +1004,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone)
   proxyReq.end();
 }
 
-function forwardWithPriority(method, headers, body, clientRes, pathname) {
+function forwardWithPriority(method, headers, body, clientRes, pathname, extraTransform) {
   let responded = false;
   const usedKeys = new Set();
   const activeCount = accounts.filter(a => a.status === "active").length;
@@ -1023,7 +1049,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname) {
         clientRes.end(JSON.stringify({ error: "All keys exhausted" }));
       }
       responded = true;
-    });
+    }, extraTransform);
   }
   attempt();
 }
@@ -1265,11 +1291,51 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .log-table th{color:#94a3b8;font-weight:600;position:sticky;top:0;background:#1e293b}
 .log-status{font-weight:600}
 .log-s200{color:#4ade80}
-.log-s401{color:#f59e0b}
-.log-s429{color:#f87171}
-.log-s0{color:#ef4444}
+.log-s201{color:#4ade80}
+.log-s301{color:#f59e0b}
+.log-s400{color:#f59e0b}
+.log-s401{color:#f59e0b;background:rgba(245,158,11,0.08)}
+.log-s402{color:#f59e0b;background:rgba(245,158,11,0.08)}
+.log-s403{color:#f59e0b;background:rgba(245,158,11,0.08)}
+.log-s429{color:#f87171;background:rgba(248,113,113,0.08)}
+.log-s5xx{color:#ef4444;background:rgba(239,68,68,0.12)}
+.log-s0{color:#64748b;background:rgba(100,116,139,0.08)}
+.log-row-event{color:#60a5fa;background:rgba(96,165,250,0.06)}
+.log-row-conversion{color:#a78bfa;background:rgba(167,139,250,0.06)}
+.log-row-recover{color:#4ade80;background:rgba(74,222,128,0.06)}
+.log-row-lock{color:#ef4444;background:rgba(239,68,68,0.1)}
+.log-row-discard{color:#f97316;background:rgba(249,115,22,0.1)}
+.log-stat-card{border:1px solid #334155}
 .log-time{color:#64748b;font-size:clamp(9px,1.2vw,10px)}
 .log-dur{color:#94a3b8}
+/* sparkline */
+.log-sparkline-wrap{display:flex;align-items:flex-end;gap:2px;height:28px;padding:2px 0;margin-bottom:4px}
+.log-spark-bar{flex:1;min-width:3px;border-radius:1px 1px 0 0;position:relative;background:#334155;cursor:pointer}
+.log-spark-bar.ok{background:#3b82f6}
+.log-spark-bar.err{background:#ef4444}
+.log-spark-bar:hover{opacity:.8}
+/* model distribution */
+.log-model-row{display:flex;gap:6px;flex-wrap:wrap;font-size:10px;color:#94a3b8;margin-bottom:4px;padding:2px 0}
+.log-model-tag{background:#1e3a5f;color:#93c5fd;padding:1px 6px;border-radius:3px;white-space:nowrap}
+.log-model-tag .fail{color:#ef4444}
+/* error cluster */
+.log-error-cluster{cursor:pointer;user-select:none;margin-bottom:4px}
+.log-error-cluster .head{font-size:11px;color:#f87171}
+.log-error-cluster .body{display:none;flex-wrap:wrap;gap:4px;padding:2px 0;font-size:10px}
+.log-error-cluster .body.open{display:flex}
+.log-error-code{background:#3b1f1e;color:#f87171;padding:1px 5px;border-radius:3px;white-space:nowrap}
+/* expandable row detail */
+.log-row-expand{display:none}
+.log-row-expand.open{display:table-row}
+.log-row-expand td{background:#0f172a;padding:6px 8px;font-size:10px;color:#94a3b8;word-break:break-all;white-space:pre-wrap;max-width:800px;font-family:monospace}
+.log-table tr{cursor:pointer}
+/* per-key stats popup */
+.log-key-popup{position:fixed;background:#1e293b;border:1px solid #3b82f6;border-radius:8px;padding:12px;z-index:200;min-width:280px;max-width:400px;box-shadow:0 4px 20px rgba(0,0,0,.4)}
+.log-key-popup .close{float:right;cursor:pointer;color:#94a3b8;font-size:14px}
+.log-key-popup .title{font-size:13px;font-weight:700;color:#e2e8f0;margin-bottom:6px}
+.log-key-popup .stat-row{display:flex;justify-content:space-between;padding:1px 0;font-size:11px}
+.log-key-popup .stat-row .l{color:#94a3b8}
+.log-key-popup .stat-row .r{color:#e2e8f0}
 .file-banner{display:none;background:#1e3a5f;border:1px solid #3b82f6;border-radius:8px;padding:clamp(8px,1.5vw,10px) clamp(10px,2vw,14px);margin-bottom:clamp(8px,2vw,12px);font-size:clamp(12px,1.8vw,13px);color:#93c5fd;align-items:center;gap:10px}
 .file-banner.on{display:flex}
 @media(max-width:600px){
@@ -1287,7 +1353,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </head>
 <body>
 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-<h1>Codex 多 Key 代理监控</h1>
+<h1>Proxy 多 Key 代理监控</h1>
 <div style="display:flex;gap:6px;flex-wrap:wrap">
 <button class="btn" onclick="openLogs()">📋 日志</button>
 <button class="btn" onclick="exportCSV()">⬇ 导出 CSV</button>
@@ -1463,9 +1529,45 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div></div>
 
 <div class="modal" id="logModal">
-<div class="mcontent">
+<div class="mcontent" style="max-width:1100px">
 <div class="mtitle"><span>实时请求日志</span><button class="btn" onclick="closeLogs()">✕</button></div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">最近 2000 条请求记录，实时推送</div>
+<div id="logStats" style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">总请求</div>
+    <div id="lsTotal" style="font-size:16px;font-weight:700;color:#e2e8f0">-</div>
+  </div>
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">成功率</div>
+    <div id="lsSuccess" style="font-size:16px;font-weight:700;color:#22c55e">-</div>
+  </div>
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">平均耗时</div>
+    <div id="lsAvgDur" style="font-size:16px;font-weight:700;color:#e2e8f0">-</div>
+  </div>
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">P95</div>
+    <div id="lsP95" style="font-size:16px;font-weight:700;color:#f59e0b">-</div>
+  </div>
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">P99</div>
+    <div id="lsP99" style="font-size:16px;font-weight:700;color:#f97316">-</div>
+  </div>
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:50px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">4xx</div>
+    <div id="ls4xx" style="font-size:16px;font-weight:700;color:#f59e0b">-</div>
+  </div>
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:50px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">5xx</div>
+    <div id="ls5xx" style="font-size:16px;font-weight:700;color:#ef4444">-</div>
+  </div>
+  <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:50px;text-align:center">
+    <div style="font-size:10px;color:#94a3b8">超时</div>
+    <div id="lsTimeout" style="font-size:16px;font-weight:700;color:#64748b">-</div>
+  </div>
+</div>
+<div id="logSparklineWrap" class="log-sparkline-wrap" style="margin-bottom:2px" title="最近 30 分钟请求量趋势（蓝色=成功，红色=错误）"></div>
+<div id="logModelDist" class="log-model-row"></div>
+<div id="logErrorCluster" class="log-error-cluster" onclick="toggleErrorCluster()"><span class="head">⚠ 错误分布</span><div class="body" id="logErrorBody"></div></div>
 <div class="log-filters" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center">
 <input id="logKeyFilter" placeholder="Key #" style="width:50px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logStatusFilter" placeholder="状态码" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
@@ -1482,9 +1584,26 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px">⬇ CSV</button>
 </div>
 <div style="overflow-x:auto"><table class="log-table"><thead><tr>
-<th>时间</th><th>#</th><th>方法</th><th>模型</th><th>路径</th><th>状态</th><th>↑B</th><th>↓B</th><th>耗时</th><th>首字节</th>
+<th onclick="logSortBy('time')" style="cursor:pointer">时间<span id="logSortIcon" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th onclick="logSortBy('idx')" style="cursor:pointer">#<span id="logSortIcon_idx" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th>上游</th><th>方法</th><th onclick="logSortBy('model')" style="cursor:pointer">模型<span id="logSortIcon_model" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th>路径</th><th onclick="logSortBy('status')" style="cursor:pointer">状态<span id="logSortIcon_status" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th>↑B</th><th>↓B</th><th onclick="logSortBy('dur')" style="cursor:pointer">耗时<span id="logSortIcon_dur" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th>首字节</th>
 </tr></thead><tbody id="logBody"></tbody></table></div>
+<div id="logPagination" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:6px 0;font-size:12px">
+  <button class="btn" id="logPrevBtn" onclick="logPage(-1)" style="font-size:11px;padding:2px 10px" disabled>← 上一页</button>
+  <span id="logPageInfo" style="color:#94a3b8">第 1 / 1 页</span>
+  <button class="btn" id="logNextBtn" onclick="logPage(1)" style="font-size:11px;padding:2px 10px" disabled>下一页 →</button>
+  <span style="color:#64748b;font-size:10px;margin-left:8px" id="logRealTimeBadge">● 实时</span>
+</div>
 </div></div>
+
+<div id="logKeyPopup" class="log-key-popup" style="display:none" onclick="event.stopPropagation()">
+  <span class="close" onclick="closeLogKeyPopup()">✕</span>
+  <div class="title" id="logKeyPopupTitle">Key #- 统计</div>
+  <div id="logKeyPopupBody"></div>
+</div>
 
 <script>
 const L={"daily":"每日","weekly":"每周","never":"永久"};
@@ -1525,8 +1644,28 @@ function connectWS(){
       if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;boostedBatch=msg.boostedBatch||[];boostedBatchMode=msg.boostedBatchMode||"";if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
       if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
-        const tbody=document.getElementById("logBody");
-        if(tbody){const tr=document.createElement("tr");tr.innerHTML=makeLogRow(msg.data);tbody.insertBefore(tr,tbody.firstChild);if(tbody.children.length>500)tbody.removeChild(tbody.lastChild)}
+        logAllEntries.push(msg.data);
+        if(logAllEntries.length>LOG_PAGE_SIZE*3)logAllEntries.splice(0,logAllEntries.length-LOG_PAGE_SIZE*3);
+        logTotalPages=Math.max(1,Math.ceil((logLastStats?.total||logAllEntries.length)/LOG_PAGE_SIZE));
+        if(logCurrentPage===logTotalPages){
+          const tbody=document.getElementById("logBody");
+          if(tbody){
+            const tr=document.createElement("tr");
+            tr.className=logRowClass(msg.data);
+            tr.onclick=function(){toggleLogDetail(this,logAllEntries.length-1)};
+            tr.innerHTML=makeLogRow(msg.data);
+            tbody.insertBefore(tr,tbody.firstChild);
+            const expandRow=document.createElement("tr");
+            expandRow.className="log-row-expand";
+            expandRow.id="logDetail_"+(logAllEntries.length-1);
+            expandRow.innerHTML='<td colspan="11"><span id="logDetailContent_'+(logAllEntries.length-1)+'"></span></td>';
+            tbody.insertBefore(expandRow,tr.nextSibling);
+            if(tbody.children.length>LOG_PAGE_SIZE*2+2)while(tbody.children.length>LOG_PAGE_SIZE*2+2)tbody.removeChild(tbody.lastChild);
+          }
+        }
+        renderLogSparkline();
+        renderLogModelDist();
+        renderLogErrorCluster();
       }
     }catch(e){}
   };
@@ -2314,10 +2453,13 @@ async function batchTestResetAll(){
 }
 function exportCSV(){window.open("http://localhost:3456/__export")}
 
-async function openLogs(){
-  document.getElementById("logModal").classList.add("on");
-  await loadLogs();
-}
+// --- Log panel state ---
+let logCurrentPage = 1;
+let logTotalPages = 1;
+let logAllEntries = [];
+let logLastStats = null;
+const LOG_PAGE_SIZE = 200;
+
 function closeLogs(){
   document.getElementById("logModal").classList.remove("on");
 }
@@ -2339,19 +2481,286 @@ function buildLogFilterQuery(){
     const ms={"5m":3e5,"15m":9e5,"1h":36e5,"24h":864e5,"7d":6048e5,"30d":2592e6}[t];
     if(ms)p.set("since",Date.now()-ms);
   }
-  p.set("limit","500");
+  p.set("limit",String(LOG_PAGE_SIZE));
   return p.toString();
+}
+async function openLogs(){
+  document.getElementById("logModal").classList.add("on");
+  logCurrentPage = 1;
+  await loadLogs();
 }
 async function loadLogs(){
   try{
     const q=buildLogFilterQuery();
     const r=await fetch("http://localhost:3456/__logs?"+q);
     if(!r.ok)return;
-    const logs=await r.json();
-    renderLogs(logs);
+    const resp=await r.json();
+    logAllEntries = resp.entries || resp;
+    logLastStats = resp.stats || null;
+    logTotalPages = Math.max(1, Math.ceil((logLastStats?.total || logAllEntries.length) / LOG_PAGE_SIZE));
+    if (logCurrentPage > logTotalPages) logCurrentPage = logTotalPages;
+    renderLogs();
   }catch(e){}
 }
-function reloadLogs(){loadLogs()}
+function reloadLogs(){ logCurrentPage = 1; loadLogs(); }
+function logPage(delta){
+  logCurrentPage = Math.max(1, Math.min(logTotalPages, logCurrentPage + delta));
+  renderLogs();
+}
+function renderLogs(){
+  const tbody=document.getElementById("logBody");
+  const startIdx = (logCurrentPage - 1) * LOG_PAGE_SIZE;
+  const pageEntries = logAllEntries.slice(startIdx, startIdx + LOG_PAGE_SIZE);
+  tbody.innerHTML = pageEntries.length
+    ? pageEntries.map((e,i) => '<tr class="'+logRowClass(e)+'" onclick="toggleLogDetail(this,'+(startIdx+i)+')">'+makeLogRow(e)+'</tr>'
+      + '<tr class="log-row-expand" id="logDetail_'+(startIdx+i)+'"><td colspan="11"><span id="logDetailContent_'+(startIdx+i)+'"></span></td></tr>').join("")
+    : '<tr><td colspan="11" style="text-align:center;color:#64748b;padding:20px">暂无记录</td></tr>';
+  // Pagination
+  document.getElementById("logPrevBtn").disabled = logCurrentPage <= 1;
+  document.getElementById("logNextBtn").disabled = logCurrentPage >= logTotalPages;
+  document.getElementById("logPageInfo").textContent = "\u7b2c "+logCurrentPage+" / "+logTotalPages+" \u9875";
+  // Stats
+  if (logLastStats) {
+    const s = logLastStats;
+    document.getElementById("lsTotal").textContent = s.total;
+    document.getElementById("lsSuccess").textContent = s.total > 0 ? s.successRate + "%" : "-";
+    document.getElementById("lsSuccess").style.color = s.successRate >= 95 ? "#22c55e" : s.successRate >= 80 ? "#f59e0b" : "#ef4444";
+    document.getElementById("lsAvgDur").textContent = s.avgDuration ? fmtDur(s.avgDuration) : "-";
+    document.getElementById("lsP95").textContent = s.p95 ? fmtDur(s.p95) : "-";
+    document.getElementById("lsP99").textContent = s.p99 ? fmtDur(s.p99) : "-";
+    document.getElementById("ls4xx").textContent = s.error4xx || "0";
+    document.getElementById("ls4xx").style.color = s.error4xx > 0 ? "#f59e0b" : "#94a3b8";
+    document.getElementById("ls5xx").textContent = s.error5xx || "0";
+    document.getElementById("ls5xx").style.color = s.error5xx > 0 ? "#ef4444" : "#94a3b8";
+    document.getElementById("lsTimeout").textContent = s.errorTimeout || "0";
+  }
+  renderLogSparkline();
+  renderLogModelDist();
+  renderLogErrorCluster();
+}
+function renderLogSparkline(){
+  const wrap = document.getElementById("logSparklineWrap");
+  const now = Date.now();
+  const bars = [];
+  for (let i = 29; i >= 0; i--) {
+    const start = now - (i + 1) * 60000;
+    const end = now - i * 60000;
+    const inMin = logAllEntries.filter(e => e.time >= start && e.time < end && e.type !== "event");
+    const total = inMin.length;
+    const errs = inMin.filter(e => e.status >= 400 || e.status === 0).length;
+    bars.push({ total, errs, start });
+  }
+  const maxVal = Math.max(1, ...bars.map(b => b.total));
+  wrap.innerHTML = bars.map(b => {
+    const h = Math.round(b.total / maxVal * 24);
+    const errH = b.errs > 0 ? Math.round(b.errs / maxVal * 24) : 0;
+    const cls = b.errs > 0 ? "log-spark-bar err" : (b.total > 0 ? "log-spark-bar ok" : "log-spark-bar");
+    const tip = new Date(b.start).toTimeString().slice(0,5)+" - 请求:"+b.total+" 错误:"+b.errs;
+    return '<div class="'+cls+'" style="height:'+Math.max(h,1)+'px;background:'+(b.errs>0?'#ef4444':b.total>0?'#3b82f6':'#334155')+'" title="'+tip+'"></div>';
+  }).join("");
+}
+function renderLogModelDist(){
+  const el = document.getElementById("logModelDist");
+  const map = {};
+  const reqs = logAllEntries.filter(e => e.type !== "event");
+  for (const e of reqs) {
+    const m = e.overrideModel || e.reqModel || "(未知)";
+    if (!map[m]) map[m] = { total: 0, fail: 0, dur: 0 };
+    map[m].total++;
+    if (e.status >= 400 || e.status === 0) map[m].fail++;
+    if (e.duration) map[m].dur += e.duration;
+  }
+  const sorted = Object.keys(map).sort((a,b) => map[b].total - map[a].total).slice(0,8);
+  el.innerHTML = sorted.length ? '<span style="color:#64748b;margin-right:4px">📊 模型:</span>'
+    + sorted.map(m => {
+      const s = map[m];
+      const avg = s.total > 0 ? Math.round(s.dur / s.total) : 0;
+      const failPct = s.total > 0 ? Math.round(s.fail / s.total * 100) : 0;
+      return '<span class="log-model-tag">'+esc(m)+' ('+s.total+')'
+        + (s.fail > 0 ? ' <span class="fail">✕'+s.fail+'</span>' : '')
+        + ' <span style="color:#64748b">'+fmtDur(avg)+'</span></span>';
+    }).join("") : '';
+}
+function renderLogErrorCluster(){
+  const body = document.getElementById("logErrorBody");
+  const map = {};
+  const reqs = logAllEntries.filter(e => e.type !== "event");
+  for (const e of reqs) {
+    const st = e.status || 0;
+    if (st === 0 || st >= 400) {
+      const key = st === 0 ? "超时" : String(st);
+      map[key] = (map[key] || 0) + 1;
+    }
+  }
+  const sorted = Object.keys(map).sort((a,b) => map[b] - map[a]);
+  const el = document.getElementById("logErrorCluster");
+  const head = el.querySelector(".head");
+  const totalErr = sorted.reduce((s,k) => s+map[k], 0);
+  head.textContent = "⚠ 错误分布 ("+totalErr+" 次)";
+  body.innerHTML = sorted.length
+    ? sorted.map(k => '<span class="log-error-code">'+k+' x'+map[k]+'</span>').join("")
+    : '<span style="color:#22c55e">无错误</span>';
+}
+function toggleErrorCluster(){
+  document.getElementById("logErrorBody").classList.toggle("open");
+}
+let logSortField = "time";
+let logSortAsc = false;
+function logSortBy(field){
+  if (logSortField === field) logSortAsc = !logSortAsc;
+  else { logSortField = field; logSortAsc = field === "time" ? false : true; }
+  // Update sort icons
+  ["","_idx","_model","_status","_dur"].forEach(sfx => {
+    const el = document.getElementById("logSortIcon"+sfx);
+    if (el) el.textContent = (field === (sfx.replace("_","") || "time")) ? (logSortAsc ? "▲" : "▼") : "";
+  });
+  logAllEntries.sort((a,b) => {
+    if (a.type === "event" && b.type !== "event") return 1;
+    if (a.type !== "event" && b.type === "event") return -1;
+    let va, vb;
+    switch(field){
+      case "idx": va=a.idx||0; vb=b.idx||0; break;
+      case "model": va=(a.overrideModel||a.reqModel||""); vb=(b.overrideModel||b.reqModel||""); return logSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+      case "status": va=a.status||0; vb=b.status||0; break;
+      case "dur": va=a.duration||0; vb=b.duration||0; break;
+      default: va=a.time||0; vb=b.time||0;
+    }
+    return logSortAsc ? va - vb : vb - va;
+  });
+  renderLogs();
+}
+function toggleLogDetail(tr, idx){
+  const expandRow = document.getElementById("logDetail_"+idx);
+  if (!expandRow) return;
+  const isOpen = expandRow.classList.contains("open");
+  // Close all other details
+  document.querySelectorAll(".log-row-expand.open").forEach(el => el.classList.remove("open"));
+  if (isOpen) return;
+  expandRow.classList.add("open");
+  const e = logAllEntries[idx];
+  if (!e) return;
+  const content = document.getElementById("logDetailContent_"+idx);
+  if (e.type === "event") {
+    content.textContent = "事件: "+(e.eventType||"")+" | 消息: "+(e.message||"")+" | URL: "+(e.url||"");
+  } else {
+    const lines = [
+      "时间: "+new Date(e.time).toISOString(),
+      "Key #: "+(e.idx||""),
+      "方法: "+e.method,
+      "路径: "+e.path,
+      "上游URL: "+(e.url||""),
+      "模型: "+(e.reqModel||""),
+      "覆盖模型: "+(e.overrideModel||""),
+      "状态码: "+e.status,
+      "上行: "+fmtBytes(e.inputBytes||0),
+      "下行: "+fmtBytes(e.outputBytes||0),
+      "耗时: "+fmtDur(e.duration||0),
+      "首字节: "+(e.ttfb?fmtDur(e.ttfb):"-"),
+      "协议转换: "+(e.conversion?"是":"否"),
+    ];
+    content.textContent = lines.join("\\n");
+  }
+}
+function closeLogKeyPopup(){
+  document.getElementById("logKeyPopup").style.display="none";
+}
+async function openLogKeyPopup(idx, event){
+  event.stopPropagation();
+  const popup = document.getElementById("logKeyPopup");
+  const entries = logAllEntries.filter(e => e.idx === parseInt(idx));
+  const reqs = entries.filter(e => e.type !== "event");
+  const events = entries.filter(e => e.type === "event");
+  const total = reqs.length;
+  const success = reqs.filter(e => e.status >= 200 && e.status < 300).length;
+  const err4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
+  const err5xx = reqs.filter(e => e.status >= 500).length;
+  const timeout = reqs.filter(e => e.status === 0 || e.status == null).length;
+  const durs = reqs.filter(e => e.duration != null).map(e => e.duration).sort((a,b)=>a-b);
+  const avgDur = durs.length ? Math.round(durs.reduce((a,b)=>a+b,0)/durs.length) : 0;
+  const p95 = durs.length ? durs[Math.floor(durs.length*0.95)]||durs[durs.length-1] : 0;
+  // Models used
+  const models = {};
+  reqs.forEach(e => { const m=e.overrideModel||e.reqModel||"(未知)"; models[m]=(models[m]||0)+1; });
+  const modelStr = Object.keys(models).sort((a,b)=>models[b]-models[a]).map(m => esc(m)+"("+models[m]+")").join(", ");
+  const eventsStr = events.map(e => new Date(e.time).toTimeString().slice(0,5)+" "+e.eventType+": "+(e.message||"")).join("\\n");
+  document.getElementById("logKeyPopupTitle").textContent = "Key #"+idx+" 统计";
+  document.getElementById("logKeyPopupBody").innerHTML = 
+    '<div class="stat-row"><span class="l">请求数</span><span class="r">'+total+'</span></div>'
+    + '<div class="stat-row"><span class="l">成功</span><span class="r" style="color:#22c55e">'+success+' ('+(total?Math.round(success/total*100):0)+'%)</span></div>'
+    + '<div class="stat-row"><span class="l">4xx</span><span class="r" style="color:'+(err4xx?'#f59e0b':'#94a3b8')+'">'+err4xx+'</span></div>'
+    + '<div class="stat-row"><span class="l">5xx</span><span class="r" style="color:'+(err5xx?'#ef4444':'#94a3b8')+'">'+err5xx+'</span></div>'
+    + '<div class="stat-row"><span class="l">超时</span><span class="r" style="color:'+(timeout?'#64748b':'#94a3b8')+'">'+timeout+'</span></div>'
+    + '<div class="stat-row"><span class="l">平均耗时</span><span class="r">'+fmtDur(avgDur)+'</span></div>'
+    + '<div class="stat-row"><span class="l">P95</span><span class="r">'+fmtDur(p95)+'</span></div>'
+    + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #334155;font-size:10px;color:#94a3b8">📊 模型: '+modelStr+'</div>'
+    + (events.length ? '<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;font-size:10px;color:#60a5fa;white-space:pre-wrap">📌 事件:\\n'+esc(eventsStr)+'</div>' : '');
+  // Position popup near the click
+  popup.style.display="block";
+  popup.style.left=Math.min(event.clientX, window.innerWidth-420)+"px";
+  popup.style.top=Math.min(event.clientY, window.innerHeight-350)+"px";
+}
+// Click outside to close popup
+document.addEventListener("click", function(e){
+  const popup = document.getElementById("logKeyPopup");
+  if (popup && popup.style.display === "block" && !popup.contains(e.target)) {
+    popup.style.display = "none";
+  }
+});
+function logRowClass(e){
+  if (e.type === "event") {
+    if (e.eventType === "conversion") return "log-row-conversion";
+    if (e.eventType === "recover") return "log-row-recover";
+    if (e.eventType === "lock") return "log-row-lock";
+    if (e.eventType === "discard") return "log-row-discard";
+    return "log-row-event";
+  }
+  const st = e.status || 0;
+  if (st >= 500) return "log-row-" + (document.getElementById("logBody").children.length % 2 === 0 ? "even" : "odd");
+  return "";
+}
+function makeLogRow(e){
+  if (e.type === "event") return makeEventRow(e);
+  const s=e.status||0;
+  const sc="log-s"+(s>=500?"5xx":s);
+  const tm=new Date(e.time);
+  const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
+  const mdl=e.overrideModel||e.reqModel||"";
+  const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
+  let icon = "";
+  if (e.conversion) icon = ' <span title="协议转换" style="color:#a78bfa">🔄</span>';
+  else if (s >= 500) icon = ' <span style="color:#ef4444">✕</span>';
+  else if (s >= 400) icon = ' <span style="color:#f59e0b">⚠</span>';
+  return '<td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
+    +'<td style="max-width:100px;overflow:hidden;text-overflow:ellipsis;color:#64748b;font-size:10px" title="'+esc(e.url||"")+'">'+esc(urlShort)+'</td>'
+    +'<td>'+e.method+'</td>'
+    +'<td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(mdl)+'">'+esc(mdl)+icon+'</td>'
+    +'<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td>'
+    +'<td class="log-status '+sc+'">'+s+'</td>'
+    +'<td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td>'
+    +'<td class="log-dur">'+fmtDur(e.duration||0)+'</td>'
+    +'<td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td>';
+}
+function makeEventRow(e){
+  const tm=new Date(e.time);
+  const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
+  let label="", detail="";
+  switch(e.eventType){
+    case "conversion":
+      let dir="";
+      if(e.message && e.message.indexOf("Responses→Chat")>=0) dir='<span style="font-weight:700;color:#a78bfa">R→C</span>';
+      else if(e.message && e.message.indexOf("Messages→Chat")>=0) dir='<span style="font-weight:700;color:#a78bfa">M→C</span>';
+      else if(e.message && e.message.indexOf("Chat→Messages")>=0) dir='<span style="font-weight:700;color:#a78bfa">C→M</span>';
+      label="🔄 转换 "+dir; detail=e.message||""; break;
+    case "recover": label="✅ 自动恢复"; detail=e.message||""; break;
+    case "lock": label="🔒 自动锁死"; detail=e.message||""; break;
+    case "discard": label="🗑 废弃"; detail=e.message||""; break;
+    default: label="📌 "+(e.eventType||"事件"); detail=e.message||"";
+  }
+  const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
+  return '<td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
+    +'<td style="color:#60a5fa;font-size:10px">'+esc(urlShort)+'</td>'
+    +'<td colspan="8" style="color:inherit">'+esc(label)+' <span style="color:#94a3b8;font-size:10px">'+esc(detail)+'</span></td>';
+}
 function toggleLogCustomRange(){
   document.getElementById("logCustomRange").style.display=
     document.getElementById("logTimeFilter").value==="custom"?"inline":"none";
@@ -2359,20 +2768,6 @@ function toggleLogCustomRange(){
 function exportLogs(){
   const q=buildLogFilterQuery();
   window.open("http://localhost:3456/__logs?"+q+"&format=csv");
-}
-function makeLogRow(e){
-  const s=e.status||0;
-  const sc="log-s"+s;
-  const tm=new Date(e.time);
-  const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
-  const mdl=e.overrideModel||e.reqModel||"";
-  return '<td class="log-time">'+ts+'</td><td>#'+e.idx+'</td><td>'+e.method+'</td><td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(mdl)+'">'+esc(mdl)+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td><td class="log-status '+sc+'">'+s+'</td><td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td><td class="log-dur">'+fmtDur(e.duration||0)+'</td><td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td>';
-}
-function renderLogs(logs){
-  const tbody=document.getElementById("logBody");
-  tbody.innerHTML=logs.slice().reverse().map(e=>{
-    return '<tr>'+makeLogRow(e)+'</tr>';
-  }).join("")||'<tr><td colspan="10" style="text-align:center;color:#64748b;padding:20px">暂无请求记录</td></tr>';
 }
 
 function openConfig(){loadConfigUI();document.getElementById("configModal").classList.add("on")}
@@ -2480,6 +2875,382 @@ function updateBatchBar(){
 </html>`;
 }
 
+// --- Protocol converter functions ---
+// Direction A: Responses ↔ Chat (Codex CLI ↔ non-OpenAI upstreams)
+function responsesToChatRequest(upstreamUrl, body) {
+  const chatBody = { model: body.model, messages: [], stream: body.stream, max_tokens: body.max_output_tokens };
+  if (body.instructions) chatBody.messages.push({ role: "system", content: body.instructions });
+  if (typeof body.input === "string") {
+    chatBody.messages.push({ role: "user", content: body.input });
+  } else if (Array.isArray(body.input)) {
+    for (const m of body.input) {
+      const role = m.role === "developer" ? "system" : m.role || "user";
+      let content = "";
+      if (typeof m.content === "string") content = m.content;
+      else if (Array.isArray(m.content)) content = m.content.map(c => c.text || "").join("\n");
+      else if (typeof m.content === "object" && m.content) content = m.content.text || JSON.stringify(m.content);
+      chatBody.messages.push({ role, content });
+    }
+  }
+  if (body.tools) chatBody.tools = body.tools.map(t => {
+    if (t.type === "function") return { type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema || t.parameters } };
+    return t;
+  });
+  if (body.tool_choice) chatBody.tool_choice = body.tool_choice;
+  if (body.temperature !== undefined) chatBody.temperature = body.temperature;
+  if (body.top_p !== undefined) chatBody.top_p = body.top_p;
+  if (body.stop) chatBody.stop = body.stop;
+  if (body.metadata) chatBody.metadata = body.metadata;
+  return chatBody;
+}
+function createChatToResponsesStream(upstreamUrl) {
+  const Transform = require("stream").Transform;
+  let buffer = "";
+  let responseId = "resp_" + Date.now();
+  let created = Math.floor(Date.now() / 1000);
+  let model = "";
+  let fullContent = "";
+  let inputTokens = 0, outputTokens = 0;
+  return new Transform({
+    readableObjectMode: false, writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") {
+          this.push(`event: response.output_text.done\ndata: {"type":"response.output_text.done","delta":""}\n\n`);
+          this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
+          this.push("data: [DONE]\n\n");
+          return cb();
+        }
+        let parsed;
+        try { parsed = JSON.parse(data); } catch(e) { continue; }
+        if (parsed.object === "chat.completion.chunk") {
+          model = parsed.model || model;
+          const delta = parsed.choices?.[0]?.delta;
+          if (delta?.content) {
+            fullContent += delta.content;
+            this.push(`event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":${JSON.stringify(delta.content)}}\n\n`);
+          }
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              this.push(`event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","delta":${JSON.stringify(tc.function?.arguments || "")},"item_id":"call_${tc.index || 0}"}\n\n`);
+            }
+          }
+          if (parsed.usage) {
+            inputTokens = parsed.usage.prompt_tokens || 0;
+            outputTokens = parsed.usage.completion_tokens || 0;
+          }
+        }
+      }
+      cb();
+    },
+    flush(cb) {
+      if (fullContent) {
+        this.push(`event: response.output_text.done\ndata: {"type":"response.output_text.done","delta":""}\n\n`);
+        this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
+        this.push("data: [DONE]\n\n");
+      }
+      cb();
+    }
+  });
+}
+function chatToResponsesResponse(upstreamUrl, chatBody) {
+  const choice = chatBody.choices?.[0];
+  const message = choice?.message || {};
+  return {
+    id: "resp_" + Date.now(),
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    model: chatBody.model || "",
+    output: [{
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: message.content || "" }]
+    }],
+    usage: {
+      input_tokens: chatBody.usage?.prompt_tokens || 0,
+      output_tokens: chatBody.usage?.completion_tokens || 0,
+      output_characters: (message.content || "").length,
+      input_characters: 0
+    }
+  };
+}
+// Direction B: Messages → Chat (Claude Code CLI → non-Anthropic upstreams)
+function messagesToChatRequest(upstreamUrl, body) {
+  const chatBody = { model: body.model, messages: [], stream: body.stream, max_tokens: body.max_tokens };
+  if (body.system) {
+    const sys = typeof body.system === "string" ? body.system : Array.isArray(body.system) ? body.system.map(s => typeof s === "object" ? s.text || "" : s).join("\n") : String(body.system);
+    chatBody.messages.push({ role: "system", content: sys });
+  }
+  if (Array.isArray(body.messages)) {
+    for (const m of body.messages) {
+      let content = "";
+      if (typeof m.content === "string") content = m.content;
+      else if (Array.isArray(m.content)) content = m.content.map(c => c.text || c.source?.data || "").join("\n");
+      chatBody.messages.push({ role: m.role === "assistant" ? "assistant" : "user", content });
+    }
+  }
+  if (body.tools) {
+    chatBody.tools = body.tools.map(t => ({
+      type: "function",
+      function: { name: t.name, description: t.description || "", parameters: t.input_schema || {} }
+    }));
+  }
+  if (body.tool_choice) chatBody.tool_choice = body.tool_choice.type || "auto";
+  if (body.metadata) chatBody.metadata = body.metadata;
+  if (body.stop_sequences) chatBody.stop = body.stop_sequences;
+  if (body.temperature !== undefined) chatBody.temperature = body.temperature;
+  if (body.top_p !== undefined) chatBody.top_p = body.top_p;
+  return chatBody;
+}
+function createChatToMessagesStream(upstreamUrl) {
+  const Transform = require("stream").Transform;
+  let buffer = "";
+  let fullContent = "";
+  let model = "";
+  let inputTokens = 0, outputTokens = 0;
+  let stopReason = "end_turn";
+  let hasStarted = false;
+  return new Transform({
+    readableObjectMode: false, writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") {
+          if (!hasStarted) {
+            this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[],"model":${JSON.stringify(model)},"stop_reason":"${stopReason}","usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
+          }
+          this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`);
+          this.push(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${stopReason}","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`);
+          this.push(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
+          return cb();
+        }
+        let parsed;
+        try { parsed = JSON.parse(data); } catch(e) { continue; }
+        if (parsed.object === "chat.completion.chunk") {
+          model = parsed.model || model;
+          const delta = parsed.choices?.[0]?.delta;
+          if (parsed.usage) {
+            inputTokens = parsed.usage.prompt_tokens || 0;
+            outputTokens = parsed.usage.completion_tokens || 0;
+          }
+          const finishReason = parsed.choices?.[0]?.finish_reason;
+          if (finishReason === "stop") stopReason = "end_turn";
+          else if (finishReason === "length") stopReason = "max_tokens";
+          else if (finishReason === "tool_calls") stopReason = "tool_use";
+          else if (finishReason) stopReason = finishReason;
+
+          if (delta?.content) {
+            if (!hasStarted) {
+              hasStarted = true;
+              this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[{"type":"text","text":""}],"model":${JSON.stringify(model)},"stop_reason":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
+              this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`);
+            }
+            fullContent += delta.content;
+            this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":${JSON.stringify(delta.content)}}}\n\n`);
+          }
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (tc.function?.name) {
+                this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"${tc.id || "toolu_"+Date.now()}","name":"${tc.function.name}","input":{}}}\n\n`);
+              }
+              if (tc.function?.arguments) {
+                this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":${JSON.stringify(tc.function.arguments)}}}\n\n`);
+              }
+              if (tc.function?.name) {
+                this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n`);
+              }
+            }
+          }
+        }
+      }
+      cb();
+    },
+    flush(cb) {
+      if (fullContent) {
+        this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`);
+        this.push(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${stopReason}","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`);
+        this.push(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
+      }
+      cb();
+    }
+  });
+}
+function chatToMessagesResponse(upstreamUrl, chatBody) {
+  const choice = chatBody.choices?.[0];
+  const message = choice?.message || {};
+  const usage = chatBody.usage || {};
+  return {
+    id: "msg_" + Date.now(),
+    type: "message",
+    role: "assistant",
+    content: [{ type: "text", text: message.content || "" }],
+    model: chatBody.model || "",
+    stop_reason: choice?.finish_reason === "stop" ? "end_turn" : choice?.finish_reason || "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 }
+  };
+}
+// Direction C: Chat → Messages (Chat clients → Anthropic upstream)
+function chatToMessagesRequest(upstreamUrl, body) {
+  const msgsBody = { model: body.model, messages: [], max_tokens: body.max_tokens || 4096, stream: body.stream };
+  if (Array.isArray(body.messages)) {
+    const systemParts = [];
+    for (const m of body.messages) {
+      if (m.role === "system") { systemParts.push(m.content); continue; }
+      let content = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map(c => c.text || "").join("\n") : String(m.content);
+      if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+        const blocks = [{ type: "text", text: content }];
+        for (const tc of m.tool_calls) {
+          blocks.push({ type: "tool_use", id: tc.id, name: tc.function.name, input: JSON.parse(tc.function.arguments || "{}") });
+        }
+        msgsBody.messages.push({ role: "assistant", content: blocks });
+      } else if (m.role === "tool") {
+        msgsBody.messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: m.tool_call_id, content: content }] });
+      } else {
+        msgsBody.messages.push({ role: m.role || "user", content });
+      }
+    }
+    if (systemParts.length) msgsBody.system = systemParts.join("\n");
+  }
+  if (body.tools) {
+    msgsBody.tools = body.tools.map(t => ({
+      name: t.function?.name || t.name || "",
+      description: t.function?.description || t.description || "",
+      input_schema: t.function?.parameters || t.parameters || {}
+    }));
+  }
+  if (body.tool_choice) {
+    msgsBody.tool_choice = typeof body.tool_choice === "string" ? { type: body.tool_choice } : body.tool_choice;
+  }
+  if (body.stop) msgsBody.stop_sequences = Array.isArray(body.stop) ? body.stop : [body.stop];
+  if (body.temperature !== undefined) msgsBody.temperature = body.temperature;
+  if (body.top_p !== undefined) msgsBody.top_p = body.top_p;
+  if (body.max_tokens) msgsBody.max_tokens = body.max_tokens;
+  return msgsBody;
+}
+function createMessagesToChatStream(upstreamUrl) {
+  const Transform = require("stream").Transform;
+  let buffer = "";
+  let fullContent = "";
+  let model = "";
+  let inputTokens = 0, outputTokens = 0;
+  return new Transform({
+    readableObjectMode: false, writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (!data) continue;
+        let parsed;
+        try { parsed = JSON.parse(data); } catch(e) { continue; }
+        if (parsed.type === "message_start") {
+          model = parsed.message?.model || model;
+          inputTokens = parsed.message?.usage?.input_tokens || 0;
+        } else if (parsed.type === "content_block_delta" && parsed.delta?.type === "text_delta") {
+          fullContent += parsed.delta.text;
+          this.push(`data: {"choices":[{"index":0,"delta":{"role":"assistant","content":${JSON.stringify(parsed.delta.text)}},"finish_reason":null}],"object":"chat.completion.chunk","model":${JSON.stringify(model)}}\n\n`);
+        } else if (parsed.type === "content_block_delta" && parsed.delta?.type === "input_json_delta") {
+          this.push(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":${JSON.stringify(parsed.delta.partial_json)}}}]},"finish_reason":null}],"object":"chat.completion.chunk","model":${JSON.stringify(model)}}\n\n`);
+        } else if (parsed.type === "message_delta") {
+          outputTokens = parsed.usage?.output_tokens || outputTokens;
+          const finishMap = { end_turn: "stop", max_tokens: "length", tool_use: "tool_calls" };
+          const fr = finishMap[parsed.delta?.stop_reason] || parsed.delta?.stop_reason || "stop";
+          this.push(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"${fr}"}],"usage":{"prompt_tokens":${inputTokens},"completion_tokens":${outputTokens},"total_tokens":${inputTokens + outputTokens}},"object":"chat.completion.chunk","model":${JSON.stringify(model)}}\n\n`);
+        } else if (parsed.type === "message_stop") {
+          this.push("data: [DONE]\n\n");
+        }
+      }
+      cb();
+    },
+    flush(cb) {
+      if (fullContent) {
+        this.push("data: [DONE]\n\n");
+      }
+      cb();
+    }
+  });
+}
+function messagesToChatResponse(upstreamUrl, msgsBody) {
+  const content = msgsBody.content || [];
+  const textBlocks = content.filter(c => c.type === "text");
+  const text = textBlocks.map(t => t.text || "").join("");
+  const usage = msgsBody.usage || {};
+  const finishMap = { end_turn: "stop", max_tokens: "length", tool_use: "tool_calls" };
+  return {
+    id: "chatcmpl-" + Date.now(),
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: msgsBody.model || "",
+    choices: [{
+      index: 0,
+      message: { role: "assistant", content: text },
+      finish_reason: finishMap[msgsBody.stop_reason] || msgsBody.stop_reason || "stop"
+    }],
+    usage: { prompt_tokens: usage.input_tokens || 0, completion_tokens: usage.output_tokens || 0, total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0) }
+  };
+}
+// --- End protocol converter functions ---
+
+// --- Mixed account forwarder for /v1/chat/completions (Anthropic → non-Anthropic fallback) ---
+const FALLBACK_CORS = { "access-control-allow-origin": "*", "content-type": "application/json; charset=utf-8" };
+function forwardChatCompletions(method, chatHeaders, chatBody, msgsHeaders, msgsBody, clientRes) {
+  let responded = false;
+  const respond = (code, data) => { if (!responded && !clientRes.destroyed && !clientRes.headersSent) { responded = true; clientRes.writeHead(code, { "content-type": "application/json" }); clientRes.end(JSON.stringify(data)); } };
+
+  // Phase 1: Anthropic accounts with Messages body
+  const anthroAccounts = [];
+  for (let i = 0; i < accounts.length; i++) {
+    if (accounts[i].status === "active" && !inCooldown(i) && isMessagesNative(accounts[i].url)) {
+      const ks = getKeyState(i);
+      if (ks.status !== "discarded" && ks.status !== "locked") anthroAccounts.push(i);
+    }
+  }
+  let attempt1 = 0;
+  const tryAnthropic = () => {
+    if (responded || attempt1 >= anthroAccounts.length) { if (!responded) tryChat(); return; }
+    const idx = anthroAccounts[attempt1++];
+    forwardRequest(idx, method, msgsHeaders, msgsBody, clientRes, "/v1/messages", (r) => {
+      if (responded) return;
+      if (r.switched) { console.log(`[proxy] #${idx+1} → anthropic ${r.code||"err"}`); return tryAnthropic(); }
+      responded = true;
+    }, createMessagesToChatStream());
+  };
+
+  // Phase 2: non-Anthropic accounts with original Chat body
+  const chatAccounts = [];
+  for (let i = 0; i < accounts.length; i++) {
+    if (accounts[i].status === "active" && !inCooldown(i) && !isMessagesNative(accounts[i].url)) {
+      const ks = getKeyState(i);
+      if (ks.status !== "discarded" && ks.status !== "locked") chatAccounts.push(i);
+    }
+  }
+  let attempt2 = 0;
+  const tryChat = () => {
+    if (responded || attempt2 >= chatAccounts.length) { respond(502, { error: "All keys exhausted" }); return; }
+    const idx = chatAccounts[attempt2++];
+    forwardRequest(idx, method, chatHeaders, chatBody, clientRes, "/v1/chat/completions", (r) => {
+      if (responded) return;
+      if (r.switched) { console.log(`[proxy] #${idx+1} → chat ${r.code||"err"}`); return tryChat(); }
+      responded = true;
+    });
+  };
+
+  if (anthroAccounts.length) tryAnthropic(); else tryChat();
+}
+// --- End Mixed account forwarder ---
+
 // --- HTTP Server ---
 const server = http.createServer((req, res) => {
   const pathname = (req.url || "/").split("?")[0];
@@ -2498,6 +3269,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === "GET" && pathname === "/favicon.ico") {
+    res.writeHead(204, { "access-control-allow-origin": "*" }); res.end();
+    return;
+  }
   if (req.method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(getDashboardHTML());
@@ -2580,12 +3355,15 @@ const server = http.createServer((req, res) => {
           if (!key || !url) throw new Error("key and url required");
           const targetUrl = new URL(url);
           const mod = HTTP_MOD[targetUrl.protocol] || https;
+          const isAnthropic = targetUrl.hostname === "api.anthropic.com";
           const opts = {
             hostname: targetUrl.hostname,
             port: targetUrl.port || (targetUrl.protocol === "http:" ? 80 : 443),
-            path: "/v1/models",
-            method: "GET",
-            headers: { authorization: "Bearer " + key, "content-type": "application/json" },
+            path: isAnthropic ? "/v1/messages" : "/v1/models",
+            method: isAnthropic ? "POST" : "GET",
+            headers: isAnthropic
+              ? { authorization: "Bearer " + key, "content-type": "application/json", "anthropic-version": "2023-06-01" }
+              : { authorization: "Bearer " + key, "content-type": "application/json" },
             timeout: 15000,
           };
           const t0 = Date.now();
@@ -2601,12 +3379,16 @@ const server = http.createServer((req, res) => {
                 let model = "";
                 let modelCount = 0;
                 try {
-                  const j = JSON.parse(data);
-                  if (j.data && j.data.length) {
-                    const openaiPrefixes=["gpt-","o1-","o3-","dall-e-","text-embedding-","whisper-","tts-","babbage-","curie-","davinci-"];
-                    const filtered=j.data.filter(item=>openaiPrefixes.some(p=>item.id.startsWith(p)));
-                    if(filtered.length){model=filtered.map(m=>m.id).join(", ");modelCount=filtered.length}
-                    else if(j.data.length){model=j.data[0].id;modelCount=1}
+                  if (isAnthropic) {
+                    const j = JSON.parse(data);
+                    model = j.model || "claude (unknown)";
+                    modelCount = 1;
+                  } else {
+                    const j = JSON.parse(data);
+                    if (j.data && j.data.length) {
+                      model = j.data.map(m => m.id).join(", ");
+                      modelCount = j.data.length;
+                    }
                   }
                 } catch (e) {}
                 res.writeHead(200, cors);
@@ -2630,7 +3412,7 @@ const server = http.createServer((req, res) => {
             res.writeHead(200, cors);
             res.end(JSON.stringify({ ok: false, error: "超时" }));
           });
-          testReq.end();
+          testReq.end(isAnthropic ? JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1, messages: [{ role: "user", content: "hi" }] }) : undefined);
         } catch (e) {
           res.writeHead(400, cors);
           res.end(JSON.stringify({ error: e.message }));
@@ -2786,19 +3568,49 @@ const server = http.createServer((req, res) => {
       if (since || until) {
         const sTime = since ? parseInt(since, 10) : 0;
         const uTime = until ? parseInt(until, 10) : 9e15;
+        const maxNeeded = (limit + offset) || 500;
         const fileEntries = [];
         try {
           if (fs.existsSync(LOG_DIR)) {
-            const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
+            let files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
+            files.sort().reverse();
             for (const f of files) {
+              if (fileEntries.length >= maxNeeded) break;
               const dateStr = f.replace(".jsonl", "");
               const fd = new Date(dateStr + "T00:00:00");
               const fdEnd = fd.getTime() + 86400000;
               if (fdEnd < sTime || fd.getTime() > uTime) continue;
-              const lines = fs.readFileSync(path.join(LOG_DIR, f), "utf-8").trim().split("\n");
-              for (const line of lines) {
-                if (!line) continue;
-                try { const e = JSON.parse(line); if (e.time >= sTime && e.time <= uTime) fileEntries.push(e); } catch (e2) {}
+              const filePath = path.join(LOG_DIR, f);
+              const stat = fs.statSync(filePath);
+              if (stat.size === 0) continue;
+              const fdFile = fs.openSync(filePath, "r");
+              let pos = stat.size;
+              let leftover = "";
+              const chunkSize = 32768;
+              while (fileEntries.length < maxNeeded && pos > 0) {
+                const readLen = Math.min(chunkSize, pos);
+                pos -= readLen;
+                const buf = Buffer.alloc(readLen);
+                fs.readSync(fdFile, buf, 0, readLen, pos);
+                const chunk = buf.toString("utf-8");
+                const data = chunk + leftover;
+                const parts = data.split("\n");
+                leftover = parts[0];
+                for (let i = parts.length - 1; i > 0 && fileEntries.length < maxNeeded; i--) {
+                  const line = parts[i].trim();
+                  if (!line) continue;
+                  try {
+                    const e = JSON.parse(line);
+                    if (e.time >= sTime && e.time <= uTime) fileEntries.push(e);
+                  } catch (e2) {}
+                }
+              }
+              fs.closeSync(fdFile);
+              if (fileEntries.length < maxNeeded && leftover.trim()) {
+                try {
+                  const e = JSON.parse(leftover.trim());
+                  if (e.time >= sTime && e.time <= uTime) fileEntries.push(e);
+                } catch (e2) {}
               }
             }
           }
@@ -2825,17 +3637,33 @@ const server = http.createServer((req, res) => {
       if (status) { entries = entries.filter(e => { const s = e.status || 0; if (status.endsWith("xx")) { const prefix = parseInt(status, 10); return !isNaN(prefix) && Math.floor(s / 100) === prefix; } return String(s) === status; }); }
       if (model) { const ml = model.toLowerCase(); entries = entries.filter(e => (e.reqModel||"").toLowerCase().includes(ml) || (e.overrideModel||"").toLowerCase().includes(ml)); }
       if (since || until) entries.sort((a, b) => b.time - a.time);
+      // Compute statistics from all matching entries BEFORE pagination slice
+      const stats = { total: 0, successRate: 0, p95: 0, p99: 0, avgDuration: 0, error4xx: 0, error5xx: 0, errorTimeout: 0 };
+      stats.total = entries.length;
+      const durs = entries.filter(e => e.duration != null && e.type !== "event").map(e => e.duration).sort((a, b) => a - b);
+      if (durs.length) {
+        stats.avgDuration = Math.round(durs.reduce((a, b) => a + b, 0) / durs.length);
+        stats.p95 = durs[Math.floor(durs.length * 0.95)] || durs[durs.length - 1];
+        stats.p99 = durs[Math.floor(durs.length * 0.99)] || durs[durs.length - 1];
+      }
+      const reqs = entries.filter(e => e.type !== "event");
+      const success = reqs.filter(e => e.status >= 200 && e.status < 300).length;
+      stats.successRate = reqs.length ? Math.round(success / reqs.length * 10000) / 100 : 0;
+      stats.error4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
+      stats.error5xx = reqs.filter(e => e.status >= 500 && e.status < 600).length;
+      stats.errorTimeout = reqs.filter(e => e.status === 0 || e.status == null).length;
       entries = entries.slice(-limit - offset, entries.length - offset);
       if (entries.length > limit) entries = entries.slice(entries.length - limit);
       if (format === "csv") {
-        const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel";
-        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", e.reqModel||"", e.overrideModel||""].join(","));
+        const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,url,type,eventType,message";
+        const esc = v => `"${String(v).replace(/"/g, '""')}"`;
+        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", esc(e.reqModel||""), esc(e.overrideModel||""), esc(e.url||""), e.type||"request", e.eventType||"", esc(e.message||"")].join(","));
         res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
         res.end(header + "\n" + rows.join("\n"));
         return;
       }
       res.writeHead(200, cors);
-      res.end(JSON.stringify(entries, null, 2));
+      res.end(JSON.stringify({ entries, stats }, null, 2));
       return;
     }
     res.writeHead(405, cors);
@@ -3139,6 +3967,69 @@ const server = http.createServer((req, res) => {
     res.end(getPrometheusMetrics());
     return;
   }
+
+  // --- Protocol conversion routes ---
+  if (pathname === "/v1/responses" && req.method === "POST") {
+    const chunks = [];
+    req.on("data", c => chunks.push(c));
+    req.on("end", () => {
+      try {
+        const body = Buffer.concat(chunks);
+        let reqBody;
+        try { reqBody = JSON.parse(body); } catch (e) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "invalid JSON" })); return; }
+        const chatBody = responsesToChatRequest("", reqBody);
+        chatBody.stream = true;
+        addEventLog("conversion", 0, `Responses→Chat 转换: ${reqBody.model || "?"} → ${chatBody.model}`, "");
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToResponsesStream());
+      } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
+    });
+    req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
+    return;
+  }
+
+  if (pathname === "/v1/messages" && req.method === "POST") {
+    const chunks = [];
+    req.on("data", c => chunks.push(c));
+    req.on("end", () => {
+      try {
+        const body = Buffer.concat(chunks);
+        let reqBody;
+        try { reqBody = JSON.parse(body); } catch (e) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "invalid JSON" })); return; }
+        const chatBody = messagesToChatRequest("", reqBody);
+        chatBody.stream = true;
+        addEventLog("conversion", 0, `Messages→Chat 转换: ${reqBody.model || "?"}`, "");
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToMessagesStream());
+      } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
+    });
+    req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
+    return;
+  }
+
+  if (pathname === "/v1/chat/completions" && req.method === "POST") {
+    const hasAnthropic = accounts.some(a => isMessagesNative(a.url));
+    if (!hasAnthropic) {
+      // No Anthropic upstreams — fall through to default handler
+    } else {
+      const chunks = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        try {
+          const body = Buffer.concat(chunks);
+          let reqBody;
+          try { reqBody = JSON.parse(body); } catch (e) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "invalid JSON" })); return; }
+          const origBody = Buffer.from(JSON.stringify({ ...reqBody, stream: true }));
+          const msgsBody = chatToMessagesRequest("", reqBody);
+          msgsBody.stream = true;
+          const msgsHeaders = { ...req.headers, "anthropic-version": "2023-06-01" };
+          addEventLog("conversion", 0, `Chat→Messages 转换: ${reqBody.model || "?"}`, "");
+          forwardChatCompletions(req.method, req.headers, origBody, msgsHeaders, Buffer.from(JSON.stringify(msgsBody)), res);
+        } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
+      });
+      req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
+      return;
+    }
+  }
+  // --- End protocol conversion routes ---
 
   const chunks = [];
   req.on("data", (c) => chunks.push(c));

@@ -1,4 +1,4 @@
-# Codex Multi-Key Proxy
+# Proxy Multi-Key Proxy
 
 多 API Key 代理 + 实时监控面板。支持智能调度（按 Key 优先级+冷却状态轮询，可选轮询均摊模式）、自动容灾切换（遇到 401/402/403/429/5xx 自动尝试下一个 Key）、滑动窗口成功率（5 分钟 / 1 小时）、延迟百分位 P50/P95/P99、请求队列缓冲（最长 30 秒）、WebSocket 实时推送、Prometheus `/metrics`、Webhook/桌面通知/声音告警、完整前后端管理面板。
 
@@ -377,11 +377,19 @@ codex
 📂 按钮一键折叠/展开全部卡片
 
 ### 日志查看器
-最近 2000 条请求记录，WebSocket 实时推送（日志弹窗打开时自动追加），时间/Key/方法/模型/路径/状态码/流量/延迟。
+顶部统计卡片展示全局指标：总请求数、成功率（按百分比着色：≥95% 绿、≥80% 黄、<80% 红）、平均耗时、P95、P99、4xx 数、5xx 数、超时数。
+统计卡片下方为 **30 分钟请求量 sparkline 图**（蓝色柱=成功请求，红色柱=含错误的分钟，悬停显示具体数字）和 **模型分布行**（Top 8 模型：请求数、错误数、平均耗时，点击 Key 号可查看该 Key 的独立统计弹窗）。
+可折叠 **错误分布区**：按错误码聚类显示次数（超时/4xx/5xx），点击展开详情。
+表格列：时间（可排序） / Key 序号（可排序，点击弹出该 Key 独立统计卡片） / 上游 URL / HTTP 方法 / 模型（可排序） / 路径 / 状态码（可排序） / 上行流量 / 下行流量 / 耗时（可排序） / 首字节耗时。
+事件行（紫色/绿色/红色/橙色背景）：协议转换（带 `R→C`/`M→C`/`C→M` 方向标签）、自动恢复、自动锁死、废弃——以不同颜色区分。
+**点击行展开详情**：显示完整时间戳、模型、协议转换标志、URL、请求/响应字节数等详细信息。
+实时推送：WebSocket 自动追加新日志到当前页末尾，同时更新 sparkline/模型分布/错误聚类。
+分页：每页 200 条，上一页/下一页按钮 + 页码显示。
 支持筛选：按 Key 序号、状态码（支持 `4xx` `5xx` 通配）、模型名子串、时间范围（5 分钟/15 分钟/1 小时/24 小时/7 天/30 天/自定义范围）。
 自定义范围使用 `<input type="datetime-local">` 选择起止时间，选中「自定义范围」后显示输入框。
 选择 24h/7d/30d 或自定义范围时，服务端自动读取 `logs/` 目录下的历史 JSONL 文件与内存日志合并去重，支持回溯已保存的日志文件。
 支持 CSV 导出当前筛选结果。
+服务端 `GET /__logs` 返回 `{ entries: [...], stats: { total, successRate, p95, p99, avgDuration, error4xx, error5xx, errorTimeout } }` 结构。
 
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
@@ -410,7 +418,53 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__export` | GET | CSV 导出统计报表 |
 | `/__pathstats` | GET | 按路径/模型的请求分布 |
 | `/metrics` | GET | Prometheus 格式指标 |
+| `/v1/responses` | POST | **协议转换**：接收 Codex CLI 的 Responses API 请求，自动转换为 Chat Completions 格式转发给上游（非 OpenAI / ofox），并将响应流式转换回 Responses 格式 |
+| `/v1/messages` | POST | **协议转换**：接收 Claude Code CLI 的 Messages API 请求，自动转换为 Chat Completions 格式转发给上游（非 Anthropic），并将响应流式转换回 Messages 格式 |
+| `/v1/chat/completions` | POST | **协议转换**：接收 Chat Completions 请求，如上游为 Anthropic 则自动转换为 Messages 格式转发，并将响应流式转换回 Chat 格式；非 Anthropic 上游直接透传 |
 | `ws://localhost:3456/` | WS | WebSocket 实时推送 |
+
+### 协议转换说明
+
+协议转换层使任意下游客户端可连接任意上游模型：
+
+| 下游客户端 | 请求路径 | 转换方向 | 支持的上游 |
+|---|---|---|---|
+| Codex CLI | `/v1/responses` | Responses → Chat → Responses | 任意 OpenAI 兼容 API |
+| Claude Code CLI | `/v1/messages` | Messages → Chat → Messages | 任意 OpenAI 兼容 API |
+| Chat 客户端 | `/v1/chat/completions` | Chat → Messages → Chat | Anthropic |
+
+- 转换基于路径（`/v1/responses`, `/v1/messages`, `/v1/chat/completions`）自动触发，无需配置
+- 上游检测基于 `keys.json` 中的 `url` 字段：`api.openai.com`/`api.ofox.ai` = Responses 原生，`api.anthropic.com` = Messages 原生，其余 = Chat 通用
+- 所有上游模型（含 OpenAI、Kimi、DeepSeek、Grok、Qwen、Gemini 等）均支持三种下游客户端
+- 当前仅支持流式（`stream: true`）请求；非流式请求将按流式处理返回 SSE
+
+#### 混合账号 fallback（Chat 客户端 → Anthropic）
+
+`/v1/chat/completions` 路由在存在 Anthropic 账号时自动启用两阶段 fallback：
+
+1. **Phase 1**：优先尝试所有 Anthropic 账号，body 自动转换为 Messages 格式，响应流式转换回 Chat 格式
+2. **Phase 2**：若所有 Anthropic 账号均失败（冷却/限流/超时），自动使用原始 Chat 格式重试非 Anthropic 账号
+
+Anthropic 账号和非 Anthropic 账号可共存，无需额外配置。
+
+#### Responses→Chat 支持字段
+
+`/v1/responses` → Chat 转换支持以下参数映射：
+
+| Responses 字段 | Chat 字段 | 说明 |
+|---|---|---|
+| `model` | `model` | 模型名 |
+| `input` | `messages` | 支持 string / array 格式 |
+| `instructions` | `system message` | 转为 system role |
+| `max_output_tokens` | `max_tokens` | 最大输出 Token |
+| `temperature` | `temperature` | 采样温度 |
+| `top_p` | `top_p` | 核采样 |
+| `stop` | `stop` | 停止序列 |
+| `tools` | `tools` | 工具定义 |
+| `tool_choice` | `tool_choice` | 工具选择策略 |
+| `metadata` | `metadata` | 自定义元数据 |
+
+不支持（丢弃）：`include`、`previous_response_id`、`store`
 
 ### /__status 字段说明
 
