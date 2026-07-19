@@ -1,6 +1,15 @@
-# Proxy Multi-Key Proxy
+# OpenAPI Multi-Key Proxy
 
-多 API Key 代理 + 实时监控面板。支持智能调度（按 Key 优先级+冷却状态轮询，可选轮询均摊模式）、自动容灾切换（遇到 401/402/403/429/5xx 自动尝试下一个 Key）、滑动窗口成功率（5 分钟 / 1 小时）、延迟百分位 P50/P95/P99、请求队列缓冲（最长 30 秒）、WebSocket 实时推送、Prometheus `/metrics`、Webhook/桌面通知/声音告警、完整前后端管理面板。
+## 核心能力
+
+**三向协议转换**：本代理自动在 OpenAI Responses API、Anthropic Messages API、OpenAI Chat Completions API 三者之间双向转换。下游任意客户端（Codex CLI、Claude Code CLI、Chat 应用）可连接任意上游模型（OpenAI、Anthropic、DeepSeek、Kimi、Qwen、Gemini、Grok 等），零配置自动检测。
+
+**超越 cc-switch 之处**：
+- **运行时代理**，非配置管理工具——cc-switch 是本地配置切换器，本代理是网络层透明代理，无需修改客户端配置即可工作
+- **三向全协议转换**：cc-switch 仅支持 Anthropic→OpenAI 单向；本代理支持 Responses↔Chat↔Messages 三向互转 + 混合账号 2 阶段 fallback
+- **多 Key 智能调度**：基于健康评分、冷却状态、滑动成功率、延迟百分位的自动路由，非简单的轮询或手动选择
+- **系统级容灾**：自动锁死、自动恢复、废弃检测、队列缓冲、并发管控——无需人工干预
+- **完整监控面板**：实时仪表盘、按 Key 统计、流量趋势、请求日志（含 sparkline/错误聚类/模型分布）、Prometheus 指标、Webhook/桌面通知
 
 ## 目录结构
 

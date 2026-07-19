@@ -1197,7 +1197,7 @@ function getDashboardHTML() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Codex 代理监控</title>
+<title>OpenAPI 多 Key 代理监控</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;padding:clamp(8px,2vw,20px)}
@@ -1353,7 +1353,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </head>
 <body>
 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-<h1>Proxy 多 Key 代理监控</h1>
+<h1>OpenAPI 多 Key 代理监控</h1>
 <div style="display:flex;gap:6px;flex-wrap:wrap">
 <button class="btn" onclick="openLogs()">📋 日志</button>
 <button class="btn" onclick="exportCSV()">⬇ 导出 CSV</button>
