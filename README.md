@@ -115,6 +115,7 @@ npm install
 #            与 models 独立：models 控制路由准入，model 控制上游实际使用的模型。
 #   resetDay: 可选字段，1-7（1=周一…7=周日）。仅对 weekly 生效，指定每周哪天 00:00 重置。
 #            未设置时按 Key 首次启用日自动对齐。
+#   activatedAt: 自动生成，首次启用的毫秒时间戳。删除 state.json 后不丢失，编辑面板保存时自动保留。
 #
 # 示例：
 # [

@@ -541,13 +541,38 @@ function backupState() {
 }
 setInterval(backupState, 3600000);
 
+const persistedActivatedAt = new Set();
+
+function persistActivatedAt(idx, val) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8"));
+    if (raw[idx] && !raw[idx].activatedAt) {
+      raw[idx].activatedAt = val;
+      fs.writeFileSync(KEYS_FILE, JSON.stringify(raw, null, 2), "utf-8");
+    }
+  } catch (e) { /* fail silently */ }
+}
+
 function getKeyState(idx) {
   while (state.keys.length <= idx) state.keys.push({ failCode: null, failTime: null, failPeriod: null, failCount: 0, status: "active", stats: null });
   const ks = state.keys[idx];
   if (ks.status === undefined) ks.status = "active";
   if (ks.failPeriod === undefined) ks.failPeriod = null;
-  if (ks.activatedAt === undefined) ks.activatedAt = Date.now();
+  if (ks.activatedAt === undefined) {
+    ks.activatedAt = Date.now();
+    try {
+      const raw = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8"));
+      if (raw[idx] && raw[idx].activatedAt) {
+        ks.activatedAt = raw[idx].activatedAt;
+        persistedActivatedAt.add(idx);
+      }
+    } catch (e) { /* 静默失败 */ }
+  }
   if (ks.failCount === undefined) ks.failCount = 0;
+  if (ks.activatedAt !== undefined && !persistedActivatedAt.has(idx)) {
+    persistActivatedAt(idx, ks.activatedAt);
+    persistedActivatedAt.add(idx);
+  }
   if (!ks.stats) {
     ks.stats = { totalRequests: 0, successRequests: 0, failRequests: 0, inputTokens: 0, outputTokens: 0, inputBytes: 0, outputBytes: 0, lastUsed: null, daily: {}, hourly: {}, totalDuration: 0, totalTtfb: 0, totalCost: 0 };
   } else {
@@ -2371,7 +2396,7 @@ function batchDeleteMgr(){
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,resetDay:k.resetDay||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,resetDay:k.resetDay||void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -3575,7 +3600,10 @@ const server = http.createServer((req, res) => {
         const ks = i < accounts.length ? getKeyState(i) : state.keys[i];
         if (ks && ks.status === "locked") raw[i]._locked = true;
         if (ks && (ks.failCode || ks.failCode === 0)) raw[i]._failCode = ks.failCode;
-        if (ks && ks.activatedAt) raw[i]._activatedAt = ks.activatedAt;
+        if (ks) {
+          const act = raw[i].activatedAt || ks.activatedAt || null;
+          raw[i].activatedAt = raw[i]._activatedAt = act;
+        }
         if (i < accounts.length && accounts[i]) { raw[i]._available = !inCooldown(i); if (accounts[i].models && accounts[i].models.length) raw[i]._models = accounts[i].models; }
       }
       res.writeHead(200, cors);
