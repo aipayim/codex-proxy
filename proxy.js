@@ -99,6 +99,7 @@ setInterval(() => {
   // Trim stale queue entries
   const qcut = Date.now() - 30000;
   requestQueue = requestQueue.filter(r => r.time > qcut && !r.clientRes.destroyed);
+  cleanOldLogs();
 }, 600000); // every 10 minutes
 
 function loadConfig() {
@@ -136,6 +137,9 @@ function loadConfig() {
     LOG_RETENTION_DAYS = c.logRetentionDays != null ? c.logRetentionDays : 7;
     LOG_FILE_ENABLED = c.logFile !== false;
     LOG_DETAIL = c.logDetail === "basic" ? "basic" : "full";
+    config.logFile = LOG_FILE_ENABLED;
+    config.logRetentionDays = LOG_RETENTION_DAYS;
+    config.logDetail = LOG_DETAIL;
   } catch { /* defaults */ }
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
@@ -143,7 +147,7 @@ function loadConfig() {
     autoRecoverNextTime = Date.now() + Math.max(60000, ms);
     autoRecoverTimer = setInterval(() => {
       autoRecoverNextTime = Date.now() + Math.max(60000, config.autoRecoverInterval * 3600000);
-      autoRecover();
+      try { autoRecover(); } catch (e) { console.error("[proxy] interval auto-recover error:", e.message); }
     }, Math.max(60000, ms));
   } else {
     autoRecoverNextTime = 0;
@@ -225,7 +229,9 @@ function calcNextDailyRun(from, days, hour, min){
 function scheduleDailyRecover(){
   const delay = Math.max(0, autoRecoverDailyNextTime - Date.now());
   autoRecoverDailyTimer = setTimeout(() => {
-    autoRecover();
+    try {
+      autoRecover();
+    } catch (e) { console.error("[proxy] daily auto-recover error:", e.message); }
     autoRecoverDailyNextTime = calcNextDailyRun(autoRecoverDailyNextTime, config.autoRecoverDailyDays, config.autoRecoverDailyHour, config.autoRecoverDailyMinute);
     scheduleDailyRecover();
   }, delay);
@@ -248,7 +254,7 @@ function schedulePollRecover() {
       return;
     }
     console.log(`[proxy] poll-recover: checking ${codes.join(",")} keys...`);
-    autoRecover(codes);
+    try { autoRecover(codes); } catch (e) { console.error("[proxy] poll auto-recover error:", e.message); }
     schedulePollRecover();
   }, interval);
 }
@@ -260,7 +266,8 @@ function autoRecover(optCodes){
   const toCheck = [];
   for (let i = 0; i < accounts.length; i++) {
     const ks = getKeyState(i);
-    if (ks.status === "shielded" || ks.status === "locked") continue;
+    if (ks.status === "shielded") continue;
+    if (ks.status === "locked" && !codes.includes(ks.failCode)) continue;
     if (!ks.failCode && ks.status !== "discarded") continue;
     if (ks.status === "discarded" && !checkDiscarded) continue;
     if (ks.failCode && !codes.includes(ks.failCode)) continue;
@@ -295,12 +302,14 @@ function autoRecover(optCodes){
             ks.failCode = null;
             ks.failTime = null;
             ks.failPeriod = "";
-            if (ks.status === "discarded") ks.status = "active";
+            ks.failCount = 0;
+            if (ks.status === "discarded" || ks.status === "locked") ks.status = "active";
             allFailedNotified = false;
             saveState();
             broadcastStatus();
             console.log(`[proxy] auto-recover: #${i+1} recovered (was ${wasStatus})`);
-            addEventLog("recover", i + 1, `自动恢复成功 (此前状态: ${wasStatus === "discarded" ? "废弃" : "冷却"})`, acct.url);
+            const wasLabel = wasStatus === "discarded" ? "废弃" : wasStatus === "locked" ? "锁定" : "冷却";
+            addEventLog("recover", i + 1, `自动恢复成功 (此前状态: ${wasLabel})`, acct.url);
         } else {
           console.log(`[proxy] auto-recover: #${i+1} test returned ${testRes.statusCode}, not recovered`);
         }
@@ -362,6 +371,27 @@ function cleanOldLogs() {
       }
     }
   } catch(e) { /* fail silently */ }
+}
+
+function countAllEntries(since, until) {
+  let total = 0;
+  try {
+    if (!fs.existsSync(LOG_DIR)) return 0;
+    const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
+    const sTime = since ? parseInt(since, 10) : 0;
+    const uTime = until ? parseInt(until, 10) : 9e15;
+    for (const f of files) {
+      const dateStr = f.replace(".jsonl", "");
+      const fd = new Date(dateStr + "T00:00:00");
+      const fdEnd = fd.getTime() + 86400000;
+      if (fdEnd < sTime || fd.getTime() > uTime) continue;
+      const filePath = path.join(LOG_DIR, f);
+      const content = fs.readFileSync(filePath, "utf-8");
+      const lines = content.split("\n").filter(l => l.trim());
+      total += lines.length;
+    }
+  } catch (e) { /* fail silently */ }
+  return total + requestLog.length;
 }
 
 function computeHealthScore(ks, idx) {
@@ -1604,6 +1634,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <input id="logKeyFilter" placeholder="Key #" style="width:50px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logStatusFilter" placeholder="状态码" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logModelFilter" placeholder="模型" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logSearch" placeholder="搜索..." style="width:90px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" onkeydown="if(event.key==='Enter')reloadLogs()">
 <select id="logTimeFilter" onchange="toggleLogCustomRange()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <option value="">全部时间</option><option value="5m">最近 5 分钟</option><option value="15m">最近 15 分钟</option><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="custom">自定义范围</option>
 </select>
@@ -1616,6 +1647,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px">⬇ CSV</button>
 </div>
 <div style="overflow-x:auto"><table class="log-table"><thead><tr>
+<th style="width:30px;font-size:10px;text-align:center">序</th>
 <th onclick="logSortBy('time')" style="cursor:pointer">时间<span id="logSortIcon" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
 <th onclick="logSortBy('idx')" style="cursor:pointer">#<span id="logSortIcon_idx" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
 <th>上游</th><th>方法</th><th onclick="logSortBy('model')" style="cursor:pointer">模型<span id="logSortIcon_model" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
@@ -1678,19 +1710,20 @@ function connectWS(){
       if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
         logAllEntries.push(msg.data);
         if(logAllEntries.length>LOG_PAGE_SIZE*3)logAllEntries.splice(0,logAllEntries.length-LOG_PAGE_SIZE*3);
-        logTotalPages=Math.max(1,Math.ceil((logLastStats?.total||logAllEntries.length)/LOG_PAGE_SIZE));
-        if(logCurrentPage===logTotalPages){
+        if(logLastStats)logLastStats.total=(logLastStats.total||0)+1;
+        logTotalPages=Math.max(1,Math.ceil((logLastStats?.totalAll||logLastStats?.total||logAllEntries.length)/LOG_PAGE_SIZE));
+        if(logCurrentPage===1){
           const tbody=document.getElementById("logBody");
           if(tbody){
             const tr=document.createElement("tr");
             tr.className=logRowClass(msg.data);
             tr.onclick=function(){toggleLogDetail(this,logAllEntries.length-1)};
-            tr.innerHTML=makeLogRow(msg.data);
+            tr.innerHTML=makeLogRow(msg.data, logAllEntries.length);
             tbody.insertBefore(tr,tbody.firstChild);
             const expandRow=document.createElement("tr");
             expandRow.className="log-row-expand";
             expandRow.id="logDetail_"+(logAllEntries.length-1);
-            expandRow.innerHTML='<td colspan="11"><span id="logDetailContent_'+(logAllEntries.length-1)+'"></span></td>';
+            expandRow.innerHTML='<td colspan="12"><span id="logDetailContent_'+(logAllEntries.length-1)+'"></span></td>';
             tbody.insertBefore(expandRow,tr.nextSibling);
             if(tbody.children.length>LOG_PAGE_SIZE*2+2)while(tbody.children.length>LOG_PAGE_SIZE*2+2)tbody.removeChild(tbody.lastChild);
           }
@@ -2227,7 +2260,7 @@ function renderMgr(){
     const hdr=document.createElement("tr");
     hdr.style.background="#1e293b";hdr.style.cursor="pointer";
     hdr.onclick=function(){toggleGroup(g)};
-    hdr.innerHTML='<td colspan="11" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
+    hdr.innerHTML='<td colspan="12" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
       (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')</td>';
     tbody.appendChild(hdr);
     if(collapsed)continue;
@@ -2503,6 +2536,8 @@ function buildLogFilterQuery(){
   if(s)p.set("status",s);
   const m=document.getElementById("logModelFilter")?.value.trim();
   if(m)p.set("model",m);
+  const qs=document.getElementById("logSearch")?.value.trim();
+  if(qs)p.set("q",qs);
   const t=document.getElementById("logTimeFilter")?.value;
   if(t==="custom"){
     const st=document.getElementById("logStartTime")?.value;
@@ -2514,39 +2549,41 @@ function buildLogFilterQuery(){
     if(ms)p.set("since",Date.now()-ms);
   }
   p.set("limit",String(LOG_PAGE_SIZE));
-  return p.toString();
+  return p;
 }
 async function openLogs(){
   document.getElementById("logModal").classList.add("on");
-  logCurrentPage = 1;
-  await loadLogs();
+  await loadLogs(1);
 }
-async function loadLogs(){
+async function loadLogs(page){
   try{
-    const q=buildLogFilterQuery();
-    const r=await fetch("http://localhost:3456/__logs?"+q);
+    const qp=buildLogFilterQuery();
+    const pg=page||logCurrentPage;
+    qp.set("offset",String(Math.max(0,(pg-1)*LOG_PAGE_SIZE)));
+    const r=await fetch("http://localhost:3456/__logs?"+qp.toString());
     if(!r.ok)return;
     const resp=await r.json();
     logAllEntries = resp.entries || resp;
     logLastStats = resp.stats || null;
-    logTotalPages = Math.max(1, Math.ceil((logLastStats?.total || logAllEntries.length) / LOG_PAGE_SIZE));
+    logTotalPages = Math.max(1, Math.ceil((logLastStats?.totalAll || logLastStats?.total || logAllEntries.length) / LOG_PAGE_SIZE));
+    logCurrentPage = pg;
     if (logCurrentPage > logTotalPages) logCurrentPage = logTotalPages;
     renderLogs();
   }catch(e){}
 }
-function reloadLogs(){ logCurrentPage = 1; loadLogs(); }
+function reloadLogs(){ loadLogs(1); }
 function logPage(delta){
-  logCurrentPage = Math.max(1, Math.min(logTotalPages, logCurrentPage + delta));
-  renderLogs();
+  const np = Math.max(1, Math.min(logTotalPages, logCurrentPage + delta));
+  if (np !== logCurrentPage) loadLogs(np);
 }
 function renderLogs(){
   const tbody=document.getElementById("logBody");
   const startIdx = (logCurrentPage - 1) * LOG_PAGE_SIZE;
-  const pageEntries = logAllEntries.slice(startIdx, startIdx + LOG_PAGE_SIZE);
+  const pageEntries = logAllEntries;
   tbody.innerHTML = pageEntries.length
-    ? pageEntries.map((e,i) => '<tr class="'+logRowClass(e)+'" onclick="toggleLogDetail(this,'+(startIdx+i)+')">'+makeLogRow(e)+'</tr>'
-      + '<tr class="log-row-expand" id="logDetail_'+(startIdx+i)+'"><td colspan="11"><span id="logDetailContent_'+(startIdx+i)+'"></span></td></tr>').join("")
-    : '<tr><td colspan="11" style="text-align:center;color:#64748b;padding:20px">暂无记录</td></tr>';
+    ? pageEntries.map((e,i) => '<tr class="'+logRowClass(e)+'" onclick="toggleLogDetail(this,'+(startIdx+i)+')">'+makeLogRow(e, startIdx+i+1)+'</tr>'
+      + '<tr class="log-row-expand" id="logDetail_'+(startIdx+i)+'"><td colspan="12"><span id="logDetailContent_'+(startIdx+i)+'"></span></td></tr>').join("")
+    : '<tr><td colspan="12" style="text-align:center;color:#64748b;padding:20px">暂无记录</td></tr>';
   // Pagination
   document.getElementById("logPrevBtn").disabled = logCurrentPage <= 1;
   document.getElementById("logNextBtn").disabled = logCurrentPage >= logTotalPages;
@@ -2750,19 +2787,21 @@ function logRowClass(e){
   if (st >= 500) return "log-row-" + (document.getElementById("logBody").children.length % 2 === 0 ? "even" : "odd");
   return "";
 }
-function makeLogRow(e){
-  if (e.type === "event") return makeEventRow(e);
+function makeLogRow(e, seq){
+  if (e.type === "event") return makeEventRow(e, seq);
   const s=e.status||0;
   const sc="log-s"+(s>=500?"5xx":s);
   const tm=new Date(e.time);
-  const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
+  const now=new Date();
+  const isToday=tm.getFullYear()===now.getFullYear()&&tm.getMonth()===now.getMonth()&&tm.getDate()===now.getDate();
+  const ts=(isToday?"":String(tm.getMonth()+1).padStart(2,"0")+"-"+String(tm.getDate()).padStart(2,"0")+" ")+String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
   const mdl=e.overrideModel||e.reqModel||"";
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
   let icon = "";
   if (e.conversion) icon = ' <span title="协议转换" style="color:#a78bfa">🔄</span>';
   else if (s >= 500) icon = ' <span style="color:#ef4444">✕</span>';
   else if (s >= 400) icon = ' <span style="color:#f59e0b">⚠</span>';
-  return '<td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
+  return '<td class="log-seq" style="text-align:center;color:#64748b;font-size:10px">'+(seq != null ? seq : "")+'</td><td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
     +'<td style="max-width:100px;overflow:hidden;text-overflow:ellipsis;color:#64748b;font-size:10px" title="'+esc(e.url||"")+'">'+esc(urlShort)+'</td>'
     +'<td>'+e.method+'</td>'
     +'<td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(mdl)+'">'+esc(mdl)+icon+'</td>'
@@ -2772,9 +2811,11 @@ function makeLogRow(e){
     +'<td class="log-dur">'+fmtDur(e.duration||0)+'</td>'
     +'<td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td>';
 }
-function makeEventRow(e){
+function makeEventRow(e, seq){
   const tm=new Date(e.time);
-  const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
+  const now=new Date();
+  const isToday=tm.getFullYear()===now.getFullYear()&&tm.getMonth()===now.getMonth()&&tm.getDate()===now.getDate();
+  const ts=(isToday?"":String(tm.getMonth()+1).padStart(2,"0")+"-"+String(tm.getDate()).padStart(2,"0")+" ")+String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
   let label="", detail="";
   switch(e.eventType){
     case "conversion":
@@ -2789,7 +2830,7 @@ function makeEventRow(e){
     default: label="📌 "+(e.eventType||"事件"); detail=e.message||"";
   }
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
-  return '<td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
+  return '<td class="log-seq" style="text-align:center;color:#64748b;font-size:10px"></td><td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
     +'<td style="color:#60a5fa;font-size:10px">'+esc(urlShort)+'</td>'
     +'<td colspan="8" style="color:inherit">'+esc(label)+' <span style="color:#94a3b8;font-size:10px">'+esc(detail)+'</span></td>';
 }
@@ -2799,7 +2840,7 @@ function toggleLogCustomRange(){
 }
 function exportLogs(){
   const q=buildLogFilterQuery();
-  window.open("http://localhost:3456/__logs?"+q+"&format=csv");
+  window.open("http://localhost:3456/__logs?"+q.toString()+"&format=csv");
 }
 
 function openConfig(){loadConfigUI();document.getElementById("configModal").classList.add("on")}
@@ -3664,6 +3705,7 @@ const server = http.createServer((req, res) => {
       const model = u.searchParams.get("model");
       const since = u.searchParams.get("since");
       const until = u.searchParams.get("until");
+      const q = u.searchParams.get("q") || "";
       const offset = parseInt(u.searchParams.get("offset") || "0", 10);
       const format = u.searchParams.get("format");
       let entries;
@@ -3716,7 +3758,7 @@ const server = http.createServer((req, res) => {
               }
             }
           }
-        } catch (e) { /* log dir read error */ }
+        } catch (e) { console.error("[__logs] since/until branch read error:", e.message); }
         const seen = new Set();
         const merged = [];
         for (const e of fileEntries) {
@@ -3731,17 +3773,67 @@ const server = http.createServer((req, res) => {
         }
         entries = merged;
       } else {
-        entries = requestLog;
+        const maxNeeded = (limit + offset) || 500;
+        const fileEntries = [];
+        try {
+          if (fs.existsSync(LOG_DIR)) {
+            let files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
+            files.sort().reverse();
+            for (const f of files) {
+              if (fileEntries.length >= maxNeeded) break;
+              const filePath = path.join(LOG_DIR, f);
+              const stat = fs.statSync(filePath);
+              if (stat.size === 0) continue;
+              const fdFile = fs.openSync(filePath, "r");
+              let pos = stat.size;
+              let leftover = "";
+              const chunkSize = 32768;
+              while (fileEntries.length < maxNeeded && pos > 0) {
+                const readLen = Math.min(chunkSize, pos);
+                pos -= readLen;
+                const buf = Buffer.alloc(readLen);
+                fs.readSync(fdFile, buf, 0, readLen, pos);
+                const chunk = buf.toString("utf-8");
+                const data = chunk + leftover;
+                const parts = data.split("\n");
+                leftover = parts[0];
+                for (let i = parts.length - 1; i > 0 && fileEntries.length < maxNeeded; i--) {
+                  const line = parts[i].trim();
+                  if (!line) continue;
+                  try { fileEntries.push(JSON.parse(line)); } catch (e2) {}
+                }
+              }
+              fs.closeSync(fdFile);
+              if (fileEntries.length < maxNeeded && leftover.trim()) {
+                try { fileEntries.push(JSON.parse(leftover.trim())); } catch (e2) {}
+              }
+            }
+          }
+          } catch (e) { console.error("[__logs] no-time-filter branch read error:", e.message); }
+        const seen = new Set();
+        const merged = [];
+        for (const e of fileEntries) {
+          const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+          if (!seen.has(k)) { seen.add(k); merged.push(e); }
+        }
+        for (const e of requestLog) {
+          const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+          if (!seen.has(k)) { seen.add(k); merged.push(e); }
+        }
+        entries = merged;
+        entries.sort((a, b) => b.time - a.time);
       }
       if (since) { const t = parseInt(since, 10); if (t) entries = entries.filter(e => e.time >= t); }
       if (until) { const t = parseInt(until, 10); if (t) entries = entries.filter(e => e.time <= t); }
       if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length) entries = entries.filter(e => keys.includes(e.idx)); }
       if (status) { entries = entries.filter(e => { const s = e.status || 0; if (status.endsWith("xx")) { const prefix = parseInt(status, 10); return !isNaN(prefix) && Math.floor(s / 100) === prefix; } return String(s) === status; }); }
       if (model) { const ml = model.toLowerCase(); entries = entries.filter(e => (e.reqModel||"").toLowerCase().includes(ml) || (e.overrideModel||"").toLowerCase().includes(ml)); }
-      if (since || until) entries.sort((a, b) => b.time - a.time);
+      if (q) { const ql = q.toLowerCase(); entries = entries.filter(e => (e.message||"").toLowerCase().includes(ql) || (e.url||"").toLowerCase().includes(ql) || (e.reqModel||"").toLowerCase().includes(ql) || (e.overrideModel||"").toLowerCase().includes(ql) || (e.method||"").toLowerCase().includes(ql) || (e.path||"").toLowerCase().includes(ql) || (e.eventType||"").toLowerCase().includes(ql)); }
+      if (since || until || q) entries.sort((a, b) => b.time - a.time);
       // Compute statistics from all matching entries BEFORE pagination slice
       const stats = { total: 0, successRate: 0, p95: 0, p99: 0, avgDuration: 0, error4xx: 0, error5xx: 0, errorTimeout: 0 };
       stats.total = entries.length;
+      stats.totalAll = countAllEntries(since, until);
       const durs = entries.filter(e => e.duration != null && e.type !== "event").map(e => e.duration).sort((a, b) => a - b);
       if (durs.length) {
         stats.avgDuration = Math.round(durs.reduce((a, b) => a + b, 0) / durs.length);
@@ -3754,8 +3846,7 @@ const server = http.createServer((req, res) => {
       stats.error4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
       stats.error5xx = reqs.filter(e => e.status >= 500 && e.status < 600).length;
       stats.errorTimeout = reqs.filter(e => e.status === 0 || e.status == null).length;
-      entries = entries.slice(-limit - offset, entries.length - offset);
-      if (entries.length > limit) entries = entries.slice(entries.length - limit);
+      entries = entries.slice(offset, offset + limit);
       if (format === "csv") {
         const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,url,type,eventType,message";
         const esc = v => `"${String(v).replace(/"/g, '""')}"`;
