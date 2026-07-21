@@ -96,7 +96,10 @@ if (groupsArgIdx >= 0 && groupsArgIdx + 1 < process.argv.length) {
   const parsed = {};
   for (const part of groupsStr.split(",")) {
     const [name, portStr] = part.split("=");
-    if (name && portStr) parsed[name.trim().toUpperCase()] = parseInt(portStr.trim());
+    if (!name || !portStr) continue;
+    const p = parseInt(portStr.trim());
+    if (p >= 1024 && p <= 65535) parsed[name.trim().toUpperCase()] = p;
+    else console.warn(`[proxy] Invalid port in --groups: "${portStr.trim()}" for group "${name.trim()}"`);
   }
   if (Object.keys(parsed).length) { cliGroups = parsed; if (!cliGroups["A"]) cliGroups["A"] = 3456; }
 }
@@ -161,7 +164,9 @@ function loadConfig() {
     if (cliGroups) {
       config.groups = JSON.parse(JSON.stringify(cliGroups));
     } else {
-      config.groups = (c.groups && typeof c.groups === 'object') ? JSON.parse(JSON.stringify(c.groups)) : {A: 3456};
+      const rawGroups = (c.groups && typeof c.groups === 'object') ? JSON.parse(JSON.stringify(c.groups)) : {A: 3456};
+      config.groups = {};
+      for (const [k, v] of Object.entries(rawGroups)) config.groups[k.toUpperCase()] = v;
     }
     if (!config.groups["A"]) config.groups["A"] = 3456;
   } catch { /* defaults */ }
@@ -953,7 +958,7 @@ function loadAccounts() {
     resetHours: a.resetHours > 0 ? a.resetHours : null,
     maxReqPerMin: a.maxReqPerMin > 0 ? a.maxReqPerMin : null,
     maxTokPerMin: a.maxTokPerMin > 0 ? a.maxTokPerMin : null,
-    group: a.group || "A",
+    group: (a.group || "A").toUpperCase(),
   }));
   if (!accounts.length) { console.error("[proxy] No valid accounts, reverting"); accounts = oldAccounts; return; }
   loadState();
@@ -1164,7 +1169,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
   group = group || "A";
   let responded = false;
   const usedKeys = new Set();
-  const activeCount = accounts.filter(a => a.status === "active").length;
+  const activeCount = accounts.filter(a => a.status === "active" && (a.group || "A") === group).length;
   let retries = 0;
   const MAX_RETRIES = Math.max(activeCount * 2, 10);
   let model = null;
@@ -1183,7 +1188,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
       if (idx < 0) {
         console.log(`[proxy] No available keys, queueing request`);
-        enqueueRequest(method, headers, body, clientRes, pathname);
+        enqueueRequest(method, headers, body, clientRes, pathname, group);
         responded = true;
         return;
       }
@@ -1268,7 +1273,7 @@ function buildStatusData() {
       model: a.model || null,
       resetDay: a.resetDay || null,
       resetHours: a.resetHours || null,
-      group: a.group || "A",
+    group: (a.group || "A").toUpperCase(),
       activatedAt: ks.activatedAt || null,
       available: !inCooldown(i),
       status: ks.status || "active",
@@ -1527,7 +1532,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="top-row" id="summary"></div>
 <div class="controls" id="controls">
   <label>排序</label>
-  <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="activatedAt">首次启用（早→晚）</option><option value="duration">使用时长（长→短）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
+  <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="activatedAt">首次启用（早→晚）</option><option value="duration">使用时长（长→短）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option><option value="group">按分组</option></select>
   <label>筛选</label>
    <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
   <label>重置</label>
@@ -1586,6 +1591,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="resetDay">按重置日（周一→周日）</option>
     <option value="activatedAt">首次启用（早→晚）</option>
     <option value="duration">使用时长（长→短）</option>
+    <option value="group">按分组</option>
   </select>
   <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)">全选</button>
   <button class="btn" style="font-size:11px" onclick="clearMgrSearch()">取消</button>
@@ -1688,9 +1694,9 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
   <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
+  <div style="grid-column:1/-1" id="portGroupsArea"></div>
 </div>
-<div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
-<div style="grid-column:1/-1" id="portGroupsArea"></div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
@@ -2166,6 +2172,8 @@ function render(){
     filtered.sort((a,b)=>(a.activatedAt||0)-(b.activatedAt||0));
   }else if(sortBy==="duration"){
     filtered.sort((a,b)=>(b.activatedAt||0)-(a.activatedAt||0));
+  }else if(sortBy==="group"){
+    filtered.sort((a,b)=>(a.group||"A").localeCompare(b.group||"A"));
   }
 
   let html="";
@@ -2413,6 +2421,8 @@ function renderMgr(){
     Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>(mgrKeys[a]._activatedAt||0)-(mgrKeys[b]._activatedAt||0))});
   }else if(mgrSortBy==="duration"){
     Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>(mgrKeys[b]._activatedAt||0)-(mgrKeys[a]._activatedAt||0))});
+  }else if(mgrSortBy==="group"){
+    Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>(mgrKeys[a].group||"A").localeCompare(mgrKeys[b].group||"A"))});
   }
   const groups=Object.keys(grp);
   for(let gi=0;gi<groups.length;gi++){
@@ -3626,21 +3636,34 @@ function createGroupServer(groupName, port) {
           // Handle group actions
           if (c._groupAction) {
             if (c._groupAction === "addGroup" && c._groupName && c._groupPort) {
+              const gName = c._groupName.toUpperCase();
+              const gPort = parseInt(c._groupPort);
+              if (!gPort || gPort < 1024 || gPort > 65535) throw new Error("Port must be 1024-65535");
+              if (cur.groups && Object.values(cur.groups).includes(gPort)) throw new Error("Port already in use by another group");
               cur.groups = cur.groups || {};
-              cur.groups[c._groupName] = parseInt(c._groupPort);
-              delete c._groupAction; delete c._groupName; delete c._groupPort;
+              cur.groups[gName] = gPort;
+              c._groupName = gName; c._groupPort = gPort;
+              delete c._groupAction;
             } else if (c._groupAction === "removeGroup" && c._groupName) {
               if (c._groupName === "A") throw new Error("Cannot remove group A");
               if (cur.groups) { delete cur.groups[c._groupName]; }
               stopGroup(c._groupName);
               delete c._groupAction; delete c._groupName;
             } else if (c._groupAction === "setGroupPort" && c._groupName && c._groupPort) {
+              const gName = c._groupName.toUpperCase();
+              const gPort = parseInt(c._groupPort);
+              if (!gPort || gPort < 1024 || gPort > 65535) throw new Error("Port must be 1024-65535");
+              const portUsed = Object.entries(cur.groups||{}).some(([n,p]) => p === gPort && n !== gName);
+              if (portUsed) throw new Error("Port already in use by another group");
               cur.groups = cur.groups || {};
-              cur.groups[c._groupName] = parseInt(c._groupPort);
-              if (servers[c._groupName]) { stopGroup(c._groupName); }
-              delete c._groupAction; delete c._groupName; delete c._groupPort;
+              cur.groups[gName] = gPort;
+              if (servers[gName]) { stopGroup(gName); }
+              c._groupName = gName; c._groupPort = gPort;
+              delete c._groupAction;
             }
           }
+          // Clean up group action metadata so it doesn't pollute config.json
+          delete cur._groupAction; delete cur._groupName; delete cur._groupPort;
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(cur, null, 2));
           const savedNextTime = autoRecoverNextTime;
           const savedDailyNextTime = autoRecoverDailyNextTime;
@@ -3810,7 +3833,8 @@ function createGroupServer(groupName, port) {
           const parsed = JSON.parse(body);
           // Handle batch group update
           if (parsed && parsed._batchGroup) {
-            const { keys: targetKeys, group: targetGroup } = parsed._batchGroup;
+            const { keys: targetKeys, group: rawGroup } = parsed._batchGroup;
+            const targetGroup = rawGroup.toUpperCase();
             if (!Array.isArray(targetKeys) || !targetGroup) throw new Error("batchGroup needs keys[] and group");
             const current = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8"));
             let count = 0;
@@ -4437,7 +4461,7 @@ function createGroupServer(groupName, port) {
   }
 
   if (pathname === "/v1/chat/completions" && req.method === "POST") {
-    const hasAnthropic = accounts.some(a => isMessagesNative(a.url));
+    const hasAnthropic = accounts.some(a => (a.group || "A") === groupName && isMessagesNative(a.url));
     if (!hasAnthropic) {
       // No Anthropic upstreams — fall through to default handler
     } else {
@@ -4523,6 +4547,7 @@ function stopGroup(name) {
 
 function initServers() {
   const groups = config.groups || { A: 3456 };
+  loadAccounts();
   const promises = [];
   for (const [name, port] of Object.entries(groups)) {
     if (name === "A") {
@@ -4532,24 +4557,27 @@ function initServers() {
     }
   }
   return Promise.allSettled(promises).then(() => {
-    loadAccounts();
-    loadConfig();
+    broadcastStatus();
   });
 }
 
 // Graceful shutdown
-process.on("SIGTERM", () => {
-  console.log("[proxy] SIGTERM received, shutting down...");
-  for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
-  try { fs.unlinkSync(PID_FILE); } catch {}
-  process.exit(0);
-});
-process.on("SIGINT", () => {
-  console.log("[proxy] SIGINT received, shutting down...");
-  for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
-  try { fs.unlinkSync(PID_FILE); } catch {}
-  process.exit(0);
-});
+function shutdown(signal) {
+  console.log(`[proxy] ${signal} received, shutting down...`);
+  for (const srv of Object.values(servers)) {
+    try {
+      srv.close();
+      srv.unref();
+    } catch {}
+  }
+  // Wait up to 5s for in-flight requests to drain, then force exit
+  setTimeout(() => {
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    process.exit(0);
+  }, 5000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Start servers
 loadConfig();

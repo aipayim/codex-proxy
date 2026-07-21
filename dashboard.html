@@ -138,7 +138,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="top-row" id="summary"></div>
 <div class="controls" id="controls">
   <label>排序</label>
-  <select id="sortBy"><option value="idx">默认顺序</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option></select>
+  <select id="sortBy"><option value="idx">默认顺序</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option><option value="group">按分组</option></select>
   <label>筛选</label>
   <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option></select>
   <label>趋势</label>
@@ -230,9 +230,9 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
   <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
+  <div style="grid-column:1/-1" id="portGroupsArea"></div>
 </div>
-<div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
-<div style="grid-column:1/-1" id="portGroupsArea"></div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
@@ -472,6 +472,8 @@ function render(){
       const rb=b.sliding5mRate!==null?b.sliding5mRate:-1;
       return rb-ra;
     });
+  }else if(sortBy==="group"){
+    filtered.sort((a,b)=>(a.group||"A").localeCompare(b.group||"A"));
   }
 
   let html="";
