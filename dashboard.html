@@ -36,6 +36,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .bd-weekly{background:#3b1f5e;color:#c084fc}
 .bd-never{background:#3b2f1e;color:#fbbf24}
 .bd-hourly{background:#1a3a2e;color:#4ade80}
+.bd-group{background:#2d1f3f;color:#fbbf24;border:1px solid #a855f7}
 .bd-active{background:#1e3a5f;color:#93c5fd}
 .bd-score{background:#2d1f3f;color:#c084fc;border:1px solid #a855f7}
 .cbody{font-size:clamp(11px,1.5vw,12px)}
@@ -142,6 +143,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option></select>
   <label>趋势</label>
   <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
+  <label>分组</label>
+  <select id="groupFilter"><option value="all">全部</option></select>
   <label>搜索</label>
   <input id="searchBox" placeholder="搜索 ID/备注/地址..." style="width:140px">
   <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
@@ -185,7 +188,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:60px">重置</th><th style="width:55px">优先</th><th style="min-width:100px">备注</th><th style="width:80px"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="min-width:150px">URL</th><th style="width:36px">分组</th><th style="width:60px">重置</th><th style="width:55px">优先</th><th style="min-width:100px">备注</th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -228,7 +231,9 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
 </div>
-<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
+<div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
+<div style="grid-column:1/-1" id="portGroupsArea"></div>
+<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
 <div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
@@ -246,7 +251,7 @@ if(location.protocol==="file:"){document.getElementById("fileBanner").classList.
 const L={"daily":"每日","weekly":"每周","never":"永久","hourly":"每N小时"};
 const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never","hourly":"bd-hourly"};
 let data=[],curDate="",fullKeys={};
-let sortBy="idx",filterBy="all",trendRange="24h",searchQ="";
+let sortBy="idx",filterBy="all",trendRange="24h",searchQ="",groupFilter="all";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0;
@@ -310,6 +315,7 @@ async function loadConfigUI(){
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
+    renderPortGroups(c.groups||{A:3456});
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
@@ -323,6 +329,44 @@ function updateAutoCountdown(){
   const diff=Math.ceil((autoRecoverNextTime-Date.now())/1000);
   const h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;
   el.textContent="⏳ 下次检测: "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";
+}
+function renderPortGroups(groups){
+  const area=document.getElementById("portGroupsArea");
+  if(!area)return;
+  const g=groups||{A:3456};
+  const names=Object.keys(g).sort();
+  let html='<div style="font-size:11px;display:flex;flex-direction:column;gap:4px">';
+  for(const n of names){
+    const port=g[n];
+    const isA=n==="A";
+    html+='<div style="display:flex;gap:8px;align-items:center;padding:2px 0">'+
+      '<span style="width:30px;font-weight:600;color:'+(isA?"#60a5fa":"#e2e8f0")+'">'+n+'</span>'+
+      '<span style="color:#94a3b8">端口 '+port+'</span>'+
+      (isA?'<span style="color:#60a5fa;font-size:10px">(默认/始终运行)</span>':'');
+    if(!isA){
+      html+='<button class="btn" style="font-size:10px;padding:1px 6px;color:#f87171" onclick="removePortGroup(\''+n+'\')">删除</button>';
+    }
+    html+='</div>';
+  }
+  html+='<div style="display:flex;gap:6px;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155">'+
+    '<input id="newGroupName" placeholder="组名" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-transform:uppercase">'+
+    '<input id="newGroupPort" type="number" placeholder="端口" min="1024" max="65535" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
+    '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">添加</button>'+
+    '</div></div>';
+  area.innerHTML=html;
+}
+function removePortGroup(name){
+  if(name==="A")return;
+  if(!confirm("确定删除分组 "+name+" ？"))return;
+  fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"removeGroup",_groupName:name})})
+    .then(r=>r.json()).then(j=>{if(j.ok){loadConfigUI()}else{alert("删除失败: "+j.error)}}).catch(e=>alert("删除失败: "+e.message));
+}
+function addPortGroup(){
+  const name=document.getElementById("newGroupName").value.trim().toUpperCase();
+  const port=parseInt(document.getElementById("newGroupPort").value);
+  if(!name||!port){alert("请输入组名和端口号");return}
+  fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"addGroup",_groupName:name,_groupPort:port})})
+    .then(r=>r.json()).then(j=>{if(j.ok){document.getElementById("newGroupName").value="";document.getElementById("newGroupPort").value="";loadConfigUI()}else{alert("添加失败: "+j.error)}}).catch(e=>alert("添加失败: "+e.message));
 }
 
 function renderTrend(){
@@ -408,7 +452,14 @@ function render(){
   const tabsHtml=sorted.map(d=>'<span class="tab'+(d===curDate?' on':'')+'" onclick="curDate=\''+d+'\';render()">'+d+'</span>').join("");
   document.getElementById("tabs").innerHTML='<span class="tab'+(curDate==='all'?' on':'')+'" onclick="curDate=\'all\';render()">全部</span>'+tabsHtml;
 
+  // Populate group filter options
+  const groupsSet={};
+  data.forEach(x=>{const g=x.group||"A";groupsSet[g]=true});
+  const groupSel=document.getElementById("groupFilter");
+  if(groupSel){const curVal=groupSel.value;const knownGroups=Object.keys(groupsSet).sort();groupSel.innerHTML='<option value="all">全部</option>'+knownGroups.map(g=>'<option value="'+g+'"'+(curVal===g?' selected':'')+'>'+g+'组</option>').join("");}
+  groupFilter=document.getElementById("groupFilter")?.value||"all";
   let filtered=data;
+  if(groupFilter!=="all")filtered=filtered.filter(x=>x.group===groupFilter);
   if(filterBy==="available")filtered=filtered.filter(x=>x.available);
   else if(filterBy==="cooldown")filtered=filtered.filter(x=>!x.available&&x.status!=="discarded");
   else if(filterBy==="discarded")filtered=filtered.filter(x=>x.status==="discarded");
@@ -460,6 +511,7 @@ function render(){
       '<span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
       '<span style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">'+
       '<span class="badge '+C[a.reset]+'">'+(a.reset==="weekly"?("每周-"+(a.resetDay?["周日","周一","周二","周三","周四","周五","周六"][parseInt(a.resetDay)]:"自动")):(a.reset==="hourly"?("每"+(a.resetHours||5)+"小时"):L[a.reset]))+'</span>'+
+      (a.group&&a.group!=="A"?' <span class="badge bd-group">'+a.group+'组</span>':'')+
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
@@ -561,6 +613,7 @@ setTimeout(function(){if(!data.length)httpLoad()},3000);
 document.getElementById("sortBy").addEventListener("change",function(){sortBy=this.value;render()});
 document.getElementById("filterBy").addEventListener("change",function(){filterBy=this.value;render()});
 document.getElementById("trendRange").addEventListener("change",function(){trendRange=this.value;render()});
+document.getElementById("groupFilter").addEventListener("change",function(){groupFilter=this.value;render()});
 document.getElementById("searchBox").addEventListener("input",function(){searchQ=this.value;render()});
 
 let mgrKeys=[],logInterval=null;
@@ -618,6 +671,7 @@ function renderMgr(){
         '<td>'+(i+1)+'</td>'+
         '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+(sh?'<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>':'')+'</td>'+
         '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..."></td>'+
+        '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组" style="width:32px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
         '<td><select class="kreset"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="hourly"'+(k.reset==="hourly"?" selected":"")+'>每N小时</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
         '<input class="kresethours" type="number" min="1" max="168" style="display:'+(k.reset==="hourly"?"inline-block":"none")+';width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;margin-left:2px" value="'+(k.resetHours||"")+'" placeholder="h"></td>'+
         '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
@@ -632,7 +686,7 @@ function renderMgr(){
   }
   document.getElementById("mgrSelectAll").checked=false;
 }
-function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,resetHours:void 0});renderMgr()}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,group:"A",resetHours:void 0});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
 async function resetKeyStatus(i){
   try{
@@ -678,7 +732,7 @@ function batchDeleteMgr(){
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,resetHours:k.resetHours>0?k.resetHours:void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,group:k.group||"A",resetHours:k.resetHours>0?k.resetHours:void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -694,6 +748,8 @@ function collectMgr(){
     result[sidx].priority=prioEl?parseInt(prioEl.value)||0:result[sidx].priority;
     const resetHoursEl=r.querySelector(".kresethours");
     result[sidx].resetHours=resetHoursEl?parseInt(resetHoursEl.value)||void 0:void 0;
+    const groupEl=r.querySelector(".kgroup");
+    result[sidx].group=groupEl?groupEl.value.trim().toUpperCase()||"A":result[sidx].group||"A";
     result[sidx].remark=r.querySelector(".kremark").value.trim();
     result[sidx].status=mgrKeys[sidx].status&&mgrKeys[sidx].status!=="active"?mgrKeys[sidx].status:void 0;
   }

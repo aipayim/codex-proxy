@@ -7,6 +7,7 @@ const { Transform } = require("stream");
 const { WebSocketServer } = require("ws");
 
 const PORT = 3456;
+const servers = {};
 const KEYS_FILE = path.join(__dirname, "keys.json");
 const STATE_FILE = path.join(__dirname, "state.json");
 const CONFIG_FILE = path.join(__dirname, "config.json");
@@ -87,6 +88,19 @@ process.on("unhandledRejection", (reason) => {
 });
 process.on("exit", () => { try { fs.unlinkSync(PID_FILE); } catch {} });
 
+// CLI --groups override: --groups "A=3456,B=3457"
+let cliGroups = null;
+const groupsArgIdx = process.argv.indexOf("--groups");
+if (groupsArgIdx >= 0 && groupsArgIdx + 1 < process.argv.length) {
+  const groupsStr = process.argv[groupsArgIdx + 1];
+  const parsed = {};
+  for (const part of groupsStr.split(",")) {
+    const [name, portStr] = part.split("=");
+    if (name && portStr) parsed[name.trim().toUpperCase()] = parseInt(portStr.trim());
+  }
+  if (Object.keys(parsed).length) { cliGroups = parsed; if (!cliGroups["A"]) cliGroups["A"] = 3456; }
+}
+
 // Periodic cleanup to prevent memory leaks
 setInterval(() => {
   const cutoff = Date.now() - 3600000;
@@ -144,6 +158,12 @@ function loadConfig() {
     config.maxRequestsPerMin = Math.max(1, parseInt(c.maxRequestsPerMin) || 10);
     config.maxTokensPerMin = Math.max(0, parseInt(c.maxTokensPerMin) || 0);
     config.defaultResetHours = Math.max(1, parseInt(c.defaultResetHours) || 5);
+    if (cliGroups) {
+      config.groups = JSON.parse(JSON.stringify(cliGroups));
+    } else {
+      config.groups = (c.groups && typeof c.groups === 'object') ? JSON.parse(JSON.stringify(c.groups)) : {A: 3456};
+    }
+    if (!config.groups["A"]) config.groups["A"] = 3456;
   } catch { /* defaults */ }
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
@@ -756,15 +776,19 @@ function rateLimitAllow(idx) {
   }
   return true;
 }
-function pickKey(model) {
+function pickKey(model, group) {
+  group = group || "A";
   function matchesModel(a) {
     if (!model) return true;
     if (!a.models || !a.models.length) return true;
     return a.models.includes(model);
   }
+  function matchesGroup(a) {
+    return (a.group || "A") === group;
+  }
   // Boost: 持续高优
   if (_boostKey >= 0 && _boostKey < accounts.length) {
-    if (matchesModel(accounts[_boostKey]) && accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && rateLimitAllow(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
+    if (matchesModel(accounts[_boostKey]) && matchesGroup(accounts[_boostKey]) && accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && rateLimitAllow(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
       return _boostKey;
     }
     // boosted key no longer available, auto-clear
@@ -774,7 +798,7 @@ function pickKey(model) {
   // Batch Boost
   if (_boostBatch.length && _boostBatchMode === "use") {
     for (const idx of _boostBatch) {
-      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") return idx;
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") return idx;
     }
   }
   if (_boostBatch.length && _boostBatchMode === "roundrobin") {
@@ -782,7 +806,7 @@ function pickKey(model) {
     for (let i = 0; i < _boostBatch.length; i++) {
       const bi = (_boostBatchCursor + i) % _boostBatch.length;
       const idx = _boostBatch[bi];
-      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") {
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") {
         _boostBatchCursor = (bi + 1) % _boostBatch.length;
         return idx;
       }
@@ -794,6 +818,7 @@ function pickKey(model) {
     for (let i = 0; i < accounts.length; i++) {
       if (accounts[i].status !== "active") continue;
       if (!matchesModel(accounts[i])) continue;
+      if (!matchesGroup(accounts[i])) continue;
       const ks = getKeyState(i);
       if (ks.status === "discarded" || ks.status === "locked") continue;
       groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
@@ -851,6 +876,7 @@ function pickKey(model) {
   for (let i = 0; i < accounts.length; i++) {
     if (accounts[i].status !== "active") continue;
     if (!matchesModel(accounts[i])) continue;
+    if (!matchesGroup(accounts[i])) continue;
     const ks = getKeyState(i);
     if (ks.status !== "discarded" && ks.status !== "locked") groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
   }
@@ -869,8 +895,9 @@ function pickKey(model) {
 }
 
 // --- Request Queue ---
-function enqueueRequest(method, headers, body, clientRes, pathname) {
-  requestQueue.push({ method, headers, body, clientRes, pathname, time: Date.now() });
+function enqueueRequest(method, headers, body, clientRes, pathname, group) {
+  group = group || "A";
+  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now() });
   console.log(`[proxy] Queue depth: ${requestQueue.length}`);
   clientRes.on("close", () => {
     const i = requestQueue.findIndex(r => r.clientRes === clientRes);
@@ -894,7 +921,7 @@ function processQueue() {
     }
     let rmodel = null;
     try { const parsed = JSON.parse(r.body.toString()); rmodel = parsed.model || null; } catch(e) {}
-    const idx = pickKey(rmodel);
+    const idx = pickKey(rmodel, r.group);
     if (idx < 0 || inCooldown(idx)) {
       requestQueue.push(r);
       continue;
@@ -926,6 +953,7 @@ function loadAccounts() {
     resetHours: a.resetHours > 0 ? a.resetHours : null,
     maxReqPerMin: a.maxReqPerMin > 0 ? a.maxReqPerMin : null,
     maxTokPerMin: a.maxTokPerMin > 0 ? a.maxTokPerMin : null,
+    group: a.group || "A",
   }));
   if (!accounts.length) { console.error("[proxy] No valid accounts, reverting"); accounts = oldAccounts; return; }
   loadState();
@@ -1132,7 +1160,8 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   proxyReq.end();
 }
 
-function forwardWithPriority(method, headers, body, clientRes, pathname, extraTransform) {
+function forwardWithPriority(method, headers, body, clientRes, pathname, extraTransform, group) {
+  group = group || "A";
   let responded = false;
   const usedKeys = new Set();
   const activeCount = accounts.filter(a => a.status === "active").length;
@@ -1144,12 +1173,12 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     if (retries >= MAX_RETRIES) {
       if (responded) return;
       console.error(`[proxy] Max retries (${MAX_RETRIES}) reached, queueing`);
-      enqueueRequest(method, headers, body, clientRes, pathname);
+      enqueueRequest(method, headers, body, clientRes, pathname, group);
       responded = true;
       return;
     }
     retries++;
-    const idx = pickKey(model);
+    const idx = pickKey(model, group);
     if (responded) return;
     if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
       if (idx < 0) {
@@ -1239,6 +1268,7 @@ function buildStatusData() {
       model: a.model || null,
       resetDay: a.resetDay || null,
       resetHours: a.resetHours || null,
+      group: a.group || "A",
       activatedAt: ks.activatedAt || null,
       available: !inCooldown(i),
       status: ks.status || "active",
@@ -1359,6 +1389,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .bd-weekly{background:#3b1f5e;color:#c084fc}
 .bd-never{background:#3b2f1e;color:#fbbf24}
 .bd-hourly{background:#1a3a2e;color:#4ade80}
+.bd-group{background:#2d1f3f;color:#fbbf24;border:1px solid #a855f7}
 .bd-active{background:#1e3a5f;color:#93c5fd}
 .bd-score{background:#2d1f3f;color:#c084fc;border:1px solid #a855f7}
 .cbody{font-size:clamp(11px,1.5vw,12px)}
@@ -1501,6 +1532,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
    <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
   <label>重置</label>
   <select id="resetFilter"><option value="all">全部</option><option value="daily">每日重置</option><option value="weekly">每周重置</option><option value="hourly">每N小时重置</option><option value="never">永不过期</option></select>
+  <label>分组</label>
+  <select id="groupFilter"><option value="all">全部</option></select>
   <label>趋势</label>
   <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
   <label>搜索</label>
@@ -1576,7 +1609,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 <table class="mtable"><thead><tr>
 <th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th><th style="max-width:80px;white-space:nowrap">备注 <span onclick="toggleRemarkMode()" style="cursor:pointer;font-size:9px;color:#94a3b8;user-select:none" title="点击切换显示模式">🔄</span></th><th style="width:80px"></th>
+<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">分组</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th><th style="max-width:80px;white-space:nowrap">备注 <span onclick="toggleRemarkMode()" style="cursor:pointer;font-size:9px;color:#94a3b8;user-select:none" title="点击切换显示模式">🔄</span></th><th style="width:80px"></th>
 </tr></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
@@ -1656,6 +1689,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
 </div>
+<div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
+<div style="grid-column:1/-1" id="portGroupsArea"></div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
@@ -1754,7 +1789,7 @@ function daysUntilResetClient(resetDay) {
   return (target - isoDay + 7) % 7 || 7;
 }
 let data=[],curDate="",fullKeys={};
-let sortBy="idx",filterBy="all",trendRange="24h",trendMode="bytes",searchQ="",statusCodeQ="",modelSQ="";
+let sortBy="idx",filterBy="all",trendRange="24h",trendMode="bytes",searchQ="",statusCodeQ="",modelSQ="",groupFilter="all";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
@@ -1860,6 +1895,7 @@ async function loadConfigUI(){
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
+    renderPortGroups(c.groups||{A:3456});
     document.getElementById("cfgAutoResume").checked=c.autoResume===true;
     document.getElementById("cfgAutoResumeIdle").value=c.autoResumeIdleMinutes||10;
     document.getElementById("cfgAutoResumeDebounce").value=c.autoResumeDebounceMinutes||3;
@@ -1874,6 +1910,44 @@ async function loadConfigUI(){
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
     updateAutoCountdown();
   }catch(e){}
+}
+function renderPortGroups(groups){
+  const area=document.getElementById("portGroupsArea");
+  if(!area)return;
+  const g=groups||{A:3456};
+  const names=Object.keys(g).sort();
+  let html='<div style="font-size:11px;display:flex;flex-direction:column;gap:4px">';
+  for(const n of names){
+    const port=g[n];
+    const isA=n==="A";
+    html+='<div style="display:flex;gap:8px;align-items:center;padding:2px 0">'+
+      '<span style="width:30px;font-weight:600;color:'+(isA?"#60a5fa":"#e2e8f0")+'">'+n+'</span>'+
+      '<span style="color:#94a3b8">端口 '+port+'</span>'+
+      (isA?'<span style="color:#60a5fa;font-size:10px">(默认/始终运行)</span>':'');
+    if(!isA){
+      html+='<button class="btn" style="font-size:10px;padding:1px 6px;color:#f87171" onclick="removePortGroup(\\''+n+'\\')">删除</button>';
+    }
+    html+='</div>';
+  }
+  html+='<div style="display:flex;gap:6px;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155">'+
+    '<input id="newGroupName" placeholder="组名" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-transform:uppercase">'+
+    '<input id="newGroupPort" type="number" placeholder="端口" min="1024" max="65535" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
+    '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">添加</button>'+
+    '</div></div>';
+  area.innerHTML=html;
+}
+function removePortGroup(name){
+  if(name==="A")return;
+  if(!confirm("确定删除分组 "+name+" ？"))return;
+  fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"removeGroup",_groupName:name})})
+    .then(r=>r.json()).then(j=>{if(j.ok){loadConfigUI()}else{alert("删除失败: "+j.error)}}).catch(e=>alert("删除失败: "+e.message));
+}
+function addPortGroup(){
+  const name=document.getElementById("newGroupName").value.trim().toUpperCase();
+  const port=parseInt(document.getElementById("newGroupPort").value);
+  if(!name||!port){alert("请输入组名和端口号");return}
+  fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"addGroup",_groupName:name,_groupPort:port})})
+    .then(r=>r.json()).then(j=>{if(j.ok){document.getElementById("newGroupName").value="";document.getElementById("newGroupPort").value="";loadConfigUI()}else{alert("添加失败: "+j.error)}}).catch(e=>alert("添加失败: "+e.message));
 }
 function updateAutoCountdown(){
   const el=document.getElementById("cfgAutoCountdown");
@@ -2043,6 +2117,13 @@ function render(){
   curDate=sorted.includes(curDate)?curDate:(sorted[0]||todayStr());
   const tabsHtml=sorted.map(d=>'<span class="tab'+(d===curDate?' on':'')+'" onclick="curDate=\\''+d+'\\';render()">'+d+'</span>').join("");
   document.getElementById("tabs").innerHTML='<span class="tab'+(curDate==='all'?' on':'')+'" onclick="curDate=\\'all\\';render()">全部</span>'+tabsHtml;
+  // Populate group filter options
+  const groupsSet={};
+  data.forEach(x=>{const g=x.group||"A";groupsSet[g]=true});
+  const groupSel=document.getElementById("groupFilter");
+  const curVal=groupSel.value;
+  const knownGroups=Object.keys(groupsSet).sort();
+  groupSel.innerHTML='<option value="all">全部</option>'+knownGroups.map(g=>'<option value="'+g+'"'+(curVal===g?' selected':'')+'>'+g+'组</option>').join("");
   let filtered=data;
   if(filterBy!=="locked")filtered=filtered.filter(x=>!x.locked);
   if(filterBy!=="shielded")filtered=filtered.filter(x=>!x.shielded);
@@ -2055,6 +2136,8 @@ function render(){
   if(modelSQ){const q=modelSQ.toLowerCase();filtered=filtered.filter(x=>(x.models||[]).some(m=>m.toLowerCase().includes(q)))}
   const resetType=document.getElementById("resetFilter").value;
   if(resetType!=="all")filtered=filtered.filter(x=>x.reset===resetType);
+  groupFilter=document.getElementById("groupFilter").value;
+  if(groupFilter!=="all")filtered=filtered.filter(x=>x.group===groupFilter);
   document.getElementById("filterCount").textContent="显示 "+filtered.length+" / "+data.length+" 个";
   const shieldedCount=data.filter(x=>x.shielded).length;
   if(shieldedCount>0)document.getElementById("filterCount").textContent+="，屏蔽 "+shieldedCount+" 个";
@@ -2122,6 +2205,7 @@ function render(){
       '<span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
       '<span style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">'+
       '<span class="badge '+C[a.reset]+'">'+(a.reset==="weekly"?("每周-"+(DAY_CN[a.resetDay]||"自动")):(a.reset==="hourly"?("每"+(a.resetHours||5)+"小时"):L[a.reset]))+'</span>'+
+      (a.group&&a.group!=="A"?' <span class="badge bd-group">'+a.group+'组</span>':'')+
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
@@ -2236,6 +2320,7 @@ document.getElementById("trendRange").addEventListener("change",function(){trend
 document.getElementById("searchBox").addEventListener("input",function(){searchQ=this.value;render()});
 document.getElementById("statusCodeBox").addEventListener("input",function(){statusCodeQ=this.value.trim();render()});
 document.getElementById("modelSearchBox").addEventListener("input",function(){modelSQ=this.value.trim();render()});
+document.getElementById("groupFilter").addEventListener("change",function(){groupFilter=this.value;render()});
 
 let mgrKeys=[];
 let logInterval=null;
@@ -2364,6 +2449,7 @@ function renderMgr(){
         '<td>'+(i+1)+'</td>'+
         '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
         '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
+        '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
         '<td style="text-align:center">'+fcBadge+'</td>'+
         '<td style="display:flex;gap:4px;align-items:center">'+
         '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');var h=this.parentNode.querySelector(\\'.kresethours\\');d&&(d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\');h&&(h.style.display=this.value===\\'hourly\\'?\\'inline-block\\':\\'none\\')"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="hourly"'+(k.reset==="hourly"?" selected":"")+'>每N小时</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
@@ -2393,7 +2479,7 @@ function renderMgr(){
   }
   document.getElementById("mgrSelectAll").checked=false;
 }
-function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0,resetHours:void 0});renderMgr()}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0,resetHours:void 0,group:"A"});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
 async function resetKeyStatus(i){
   try{
@@ -2448,7 +2534,7 @@ function batchDeleteMgr(){
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,resetDay:k.resetDay||void 0,resetHours:k.resetHours>0?k.resetHours:void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,group:k.group||"A",resetDay:k.resetDay||void 0,resetHours:k.resetHours>0?k.resetHours:void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -2469,6 +2555,8 @@ function collectMgr(){
     const modelsEl=r.querySelector(".kmodels");
     const raw=modelsEl?modelsEl.value.trim():"";
     result[sidx].models=raw?raw.split(",").map(s=>s.trim()).filter(Boolean):[];
+    const groupEl=r.querySelector(".kgroup");
+    result[sidx].group=groupEl?groupEl.value.trim().toUpperCase()||"A":result[sidx].group||"A";
     const modelEl=r.querySelector(".kmodel");
     result[sidx].model=modelEl?modelEl.value.trim()||null:result[sidx].model;
     const remEl=r.querySelector(".kremark");result[sidx].remark=remEl&&remEl.tagName==="INPUT"?remEl.value.trim():(mgrKeys[sidx].remark||"");
@@ -3429,14 +3517,15 @@ function messagesToChatResponse(upstreamUrl, msgsBody) {
 
 // --- Mixed account forwarder for /v1/chat/completions (Anthropic → non-Anthropic fallback) ---
 const FALLBACK_CORS = { "access-control-allow-origin": "*", "content-type": "application/json; charset=utf-8" };
-function forwardChatCompletions(method, chatHeaders, chatBody, msgsHeaders, msgsBody, clientRes) {
+function forwardChatCompletions(method, chatHeaders, chatBody, msgsHeaders, msgsBody, clientRes, group) {
+  group = group || "A";
   let responded = false;
   const respond = (code, data) => { if (!responded && !clientRes.destroyed && !clientRes.headersSent) { responded = true; clientRes.writeHead(code, { "content-type": "application/json" }); clientRes.end(JSON.stringify(data)); } };
 
   // Phase 1: Anthropic accounts with Messages body
   const anthroAccounts = [];
   for (let i = 0; i < accounts.length; i++) {
-    if (accounts[i].status === "active" && !inCooldown(i) && isMessagesNative(accounts[i].url)) {
+    if (accounts[i].status === "active" && !inCooldown(i) && isMessagesNative(accounts[i].url) && (accounts[i].group || "A") === group) {
       const ks = getKeyState(i);
       if (ks.status !== "discarded" && ks.status !== "locked") anthroAccounts.push(i);
     }
@@ -3455,7 +3544,7 @@ function forwardChatCompletions(method, chatHeaders, chatBody, msgsHeaders, msgs
   // Phase 2: non-Anthropic accounts with original Chat body
   const chatAccounts = [];
   for (let i = 0; i < accounts.length; i++) {
-    if (accounts[i].status === "active" && !inCooldown(i) && !isMessagesNative(accounts[i].url)) {
+    if (accounts[i].status === "active" && !inCooldown(i) && !isMessagesNative(accounts[i].url) && (accounts[i].group || "A") === group) {
       const ks = getKeyState(i);
       if (ks.status !== "discarded" && ks.status !== "locked") chatAccounts.push(i);
     }
@@ -3476,8 +3565,14 @@ function forwardChatCompletions(method, chatHeaders, chatBody, msgsHeaders, msgs
 // --- End Mixed account forwarder ---
 
 // --- HTTP Server ---
-const server = http.createServer((req, res) => {
+function createGroupServer(groupName, port) {
+  const server = http.createServer((req, res) => {
   const pathname = (req.url || "/").split("?")[0];
+  if (groupName !== "A" && (pathname.startsWith("/__") || pathname === "/" || pathname === "/dashboard" || pathname === "/metrics")) {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Admin panel only on primary port (A)" }));
+    return;
+  }
   if (!pathname.startsWith("/__") && pathname !== "/" && pathname !== "/dashboard" && pathname !== "/metrics") {
     lastRequestTime = Date.now();
   }
@@ -3526,7 +3621,26 @@ const server = http.createServer((req, res) => {
         try {
           const c = JSON.parse(body);
           const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+          const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
           Object.assign(cur, c);
+          // Handle group actions
+          if (c._groupAction) {
+            if (c._groupAction === "addGroup" && c._groupName && c._groupPort) {
+              cur.groups = cur.groups || {};
+              cur.groups[c._groupName] = parseInt(c._groupPort);
+              delete c._groupAction; delete c._groupName; delete c._groupPort;
+            } else if (c._groupAction === "removeGroup" && c._groupName) {
+              if (c._groupName === "A") throw new Error("Cannot remove group A");
+              if (cur.groups) { delete cur.groups[c._groupName]; }
+              stopGroup(c._groupName);
+              delete c._groupAction; delete c._groupName;
+            } else if (c._groupAction === "setGroupPort" && c._groupName && c._groupPort) {
+              cur.groups = cur.groups || {};
+              cur.groups[c._groupName] = parseInt(c._groupPort);
+              if (servers[c._groupName]) { stopGroup(c._groupName); }
+              delete c._groupAction; delete c._groupName; delete c._groupPort;
+            }
+          }
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(cur, null, 2));
           const savedNextTime = autoRecoverNextTime;
           const savedDailyNextTime = autoRecoverDailyNextTime;
@@ -3535,6 +3649,27 @@ const server = http.createServer((req, res) => {
           const savedDailyHour = config.autoRecoverDailyHour;
           const savedDailyMin = config.autoRecoverDailyMinute;
           loadConfig();
+          // Sync group servers with new config
+          const newGroups = config.groups || {A: 3456};
+          // Start new groups
+          for (const [name, port] of Object.entries(newGroups)) {
+            if (!oldGroups[name] && name !== "A") {
+              startGroup(name, port).catch(e => console.error(`[proxy] Failed to start group ${name}: ${e.message}`));
+            }
+          }
+          // Stop removed groups
+          for (const name of Object.keys(oldGroups)) {
+            if (!newGroups[name] && name !== "A") {
+              stopGroup(name);
+            }
+          }
+          // Restart groups with changed port
+          for (const [name, port] of Object.entries(newGroups)) {
+            if (oldGroups[name] && oldGroups[name] !== port && name !== "A") {
+              stopGroup(name);
+              startGroup(name, port).catch(e => console.error(`[proxy] Failed to restart group ${name}: ${e.message}`));
+            }
+          }
           if (config.autoRecover && savedNextTime > Date.now() && savedInterval === config.autoRecoverInterval) {
             autoRecoverNextTime = savedNextTime;
           }
@@ -3672,7 +3807,26 @@ const server = http.createServer((req, res) => {
       req.on("end", () => {
         const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
-          const arr = JSON.parse(body);
+          const parsed = JSON.parse(body);
+          // Handle batch group update
+          if (parsed && parsed._batchGroup) {
+            const { keys: targetKeys, group: targetGroup } = parsed._batchGroup;
+            if (!Array.isArray(targetKeys) || !targetGroup) throw new Error("batchGroup needs keys[] and group");
+            const current = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8"));
+            let count = 0;
+            for (const k of current) {
+              if (targetKeys.includes(k.key)) { k.group = targetGroup; count++; }
+            }
+            if (!count) throw new Error("No matching keys found");
+            const raw = JSON.stringify(current, null, 2);
+            fs.writeFileSync(KEYS_FILE, raw, "utf-8");
+            loadAccounts();
+            broadcastStatus();
+            res.writeHead(200, cors);
+            res.end(JSON.stringify({ ok: true, count, message: `${count} keys moved to group ${targetGroup}` }));
+            return;
+          }
+          const arr = parsed;
           if (!Array.isArray(arr)) throw new Error("must be an array");
           for (const k of arr) {
             if (!k.key || !k.url) throw new Error("each entry needs key + url");
@@ -4196,7 +4350,7 @@ const server = http.createServer((req, res) => {
       if (global._restarting) return;
       global._restarting = true;
       setImmediate(() => {
-        server.close();
+        for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
         setTimeout(() => {
           console.log("[proxy] restarting...");
           const child = require("child_process").spawn(process.argv[0], process.argv.slice(1), { detached: true, stdio: "inherit" });
@@ -4257,7 +4411,7 @@ const server = http.createServer((req, res) => {
         const chatBody = responsesToChatRequest("", reqBody);
         chatBody.stream = true;
         addEventLog("conversion", 0, `Responses→Chat 转换: ${reqBody.model || "?"} → ${chatBody.model}`, "");
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToResponsesStream());
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToResponsesStream(), groupName);
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -4275,7 +4429,7 @@ const server = http.createServer((req, res) => {
         const chatBody = messagesToChatRequest("", reqBody);
         chatBody.stream = true;
         addEventLog("conversion", 0, `Messages→Chat 转换: ${reqBody.model || "?"}`, "");
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToMessagesStream());
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToMessagesStream(), groupName);
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -4299,7 +4453,7 @@ const server = http.createServer((req, res) => {
           msgsBody.stream = true;
           const msgsHeaders = { ...req.headers, "anthropic-version": "2023-06-01" };
           addEventLog("conversion", 0, `Chat→Messages 转换: ${reqBody.model || "?"}`, "");
-          forwardChatCompletions(req.method, req.headers, origBody, msgsHeaders, Buffer.from(JSON.stringify(msgsBody)), res);
+          forwardChatCompletions(req.method, req.headers, origBody, msgsHeaders, Buffer.from(JSON.stringify(msgsBody)), res, groupName);
         } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
       });
       req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -4317,31 +4471,87 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: "Missing Authorization header" }));
       return;
     }
-    console.log(`[proxy] ${req.method} ${pathname}`);
-    forwardWithPriority(req.method, req.headers, body, res, pathname);
+    console.log(`[proxy] ${req.method} ${pathname} (group ${groupName})`);
+    forwardWithPriority(req.method, req.headers, body, res, pathname, null, groupName);
   });
   req.on("error", (e) => { console.error(`[proxy] ${e.message}`); if (!res.destroyed) res.end(); });
 });
 
-server.on("error", (e) => console.error(`[proxy] ${e.message}`));
+  return server;
+}
 
-cleanOldLogs();
-
-server.listen(PORT, "localhost", () => {
-  fs.writeFileSync(PID_FILE, String(process.pid));
-  setupWebSocket(server);
-  const n = (() => { try { return JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8")).length; } catch { return 0; } })();
-  console.log(`
+function startGroup(name, port) {
+  if (servers[name]) { console.log(`[proxy] Group ${name} already running`); return Promise.resolve(servers[name]); }
+  const srv = createGroupServer(name, port);
+  servers[name] = srv;
+  return new Promise((resolve, reject) => {
+    srv.on("error", (e) => {
+      console.error(`[proxy] Group ${name} error: ${e.message}`);
+      delete servers[name];
+      reject(e);
+    });
+    srv.listen(port, "localhost", () => {
+      console.log(`[proxy] Group ${name} listening on http://localhost:${port}`);
+      if (name === "A") {
+        fs.writeFileSync(PID_FILE, String(process.pid));
+        setupWebSocket(srv);
+        const n = (() => { try { return JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8")).length; } catch { return 0; } })();
+        console.log(`
 ╔══════════════════════════════════════════════╗
 ║    Codex Multi-Key Proxy v3                 ║
 ║──────────────────────────────────────────────║
-║  Listen:  http://localhost:${PORT}                    ║
+║  Listen:  http://localhost:${port} (Group A)          ║
 ║  Accounts: ${n}  │  Dashboard: /                   ║
 ║──────────────────────────────────────────────║
 ║  WebSocket push, sliding window (5m/1h),     ║
 ║  P50/P95/P99, path stats, cost estimate,     ║
 ║  request queue, webhook, Prometheus /metrics  ║
+║  Multi-port key-group routing                ║
 ╚══════════════════════════════════════════════╝`);
-  loadAccounts();
-  loadConfig();
+      }
+      resolve(srv);
+    });
+  });
+}
+
+function stopGroup(name) {
+  if (!servers[name]) { console.log(`[proxy] Group ${name} not running`); return; }
+  try { servers[name].close(); } catch {}
+  delete servers[name];
+  console.log(`[proxy] Group ${name} stopped`);
+}
+
+function initServers() {
+  const groups = config.groups || { A: 3456 };
+  const promises = [];
+  for (const [name, port] of Object.entries(groups)) {
+    if (name === "A") {
+      promises.push(startGroup(name, port || 3456).catch(e => console.error(`[proxy] Failed to start group ${name}: ${e.message}`)));
+    } else {
+      promises.push(startGroup(name, port).catch(e => console.error(`[proxy] Failed to start group ${name}: ${e.message}`)));
+    }
+  }
+  return Promise.allSettled(promises).then(() => {
+    loadAccounts();
+    loadConfig();
+  });
+}
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("[proxy] SIGTERM received, shutting down...");
+  for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
+  try { fs.unlinkSync(PID_FILE); } catch {}
+  process.exit(0);
 });
+process.on("SIGINT", () => {
+  console.log("[proxy] SIGINT received, shutting down...");
+  for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
+  try { fs.unlinkSync(PID_FILE); } catch {}
+  process.exit(0);
+});
+
+// Start servers
+loadConfig();
+cleanOldLogs();
+initServers();

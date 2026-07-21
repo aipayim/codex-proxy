@@ -24,7 +24,7 @@
 codex-proxy/
 ├── proxy.js              # 核心代理服务器（含内嵌完整监控面板）
 ├── keys.json             # API Key 列表（每个 key 可独立配置 url/reset/status/remark）
-├── config.json           # 系统配置（prices、webhookUrl、notifications、log 等）
+├── config.json           # 系统配置（prices、webhookUrl、notifications、groups、log 等）
 ├── state.json            # 自动生成，持久化统计数据与冷却/废弃状态
 ├── state.json.bak        # 每小时自动备份
 ├── dashboard.html        # 独立监控面板文件（file:// 打开会有引导提示）
@@ -119,6 +119,7 @@ npm install
 #   activatedAt: 自动生成，首次启用的毫秒时间戳。删除 state.json 后不丢失，编辑面板保存时自动保留。
 #   maxReqPerMin: 可选字段，覆盖全局 maxRequestsPerMin 的每分钟请求数上限。
 #   maxTokPerMin: 可选字段，覆盖全局 maxTokensPerMin 的每分钟 token 上限。
+#   group:   可选字段，字符串，所属分组名（默认 "A"）。不同分组的 Key 由不同端口的代理服务器独立调度。
 #
 # 示例：
 # [
@@ -361,6 +362,7 @@ codex
 - **单 Key 测试**：🔍 调用 `GET /v1/models` 测试连通性，返回模型名 + 耗时
 - **批量测试**：勾选多个 Key → 🔍 批量测试 → 面板实时显示每 Key 结果（成功/失败）→ 通过测试的 Key 可一键重置恢复使用
 - **覆盖模型**：每行「覆盖模型」输入框，填入后转发时强制替换 `body.model`。与「指定模型」（路由准入）独立协作
+- **分组管理**：每行「分组」输入框，设置 Key 所属分组（默认 A）；支持批量迁移至目标分组
 - **重置所有 Key 的状态码**：批量测试后根据每 Key 实际测试结果同步状态（200 成功 → 清空冷却；429 失败 → 写入 429 进入冷却），而非统一重置为可用
 - **CSV 导出**：导出完整统计数据
 
@@ -415,7 +417,7 @@ codex
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔄 重启代理按钮
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮
 
 ## API 接口
 
@@ -433,6 +435,8 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |
+| `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` |
+| `/__keys` `_batchGroup` | PUT | 批量迁移分组：`{"_batchGroup":"B", …完整 keys 数组…}` |
 | `/__logs` | GET | 请求日志（`?key=11&status=502&model=gpt-5.6-sol&since=ts&until=ts&limit=200&offset=0&format=csv`，支持 `4xx`/`5xx` 通配） |
 | `/__export-logs` | GET | 导出历史日志（`?date=2026-07-10&key=11&status=502&model=gpt-5.6-sol&format=csv`，无 date 时返回内存日志） |
 | `/__export` | GET | CSV 导出统计报表 |
@@ -603,7 +607,12 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "lockFailCodes": ["401","403"],
   "logFile": true,
   "logRetentionDays": 7,
-  "logDetail": "full"
+  "logDetail": "full",
+  "groups": {
+    "A": 3456,
+    "B": 3457,
+    "C": 3458
+  }
 }
 ```
 
@@ -644,6 +653,56 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `logFile` | 是否启用文件日志（true/false，默认 true）。关闭后仅内存缓存 2000 条，不写磁盘 |
 | `logRetentionDays` | 日志文件保留天数（默认 7）。设为 0 关闭自动清理 |
 | `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
+| `groups` | 端口分组映射，如 `{"A": 3456, "B": 3457}`。A 组始终运行且不可删除，B/C/D 等通过面板动态管理 |
+
+## 多端口分组路由
+
+本代理支持单进程监听多个端口，不同端口的 Key 池相互独立，实现多模型分层隔离。
+
+### 分组机制
+
+- 每个 Key 有一个 `group` 字段（默认 `"A"`），标记所属分组
+- `config.json` 中 `groups` 定义每组监听的端口号，Keys 通过 `group` 字段匹配到对应端口
+- 分组 A 的代理始终运行在配置端口（默认 3456），不可删除。其他分组通过系统配置弹窗动态增删
+- CLI 启动时可通过 `--groups "A=3456,B=3457"` 覆盖端口分配，重启后恢复 config.json 配置
+
+### 端口路由
+
+| 端口 | 分组 | 默认用途 | 说明 |
+|------|------|----------|------|
+| 3456 | A | 日常任务 | 始终运行，默认分组，所有未指定 group 的 Key 归属此组 |
+| 3457 | B | 复杂任务（Sol 等） | 可选，通过系统配置添加 |
+| 3458 | C | 简单任务（Luna 等） | 可选，通过系统配置添加 |
+| 更多 | D~Z | 自定义 | 动态添加，端口自定义 |
+
+### 使用场景
+
+将不同模型的 Key 分配到不同分组，codex CLI 通过指定不同端口使用不同模型：
+
+```bash
+# 日常任务（端口 A，默认 3456）— 使用 Tree 等标准模型
+codex "写一个 Python 脚本"
+
+# 复杂任务（端口 B，3457）— 在 codex CLI 中配置 base_url 为 http://localhost:3457
+# 对应 Key 的 model 字段可设为 "gpt-5.6-sol" 等高级模型
+
+# 简单任务（端口 C，3458）— 快速问答，使用低成本模型
+```
+
+### 管理面板
+
+- **Key 管理**：每行显示「分组」输入框，可单独设置每个 Key 的归属分组
+- **卡片显示**：非 A 分组的 Key 右上角显示分组字母徽章
+- **分组筛选**：顶部下拉菜单按分组过滤 Key 卡片
+- **批量迁移**：勾选多个 Key → 批量操作栏「迁移至分组」→ 选择目标分组
+- **系统配置**：端口分组管理区动态添加/删除分组，修改端口后自动同步服务器
+
+### 路由逻辑
+
+1. 请求到达端口 P → 查找 config.json 中 `groups` 找到对应分组名 G
+2. 在分组 G 的 Key 池内按原有优先级/轮询/冷却逻辑选择 Key
+3. 如分组 G 对应的服务器未运行 → 502 "Group X server not running"
+4. 分组间 Key 池完全隔离，互不影响
 
 ## 自动恢复冷却 Key
 
