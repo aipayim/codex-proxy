@@ -11,7 +11,7 @@ const KEYS_FILE = path.join(__dirname, "keys.json");
 const STATE_FILE = path.join(__dirname, "state.json");
 const CONFIG_FILE = path.join(__dirname, "config.json");
 const TIMEOUT = 300000;
-const PRIORITY = { daily: 0, weekly: 1, never: 2 };
+const PRIORITY = { daily: 0, weekly: 1, never: 2, hourly: 0 };
 const HTTP_MOD = { "http:": http, "https:": https };
 const TZ = "Asia/Shanghai";
 const MAX_LOG = 2000;
@@ -57,7 +57,7 @@ const slidingWindows = {};
 const pathStats = {};
 let requestQueue = [];
 let queueProcessing = false;
-let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false };
+let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5 };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -140,6 +140,10 @@ function loadConfig() {
     config.logFile = LOG_FILE_ENABLED;
     config.logRetentionDays = LOG_RETENTION_DAYS;
     config.logDetail = LOG_DETAIL;
+    config.rateLimit = c.rateLimit !== false;
+    config.maxRequestsPerMin = Math.max(1, parseInt(c.maxRequestsPerMin) || 10);
+    config.maxTokensPerMin = Math.max(0, parseInt(c.maxTokensPerMin) || 0);
+    config.defaultResetHours = Math.max(1, parseInt(c.defaultResetHours) || 5);
   } catch { /* defaults */ }
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
@@ -444,6 +448,13 @@ function keyPeriod(reset, idx) {
     const epoch = getWeeklyEpoch(act, acct ? acct.resetDay : null);
     return String(Math.floor((Date.now() - epoch) / (7 * 86400000)));
   }
+  if (reset === "hourly" && idx !== undefined) {
+    const ks = getKeyState(idx);
+    const acct = accounts[idx];
+    const act = ks.activatedAt || Date.now();
+    const hours = (acct ? acct.resetHours : null) || config.defaultResetHours || 5;
+    return String(Math.floor((Date.now() - act) / (hours * 3600000)));
+  }
   return reset === "weekly" ? tzWeekPeriod(TZ) : tzDate(TZ);
 }
 function isConsecutivePeriod(prev, curr, reset) {
@@ -451,7 +462,7 @@ function isConsecutivePeriod(prev, curr, reset) {
     const p = new Date(prev + "T00:00:00+08:00"), c = new Date(curr + "T00:00:00+08:00");
     return (c - p) === 86400000;
   }
-  if (reset === "weekly") {
+  if (reset === "weekly" || reset === "hourly") {
     return Number(curr) - Number(prev) === 1;
   }
   return false;
@@ -569,6 +580,7 @@ function getKeyState(idx) {
     } catch (e) { /* 静默失败 */ }
   }
   if (ks.failCount === undefined) ks.failCount = 0;
+  if (!ks.rateWindow) ks.rateWindow = { requests: [], windowStart: Date.now() };
   if (ks.activatedAt !== undefined && !persistedActivatedAt.has(idx)) {
     persistActivatedAt(idx, ks.activatedAt);
     persistedActivatedAt.add(idx);
@@ -629,6 +641,12 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb) {
 
   state.activeKey = idx;
   recordSliding(idx, success, duration);
+  const rw = ks.rateWindow;
+  if (rw) {
+    const bpt = config.bytesPerToken || 3;
+    const tokens = ((inputBytes || 0) + (outputBytes || 0)) / bpt;
+    rw.requests.push({ time: Date.now(), tokens: Math.round(tokens) });
+  }
   saveState();
   broadcastStatus();
 }
@@ -718,6 +736,26 @@ function daysUntilReset(resetDay) {
   const target = parseInt(resetDay);
   return (target - isoDay + 7) % 7 || 7;
 }
+function rateLimitAllow(idx) {
+  if (!config.rateLimit) return true;
+  const ks = getKeyState(idx);
+  const rw = ks.rateWindow || { requests: [], windowStart: Date.now() };
+  const now = Date.now();
+  if (now - rw.windowStart > 60000) {
+    rw.requests = [];
+    rw.windowStart = now;
+  }
+  const recent = rw.requests.filter(e => now - e.time <= 60000);
+  const acct = accounts[idx];
+  const maxReqs = (acct && acct.maxReqPerMin) || config.maxRequestsPerMin;
+  const maxToks = (acct && acct.maxTokPerMin) || config.maxTokensPerMin;
+  if (recent.length >= maxReqs) return false;
+  if (maxToks > 0) {
+    const tokens = recent.reduce((s, e) => s + (e.tokens || 0), 0);
+    if (tokens >= maxToks) return false;
+  }
+  return true;
+}
 function pickKey(model) {
   function matchesModel(a) {
     if (!model) return true;
@@ -726,7 +764,7 @@ function pickKey(model) {
   }
   // Boost: 持续高优
   if (_boostKey >= 0 && _boostKey < accounts.length) {
-    if (matchesModel(accounts[_boostKey]) && accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
+    if (matchesModel(accounts[_boostKey]) && accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && rateLimitAllow(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
       return _boostKey;
     }
     // boosted key no longer available, auto-clear
@@ -736,7 +774,7 @@ function pickKey(model) {
   // Batch Boost
   if (_boostBatch.length && _boostBatchMode === "use") {
     for (const idx of _boostBatch) {
-      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && getKeyState(idx).status !== "discarded") return idx;
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") return idx;
     }
   }
   if (_boostBatch.length && _boostBatchMode === "roundrobin") {
@@ -744,7 +782,7 @@ function pickKey(model) {
     for (let i = 0; i < _boostBatch.length; i++) {
       const bi = (_boostBatchCursor + i) % _boostBatch.length;
       const idx = _boostBatch[bi];
-      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && getKeyState(idx).status !== "discarded") {
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") {
         _boostBatchCursor = (bi + 1) % _boostBatch.length;
         return idx;
       }
@@ -790,7 +828,7 @@ function pickKey(model) {
           const prios = Object.keys(prioGroups).map(Number).sort((a, b) => b - a);
           for (const p of prios) {
             const pool = prioGroups[p];
-            const avail = pool.filter(i => !inCooldown(i));
+            const avail = pool.filter(i => !inCooldown(i) && rateLimitAllow(i));
             if (!avail.length) continue;
             const ck = days[di] + ':' + p;
             if (!_weeklySubCursors[ck]) _weeklySubCursors[ck] = 0;
@@ -801,7 +839,7 @@ function pickKey(model) {
         }
         continue;
       }
-      const avail = g.filter(i => !inCooldown(i));
+      const avail = g.filter(i => !inCooldown(i) && rateLimitAllow(i));
       const pool = avail.length ? avail : g;
       if (_rrCursor >= pool.length) _rrCursor = 0;
       return pool[_rrCursor++];
@@ -823,7 +861,7 @@ function pickKey(model) {
     return (accounts[b].priority || 0) - (accounts[a].priority || 0) || a - b;
   });
   for (const g of groups) {
-    const a = g.filter(i => !inCooldown(i));
+    const a = g.filter(i => !inCooldown(i) && rateLimitAllow(i));
     if (a.length) return a[0];
   }
   for (const g of groups) if (g.length) return g[0];
@@ -885,13 +923,16 @@ function loadAccounts() {
     models: a.models || [],
     model: a.model || null,
     resetDay: a.resetDay || null,
+    resetHours: a.resetHours > 0 ? a.resetHours : null,
+    maxReqPerMin: a.maxReqPerMin > 0 ? a.maxReqPerMin : null,
+    maxTokPerMin: a.maxTokPerMin > 0 ? a.maxTokPerMin : null,
   }));
   if (!accounts.length) { console.error("[proxy] No valid accounts, reverting"); accounts = oldAccounts; return; }
   loadState();
 
-  const labels = ["每日重置", "每周重置", "永不过期"];
   const groups = [[], [], []];
   for (let i = 0; i < accounts.length; i++) groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
+  const resetLabels = { daily: "每日重置", weekly: "每周重置", never: "永不过期", hourly: "每N小时重置" };
   console.log(`[proxy] Loaded ${accounts.length} accounts`);
   for (let gi = 0; gi < groups.length; gi++) {
     for (const i of groups[gi]) {
@@ -902,7 +943,7 @@ function loadAccounts() {
       const st = user ? `✗ ${user}` : (disc ? `✗ ${disc}` : (inCooldown(i) ? `✗ 冷却中 (${ks.failCode})` : "✓ 可用"));
       const s = ks.stats;
       const t = s ? ` | ${s.totalRequests}次请求 ${fmtBytes(s.inputBytes+s.outputBytes)}` : "";
-      console.log(`       ${i+1}. ${m ? m[1] : a.key.slice(0,12)}... → ${a.url} [${labels[gi]}]${tag} ${st}${t}`);
+      console.log(`       ${i+1}. ${m ? m[1] : a.key.slice(0,12)}... → ${a.url} [${resetLabels[a.reset] || a.reset}]${tag} ${st}${t}`);
     }
   }
   broadcastStatus();
@@ -1197,6 +1238,7 @@ function buildStatusData() {
       models: a.models || [],
       model: a.model || null,
       resetDay: a.resetDay || null,
+      resetHours: a.resetHours || null,
       activatedAt: ks.activatedAt || null,
       available: !inCooldown(i),
       status: ks.status || "active",
@@ -1316,6 +1358,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .bd-daily{background:#1e3a5f;color:#60a5fa}
 .bd-weekly{background:#3b1f5e;color:#c084fc}
 .bd-never{background:#3b2f1e;color:#fbbf24}
+.bd-hourly{background:#1a3a2e;color:#4ade80}
 .bd-active{background:#1e3a5f;color:#93c5fd}
 .bd-score{background:#2d1f3f;color:#c084fc;border:1px solid #a855f7}
 .cbody{font-size:clamp(11px,1.5vw,12px)}
@@ -1457,7 +1500,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <label>筛选</label>
    <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
   <label>重置</label>
-  <select id="resetFilter"><option value="all">全部</option><option value="daily">每日重置</option><option value="weekly">每周重置</option><option value="never">永不过期</option></select>
+  <select id="resetFilter"><option value="all">全部</option><option value="daily">每日重置</option><option value="weekly">每周重置</option><option value="hourly">每N小时重置</option><option value="never">永不过期</option></select>
   <label>趋势</label>
   <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
   <label>搜索</label>
@@ -1607,6 +1650,11 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgLockCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="401,403" placeholder="401,403" title="只有这些错误码会计入连续失败计数"></div>
   <div style="color:#94a3b8;padding:4px 0">🔒 启用自动锁死</div>
   <div><label><input type="checkbox" id="cfgEnableAutoLock" checked> 开启后连续失败达到阈值将自动锁死 Key</label></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 分钟级限速</div>
+  <div style="color:#94a3b8;padding:4px 0">每分钟请求上限</div>
+  <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
+  <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
+  <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
@@ -1695,8 +1743,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </div>
 
 <script>
-const L={"daily":"每日","weekly":"每周","never":"永久"};
-const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never"};
+const L={"daily":"每日","weekly":"每周","never":"永久","hourly":"每N小时"};
+const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never","hourly":"bd-hourly"};
 const DAY_CN={"1":"周一","2":"周二","3":"周三","4":"周四","5":"周五","6":"周六","7":"周日"};
 function daysUntilResetClient(resetDay) {
   if (resetDay == null) return 99;
@@ -1810,6 +1858,8 @@ async function loadConfigUI(){
     document.getElementById("cfgLogRetention").value=c.logRetentionDays||7;
     document.getElementById("cfgLogDetail").value=c.logDetail||"full";
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
+    document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
+    document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
     document.getElementById("cfgAutoResume").checked=c.autoResume===true;
     document.getElementById("cfgAutoResumeIdle").value=c.autoResumeIdleMinutes||10;
     document.getElementById("cfgAutoResumeDebounce").value=c.autoResumeDebounceMinutes||3;
@@ -2049,6 +2099,7 @@ function render(){
       const r=a.reset;
       if(r==="never"){cd="永久失效"}
       else if(r==="daily"){cd="本日已用完，明天0点重置"}
+      else if(r==="hourly"){cd="本时段已用完，下一时段重置"}
       else{cd="本周已用完，"+(a.nextResetDay||"周一")+"0点重置"}
     }
     const rg=a.remark?'<div class="rem">📝 '+esc(a.remark)+'</div>':"";
@@ -2070,7 +2121,7 @@ function render(){
       '<div class="ctop"><input type="checkbox" class="card-cb" data-idx="'+a.idx+'" onchange="updateBatchBar()" style="margin-right:4px;accent-color:#3b82f6">'+
       '<span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
       '<span style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">'+
-      '<span class="badge '+C[a.reset]+'">'+(a.reset==="weekly"?("每周-"+(DAY_CN[a.resetDay]||"自动")):L[a.reset])+'</span>'+
+      '<span class="badge '+C[a.reset]+'">'+(a.reset==="weekly"?("每周-"+(DAY_CN[a.resetDay]||"自动")):(a.reset==="hourly"?("每"+(a.resetHours||5)+"小时"):L[a.reset]))+'</span>'+
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
@@ -2315,7 +2366,8 @@ function renderMgr(){
         '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
         '<td style="text-align:center">'+fcBadge+'</td>'+
         '<td style="display:flex;gap:4px;align-items:center">'+
-        '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\'"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
+        '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');var h=this.parentNode.querySelector(\\'.kresethours\\');d&&(d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\');h&&(h.style.display=this.value===\\'hourly\\'?\\'inline-block\\':\\'none\\')"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="hourly"'+(k.reset==="hourly"?" selected":"")+'>每N小时</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
+        '<input class="kresethours" type="number" min="1" max="168" style="display:'+(k.reset==="hourly"?"inline-block":"none")+';width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" value="'+(k.resetHours||"")+'" placeholder="h">'+
         '<select class="kresetday" style="display:'+(k.reset==="weekly"?"inline-block":"none")+';width:60px;font-size:10px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
           '<option value="">自动</option>'+
           '<option value="1"'+(k.resetDay=="1"?" selected":"")+'>周一</option>'+
@@ -2341,7 +2393,7 @@ function renderMgr(){
   }
   document.getElementById("mgrSelectAll").checked=false;
 }
-function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0});renderMgr()}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0,resetHours:void 0});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
 async function resetKeyStatus(i){
   try{
@@ -2396,7 +2448,7 @@ function batchDeleteMgr(){
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,resetDay:k.resetDay||void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,resetDay:k.resetDay||void 0,resetHours:k.resetHours>0?k.resetHours:void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -2410,6 +2462,8 @@ function collectMgr(){
     result[sidx].reset=r.querySelector(".kreset").value;
     const resetDayEl=r.querySelector(".kresetday");
     result[sidx].resetDay=resetDayEl?resetDayEl.value||void 0:void 0;
+    const resetHoursEl=r.querySelector(".kresethours");
+    result[sidx].resetHours=resetHoursEl?parseInt(resetHoursEl.value)||void 0:void 0;
     const prioEl=r.querySelector(".kprio");
     result[sidx].priority=prioEl?parseInt(prioEl.value)||0:result[sidx].priority;
     const modelsEl=r.querySelector(".kmodels");
@@ -2446,7 +2500,7 @@ function importKeys(){
     if(!parts[0]||!parts[0].startsWith("sk-"))continue;
     const key=parts[0];
     const url=parts[1]||"https://api.fenno.ai";
-    const resetMap={"daily":"每日","weekly":"每周","never":"永久","每日":"daily","每周":"weekly","永久":"never"};
+    const resetMap={"daily":"每日","weekly":"每周","never":"永久","hourly":"每N小时","每日":"daily","每周":"weekly","永久":"never","每N小时":"hourly"};
     const reset=resetMap[parts[2]]||"weekly";
     const remark=parts.slice(3).join(" ")||"";
     mgrKeys.push({key,url,reset,remark});
@@ -2502,7 +2556,7 @@ async function batchTestMgr(){
       if(j.ok){
         batchTestPassed.push(i);
         if(cr){cr.ok=true;cr.status=j.status}
-         line.textContent="✅ #"+(i+1)+" 成功"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+(j.duration?" ("+j.duration+"ms)":"");
+         const dur=j.duration||0;let durc="#22c55e";if(dur>=3000)durc="#ef4444";else if(dur>=1000)durc="#eab308";line.textContent="✅ #"+(i+1)+" 成功"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+" ("+dur+"ms)";line.style.color=durc;
       }else{
         if(cr)cr.status=j.status||null;
         line.textContent="❌ #"+(i+1)+" 失败: "+(j.error||"未知错误");
@@ -2891,6 +2945,8 @@ async function saveConfig(){
     roundRobin:document.getElementById("cfgRoundRobin").checked,
     weeklySortBy:document.getElementById("cfgWeeklySortBy").checked?"expiry":"priority",
     enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
+    maxRequestsPerMin:parseInt(document.getElementById("cfgMaxReqPerMin").value)||10,
+    maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0,
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
     logFile:document.getElementById("cfgLogFile").checked,

@@ -115,7 +115,10 @@ npm install
 #            与 models 独立：models 控制路由准入，model 控制上游实际使用的模型。
 #   resetDay: 可选字段，1-7（1=周一…7=周日）。仅对 weekly 生效，指定每周哪天 00:00 重置。
 #            未设置时按 Key 首次启用日自动对齐。
+#   resetHours: 可选字段，1-168。仅对 hourly 生效，指定每 N 小时重置周期（默认 5）。
 #   activatedAt: 自动生成，首次启用的毫秒时间戳。删除 state.json 后不丢失，编辑面板保存时自动保留。
+#   maxReqPerMin: 可选字段，覆盖全局 maxRequestsPerMin 的每分钟请求数上限。
+#   maxTokPerMin: 可选字段，覆盖全局 maxTokensPerMin 的每分钟 token 上限。
 #
 # 示例：
 # [
@@ -173,7 +176,7 @@ codex
 
 | 层级 | 依据 | 顺序 |
 |------|------|------|
-| **第一层** | 额度重置周期 `reset` | daily → weekly → never |
+| **第一层** | 额度重置周期 `reset` | daily → weekly → never（hourly 同 daily 优先级） |
 | **第二层** | 用户设置的 `priority` 数值 | 同 reset 组内，数值越大越优先，不限上限（默认 0） |
 
 > **每周重置说明**：自 v2 起，每周重置不再按固定自然周（周一 00:00），而是每个 Key **独立按启用时间算 7 天**。
@@ -490,7 +493,7 @@ Anthropic 账号和非 Anthropic 账号可共存，无需额外配置。
 | `idx` | int | Key 序号 |
 | `key` | string | 脱敏显示（前 6 + ... + 后 4） |
 | `url` | string | 中转地址 |
-| `reset` | string | daily / weekly / never |
+| `reset` | string | daily / weekly / never / hourly |
 | `remark` | string | 备注 |
 | `available` | bool | 当前可用（`!inCooldown()`） |
 | `status` | string | active / discarded / locked |
@@ -584,6 +587,10 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "autoRecoverPollInterval": 5,
   "autoRecoverPollCodes": [500, 502, 503, 504],
   "autoRecoverDelays": [800],
+  "rateLimit": true,
+  "maxRequestsPerMin": 10,
+  "maxTokensPerMin": 0,
+  "defaultResetHours": 5,
   "autoResume": false,
   "autoResumeIdleMinutes": 10,
   "autoResumeDebounceMinutes": 3,
@@ -620,6 +627,10 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `autoRecoverPollInterval` | 轮询间隔（分钟，默认 5，最小 1） |
 | `autoRecoverPollCodes` | 触发的失败码数组，如 `[500,502,503,504]`。Key 出现其中任意状态码即激活快速轮询 |
 | `autoRecoverDelays` | 检测间隔数组（毫秒），默认 `[800]`。所有检测模式共用，每个 Key 测试完随机选一个值作为下一 Key 的等待时间。最多 10 个，范围 100–10000。推荐 `[800,1200,500]` 模拟人工操作节奏，降低批量风控概率 |
+| `rateLimit` | 是否启用分钟级限速（true/false，默认 true） |
+| `maxRequestsPerMin` | 单个 Key 每分钟最大请求数（默认 10）。可在 keys.json 中按 Key 覆盖（`maxReqPerMin`） |
+| `maxTokensPerMin` | 单个 Key 每分钟最大 token 数（默认 0=不限）。可在 keys.json 中按 Key 覆盖（`maxTokPerMin`） |
+| `defaultResetHours` | `hourly` 类型的默认重置周期（小时，默认 5）。可在 keys.json 中按 Key 覆盖（`resetHours`） |
 | `autoResume` | 是否启用闲置自动恢复（true/false，默认 false） |
 | `autoResumeIdleMinutes` | 空闲阈值（分钟，默认 10） |
 | `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3） |

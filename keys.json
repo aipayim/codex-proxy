@@ -1,1 +1,35 @@
-[]
+[
+  {
+    "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "url": "https://api.openai.com/v1",
+    "reset": "weekly",
+    "remark": "示例 Key",
+    "priority": 0,
+    "models": ["gpt-4", "gpt-4-turbo"],
+    "model": null,
+    "resetDay": "5",
+    "activatedAt": 1700000000000
+  },
+  {
+    "key": "sk-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    "url": "https://api.example.com/v1",
+    "reset": "daily",
+    "remark": "备用 Key",
+    "priority": 0,
+    "models": [],
+    "model": "gpt-3.5-turbo",
+    "resetDay": null,
+    "activatedAt": 1700000000001
+  },
+  {
+    "key": "sk-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    "url": "https://api.example.com/v1",
+    "reset": "never",
+    "remark": "一次性 Key",
+    "priority": 1,
+    "models": [],
+    "model": null,
+    "resetDay": null,
+    "activatedAt": 1700000000002
+  }
+]
