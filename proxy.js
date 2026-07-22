@@ -2260,7 +2260,7 @@ function render(){
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
-      (boostedBatch.includes(a.idx)?' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+(boostedBatchMode==="use"?"队列":"轮询")+'</span>':'')+
+      (boostedBatch.includes(a.idx)?((a.group||"A")!=="A"?' <span class="badge" style="background:#1a3a2e;color:#ef4444;border:1px solid #ef4444;text-decoration:line-through" title="此 Key 属于 '+esc(a.group||"A")+' 组，不参与当前端口轮询">⚡ '+(boostedBatchMode==="use"?"队列":"轮询")+'</span>':' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+(boostedBatchMode==="use"?"队列":"轮询")+'</span>'):'')+
       ' <span class="badge bd-score">'+score+'分</span>'+
       '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="折叠">▼</span></span></div>'+
       '<div class="meter"><div class="meter-fill" style="width:'+score+'%;background:'+meterColor+'"></div></div>'+
