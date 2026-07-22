@@ -435,7 +435,8 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |
-| `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` |
+| `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
+| `/__test_port?port=3457` | GET | 检测分组端口是否运行（查询内存中 `servers` 注册表） |
 | `/__keys` `_batchGroup` | PUT | 批量迁移分组：`{"_batchGroup":"B", …完整 keys 数组…}` |
 | `/__logs` | GET | 请求日志（`?key=11&status=502&model=gpt-5.6-sol&since=ts&until=ts&limit=200&offset=0&format=csv`，支持 `4xx`/`5xx` 通配） |
 | `/__export-logs` | GET | 导出历史日志（`?date=2026-07-10&key=11&status=502&model=gpt-5.6-sol&format=csv`，无 date 时返回内存日志） |
@@ -654,6 +655,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `logRetentionDays` | 日志文件保留天数（默认 7）。设为 0 关闭自动清理 |
 | `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
 | `groups` | 端口分组映射，如 `{"A": 3456, "B": 3457}`。A 组始终运行且不可删除，B/C/D 等通过面板动态管理 |
+| `groupEnabled` | 分组开关状态，如 `{"B": true, "C": false}`。关闭的分组重启后不启动端口。默认全部启用 |
 
 ## 多端口分组路由
 
@@ -696,6 +698,8 @@ codex "写一个 Python 脚本"
 - **分组筛选**：顶部下拉菜单按分组过滤 Key 卡片
 - **批量迁移**：勾选多个 Key → 批量操作栏「迁移至分组」→ 选择目标分组
 - **系统配置**：端口分组管理区动态添加/删除分组，修改端口后自动同步服务器
+- **端口检测**：每组端口右侧自动显示 🟢（运行中）/🔴（未运行），打开配置弹窗时自动探测
+- **启用/禁用**：非 A 分组可点击 🔴 禁用 / 🟢 启用按钮开关端口，状态保存至 `config.json` 的 `groupEnabled` 字段，重启后保持
 
 ### 路由逻辑
 

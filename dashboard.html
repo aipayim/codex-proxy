@@ -315,7 +315,14 @@ async function loadConfigUI(){
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
-    renderPortGroups(c.groups||{A:3456});
+    try{
+      const sr=await fetch("/__status");
+      const sd=await sr.json();
+      const gki={};
+      (sd.keys||[]).forEach(k=>{const g=k.group||"A";if(!gki[g])gki[g]={count:0,idxs:[]};gki[g].count++;gki[g].idxs.push(k.idx+1)});
+      renderPortGroups(c.groups||{A:3456}, c.groupEnabled||{}, gki);
+    }catch(e){renderPortGroups(c.groups||{A:3456}, c.groupEnabled||{}, {})}
+    testAllPorts(c.groups||{A:3456});
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
@@ -330,30 +337,60 @@ function updateAutoCountdown(){
   const h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;
   el.textContent="⏳ 下次检测: "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";
 }
-function renderPortGroups(groups){
+function renderPortGroups(groups, groupEnabled, groupKeyInfo){
   const area=document.getElementById("portGroupsArea");
   if(!area)return;
   const g=groups||{A:3456};
+  const enabled=groupEnabled||{};
+  const gki=groupKeyInfo||{};
   const names=Object.keys(g).sort();
-  let html='<div style="font-size:11px;display:flex;flex-direction:column;gap:4px">';
+  let html='<div style="font-size:11px;display:flex;flex-direction:column;gap:4px;white-space:nowrap">';
   for(const n of names){
     const port=g[n];
     const isA=n==="A";
-    html+='<div style="display:flex;gap:8px;align-items:center;padding:2px 0">'+
+    const isOn=enabled[n]!==false;
+    const ki=gki[n];
+    let keyInfo='';
+    if(ki){
+      const show=ki.idxs.slice(0,10);
+      const more=ki.idxs.length>10?'...':'';
+      keyInfo='<span style="color:#64748b;font-size:10px;margin-left:8px">🔑 '+ki.count+'个 | #'+show.join(',#')+more+'</span>';
+    }
+    html+='<div style="display:flex;gap:8px;align-items:center;padding:2px 0;white-space:nowrap">'+
       '<span style="width:30px;font-weight:600;color:'+(isA?"#60a5fa":"#e2e8f0")+'">'+n+'</span>'+
       '<span style="color:#94a3b8">端口 '+port+'</span>'+
+      '<span class="portStatus" data-group="'+n+'" style="font-size:10px;min-width:14px;display:inline-block;text-align:center">⏳</span>'+
       (isA?'<span style="color:#60a5fa;font-size:10px">(默认/始终运行)</span>':'');
     if(!isA){
-      html+='<button class="btn" style="font-size:10px;padding:1px 6px;color:#f87171" onclick="removePortGroup(\''+n+'\')">删除</button>';
+      html+='<button class="btn" style="font-size:10px;padding:1px 6px;color:'+(isOn?'#f87171':'#4ade80')+'" onclick="toggleGroup(\''+n+'\','+String(!isOn)+',this)">'+(isOn?'🔴 禁用':'🟢 启用')+'</button>'+
+        '<button class="btn" style="font-size:10px;padding:1px 6px;color:#f87171" onclick="removePortGroup(\''+n+'\')">删除</button>';
     }
-    html+='</div>';
+    html+=keyInfo+'</div>';
   }
   html+='<div style="display:flex;gap:6px;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155">'+
     '<input id="newGroupName" placeholder="组名" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-transform:uppercase">'+
     '<input id="newGroupPort" type="number" placeholder="端口" min="1024" max="65535" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
     '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">添加</button>'+
     '</div></div>';
+  area.style.paddingLeft="12px";
   area.innerHTML=html;
+}
+function testAllPorts(groups){
+  const g=groups||{A:3456};
+  for(const [name, port] of Object.entries(g)){
+    const el=document.querySelector('.portStatus[data-group="'+name+'"]');
+    if(!el)continue;
+    el.textContent="⏳";
+    const ctrl=new AbortController();
+    const tid=setTimeout(()=>ctrl.abort(),3000);
+    fetch("/__test_port?port="+port,{signal:ctrl.signal})
+      .then(r=>r.json()).then(d=>{clearTimeout(tid);el.textContent=d.running?"🟢":"🔴"})
+      .catch(()=>{clearTimeout(tid);el.textContent="🔴"});
+  }
+}
+function toggleGroup(name, enable, btn){
+  fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"toggleGroup",_groupName:name,_groupEnabled:enable})})
+    .then(r=>r.json()).then(j=>{if(j.ok)loadConfigUI();else alert("操作失败: "+j.error)}).catch(e=>alert("操作失败: "+e.message));
 }
 function removePortGroup(name){
   if(name==="A")return;
