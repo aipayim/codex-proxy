@@ -1554,6 +1554,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
   <span style="color:#94a3b8;font-size:11px;margin-left:8px" id="filterCount"></span>
   <span style="color:#22c55e;font-size:11px;margin-left:8px;font-weight:500" id="dashResumeStatus"></span>
+  <span style="color:#4ade80;font-size:11px;margin-left:8px;font-weight:500;display:none" id="dashActiveKeys"></span>
 </div>
 <div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
   <span style="color:#94a3b8;font-size:12px" id="batchCount">已选 0 个</span>
@@ -1590,9 +1591,11 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="locked">锁死</option>
     <option value="shielded">屏蔽</option>
     <option value="duration">启用时长</option>
+    <option value="lastFail">最后失败</option>
     <option value="resetDay">周重置日</option>
   </select>
   <input id="mgrDurationDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选启用距今 ≥ X 天的 Key，可与其他条件组合">
+  <input id="mgrLastFailDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选最后失败距今 ≥ X 天的 Key，可与其他条件组合">
   <select id="mgrResetDayFilter" onchange="renderMgr()" style="display:none;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" title="筛选指定周重置日的 Key">
     <option value="">全部</option>
     <option value="auto">自动（未设置）</option>
@@ -2209,6 +2212,16 @@ function render(){
     if(sinceResume!==null)dashResume.textContent="🧬空闲"+idleMin+"m/恢复"+sinceResume+"m前";
     else dashResume.textContent="🧬空闲"+idleMin+"m";
   }
+  const actKeys=data.filter(x=>x.active);
+  const actEl=document.getElementById("dashActiveKeys");
+  if(actEl){
+    if(actKeys.length>0){
+      actEl.textContent="并发: "+actKeys.map(x=>"#"+x.idx).join(", ");
+      actEl.style.display="inline";
+    }else{
+      actEl.style.display="none";
+    }
+  }
   if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
   else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
   else if(sortBy==="rate5m"){
@@ -2283,7 +2296,7 @@ function render(){
       (a.models&&a.models.length?'<div class="row"><span class="label">指定模型</span><span class="val">'+esc(a.models.join(', '))+'</span></div>':'<div class="row"><span class="label">指定模型</span><span class="val" style="color:#64748b">通用</span></div>')+
       (a.model?'<div class="row"><span class="label">覆盖模型</span><span class="val" style="color:#fbbf24">'+esc(a.model)+'</span></div>':"")+
       (a.failCode?'<div class="row"><span class="label">失败码</span><span class="val" title="'+(FAIL_MEAN[a.failCode]||'')+'">'+a.failCode+'</span></div>':"")+
-      (a.failTime?'<div class="row"><span class="label">最后失败</span><span class="val" style="color:#f87171">'+fmtDur(Date.now()-a.failTime)+'前</span></div>':"")+
+      (a.failTime?'<div class="row"><span class="label">最后失败</span><span class="val" style="color:#f87171">'+fmtTimeAgo(Date.now()-a.failTime)+'前</span></div>':"")+
       (cd?'<div class="row"><span class="label">冷却剩余</span><span class="val cooldown">'+cd+'</span></div>':"")+
       '<div class="row"><div class="label">请求</div><div class="val">'+req+'次 (成功'+suc+' 失败'+(req-suc)+')</div></div>'+
       '<div class="row"><div class="label">流量</div><div class="val">↑'+fmtBytes(ib)+' / ↓'+fmtBytes(ob)+'</div></div>'+
@@ -2337,6 +2350,7 @@ function fmtBytes(n){if(!n)return"0B";if(n>=1048576)return(n/1048576).toFixed(1)
 function fmtDur(ms){if(ms>=1000)return(ms/1000).toFixed(2)+"s";return ms+"ms"}
 function fmtDate(ts){const d=new Date(ts);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
 function fmtDuration(ms){if(ms<=0)return'刚刚';const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+'d '+(h%24)+'h':h>0?h+'h '+(m%60)+'m':m>0?m+'m '+(s%60)+'s':s+'s'}
+function fmtTimeAgo(ms){if(ms<=0)return'刚刚';const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+'天'+(h%24)+'小时'+(m%60)+'分钟'+(s%60)+'秒':h>0?h+'小时'+(m%60)+'分钟'+(s%60)+'秒':m>0?m+'分钟'+(s%60)+'秒':s+'秒'}
 function maskKey(k){return k&&k.length>12?k.slice(0,6)+'...'+k.slice(-4):(k||'')}
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 const FAIL_MEAN={"401":"API Key 无效或已过期","402":"额度不足，账号已欠费","403":"权限不足，Key 无访问权限","429":"请求过频繁，触发了速率限制","500":"上游服务器内部错误","502":"上游网关错误","503":"服务暂时不可用","504":"上游超时"};
@@ -2446,6 +2460,9 @@ function renderMgr(){
   const resetDayFilter=document.getElementById("mgrResetDayFilter");
   const resetDayVal=resetDayFilter?resetDayFilter.value:"";
   if(resetDayFilter)resetDayFilter.style.display=statusFilter==="resetDay"?"inline-block":"none";
+  const lastFailDays=parseInt(document.getElementById("mgrLastFailDays")?.value)||0;
+  const lastFailInput=document.getElementById("mgrLastFailDays");
+  if(lastFailInput)lastFailInput.style.display=statusFilter==="lastFail"?"inline-block":"none";
   const tbody=document.getElementById("mgrBody");
   tbody.innerHTML="";
   const filtered=[];const grp={};
@@ -2460,6 +2477,7 @@ function renderMgr(){
     if(statusFilter==="locked"&&k._locked!==true)continue;
     if(statusFilter==="shielded"&&k.status!=="shielded")continue;
     if(statusFilter==="duration"&&durationDays>0){const cutoff=Date.now()-durationDays*86400000;if(!k._activatedAt||k._activatedAt>cutoff)continue;}
+    if(statusFilter==="lastFail"&&lastFailDays>0){const cutoff=Date.now()-lastFailDays*86400000;if(!k._failTime||k._failTime>cutoff)continue;}
     if(statusFilter==="resetDay"&&resetDayVal!==""){if(resetDayVal==="auto"){if(k.resetDay!=null)continue;}else{if(String(k.resetDay||"")!==resetDayVal)continue;}}
     if(mgrHideShielded&&k.status==="shielded")continue;
     filtered.push(i);
@@ -2572,6 +2590,7 @@ function clearMgrSearch(){
   document.getElementById("mgrModelFilter").value="";
   document.getElementById("mgrStatusFilter").value="";
   const durEl=document.getElementById("mgrDurationDays");if(durEl)durEl.value="";
+  const lfEl=document.getElementById("mgrLastFailDays");if(lfEl)lfEl.value="";
   const rdEl=document.getElementById("mgrResetDayFilter");if(rdEl)rdEl.value="";
   mgrSortBy="default";
   document.getElementById("mgrSortBy").value="default";
@@ -3904,6 +3923,7 @@ function createGroupServer(groupName, port) {
         const ks = i < accounts.length ? getKeyState(i) : state.keys[i];
         if (ks && ks.status === "locked") raw[i]._locked = true;
         if (ks && (ks.failCode || ks.failCode === 0)) raw[i]._failCode = ks.failCode;
+        if (ks && ks.failTime) raw[i]._failTime = ks.failTime;
         if (ks) {
           const act = raw[i].activatedAt || ks.activatedAt || null;
           raw[i].activatedAt = raw[i]._activatedAt = act;
