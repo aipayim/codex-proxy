@@ -1590,8 +1590,20 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="locked">锁死</option>
     <option value="shielded">屏蔽</option>
     <option value="duration">启用时长</option>
+    <option value="resetDay">周重置日</option>
   </select>
   <input id="mgrDurationDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选启用距今 ≥ X 天的 Key，可与其他条件组合">
+  <select id="mgrResetDayFilter" onchange="renderMgr()" style="display:none;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" title="筛选指定周重置日的 Key">
+    <option value="">全部</option>
+    <option value="auto">自动（未设置）</option>
+    <option value="1">周一</option>
+    <option value="2">周二</option>
+    <option value="3">周三</option>
+    <option value="4">周四</option>
+    <option value="5">周五</option>
+    <option value="6">周六</option>
+    <option value="7">周日</option>
+  </select>
   <select id="mgrSortBy" onchange="mgrSortBy=this.value;renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
     <option value="default">默认顺序</option>
     <option value="resetDay">按重置日（周一→周日）</option>
@@ -2431,6 +2443,9 @@ function renderMgr(){
   const durationDays=parseInt(document.getElementById("mgrDurationDays")?.value)||0;
   const durationInput=document.getElementById("mgrDurationDays");
   if(durationInput)durationInput.style.display=statusFilter==="duration"?"inline-block":"none";
+  const resetDayFilter=document.getElementById("mgrResetDayFilter");
+  const resetDayVal=resetDayFilter?resetDayFilter.value:"";
+  if(resetDayFilter)resetDayFilter.style.display=statusFilter==="resetDay"?"inline-block":"none";
   const tbody=document.getElementById("mgrBody");
   tbody.innerHTML="";
   const filtered=[];const grp={};
@@ -2445,6 +2460,7 @@ function renderMgr(){
     if(statusFilter==="locked"&&k._locked!==true)continue;
     if(statusFilter==="shielded"&&k.status!=="shielded")continue;
     if(statusFilter==="duration"&&durationDays>0){const cutoff=Date.now()-durationDays*86400000;if(!k._activatedAt||k._activatedAt>cutoff)continue;}
+    if(statusFilter==="resetDay"&&resetDayVal!==""){if(resetDayVal==="auto"){if(k.resetDay!=null)continue;}else{if(String(k.resetDay||"")!==resetDayVal)continue;}}
     if(mgrHideShielded&&k.status==="shielded")continue;
     filtered.push(i);
     const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
@@ -2556,6 +2572,7 @@ function clearMgrSearch(){
   document.getElementById("mgrModelFilter").value="";
   document.getElementById("mgrStatusFilter").value="";
   const durEl=document.getElementById("mgrDurationDays");if(durEl)durEl.value="";
+  const rdEl=document.getElementById("mgrResetDayFilter");if(rdEl)rdEl.value="";
   mgrSortBy="default";
   document.getElementById("mgrSortBy").value="default";
   renderMgr();
