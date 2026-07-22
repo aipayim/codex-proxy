@@ -1589,7 +1589,9 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="discarded">废弃</option>
     <option value="locked">锁死</option>
     <option value="shielded">屏蔽</option>
+    <option value="duration">启用时长</option>
   </select>
+  <input id="mgrDurationDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选启用距今 ≥ X 天的 Key，可与其他条件组合">
   <select id="mgrSortBy" onchange="mgrSortBy=this.value;renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
     <option value="default">默认顺序</option>
     <option value="resetDay">按重置日（周一→周日）</option>
@@ -1604,7 +1606,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
   <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
   <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
-  <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn">🙈 隐藏已屏蔽</button>
+  <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn">🙉 显示已屏蔽</button>
 </div>
 <div style="font-size:11px;color:#94a3b8;margin-bottom:6px" id="mgrCount">共 0 个</div>
 <div id="batchTestResults" style="display:none;margin-bottom:8px;padding:8px;background:#1e293b;border:1px solid #475569;border-radius:6px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace">
@@ -2399,7 +2401,7 @@ function toggleRemarkMode(){
   renderMgr();
 }
 let mgrSearchCache=[],dragIdx=-1,grpCache=null,mgrSortBy="default",mgrRemarkMode="remark";
-let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=false;
+let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=true;
 function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
   renderMgr();
@@ -2426,6 +2428,9 @@ function renderMgr(){
   const codeFilter=document.getElementById("mgrCodeFilter").value.trim();
   const mf=(document.getElementById("mgrModelFilter").value||"").toLowerCase().trim();
   const statusFilter=document.getElementById("mgrStatusFilter").value;
+  const durationDays=parseInt(document.getElementById("mgrDurationDays")?.value)||0;
+  const durationInput=document.getElementById("mgrDurationDays");
+  if(durationInput)durationInput.style.display=statusFilter==="duration"?"inline-block":"none";
   const tbody=document.getElementById("mgrBody");
   tbody.innerHTML="";
   const filtered=[];const grp={};
@@ -2439,6 +2444,7 @@ function renderMgr(){
     if(statusFilter==="discarded"&&k.status!=="discarded")continue;
     if(statusFilter==="locked"&&k._locked!==true)continue;
     if(statusFilter==="shielded"&&k.status!=="shielded")continue;
+    if(statusFilter==="duration"&&durationDays>0){const cutoff=Date.now()-durationDays*86400000;if(!k._activatedAt||k._activatedAt>cutoff)continue;}
     if(mgrHideShielded&&k.status==="shielded")continue;
     filtered.push(i);
     const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
@@ -2549,6 +2555,7 @@ function clearMgrSearch(){
   document.getElementById("mgrCodeFilter").value="";
   document.getElementById("mgrModelFilter").value="";
   document.getElementById("mgrStatusFilter").value="";
+  const durEl=document.getElementById("mgrDurationDays");if(durEl)durEl.value="";
   mgrSortBy="default";
   document.getElementById("mgrSortBy").value="default";
   renderMgr();
