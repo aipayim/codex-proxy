@@ -590,7 +590,7 @@ function persistActivatedAt(idx, val) {
 }
 
 function getKeyState(idx) {
-  while (state.keys.length <= idx) state.keys.push({ failCode: null, failTime: null, failPeriod: null, failCount: 0, status: "active", stats: null });
+  while (state.keys.length <= idx) state.keys.push({ failCode: null, failTime: null, failPeriod: null, failCount: 0, status: "active", stats: null, lastStatus: null, lastTime: null, lastModel: null });
   const ks = state.keys[idx];
   if (ks.status === undefined) ks.status = "active";
   if (ks.failPeriod === undefined) ks.failPeriod = null;
@@ -1059,6 +1059,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       recordPath(pathname, method, 0, 0, dur);
       Object.assign(logEntry, { status: apiRes.statusCode, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
       addLog(logEntry);
+      const _ks1=getKeyState(idx);_ks1.lastStatus=apiRes.statusCode;_ks1.lastTime=Date.now();_ks1.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       apiRes.destroy();
       onDone({ switched: true, code: apiRes.statusCode });
       return;
@@ -1096,6 +1097,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       recordPath(pathname, method, inputBytes, accBytes, dur);
       Object.assign(logEntry, { status: apiRes.statusCode, inputBytes, outputBytes: accBytes, duration: dur, ttfb });
       addLog(logEntry);
+      const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       broadcastStatus();
     };
     apiRes.on("end", cleanup);
@@ -1120,6 +1122,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     recordPath(pathname, method, 0, 0, dur);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
     addLog(logEntry);
+    const _ks3=getKeyState(idx);_ks3.lastStatus=0;_ks3.lastTime=Date.now();_ks3.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
     onDone({ switched: true, error: err });
   });
 
@@ -1135,6 +1138,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     recordPath(pathname, method, 0, 0, dur);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
     addLog(logEntry);
+    const _ks4=getKeyState(idx);_ks4.lastStatus=0;_ks4.lastTime=Date.now();_ks4.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
     onDone({ switched: true, error: new Error("timeout") });
   });
 
@@ -1592,6 +1596,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="shielded">屏蔽</option>
     <option value="duration">启用时长</option>
     <option value="lastFail">最后失败</option>
+    <option value="lastResp">最后响应</option>
     <option value="resetDay">周重置日</option>
   </select>
   <input id="mgrDurationDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选启用距今 ≥ X 天的 Key，可与其他条件组合">
@@ -1619,6 +1624,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px" onclick="batchShieldMgr()">🔇 批量屏蔽</button>
   <button class="btn" style="font-size:11px" onclick="batchResetMgr()">🔄 批量重置</button>
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
+  <button class="btn" style="font-size:11px;color:#f59e0b" onclick="cleanFailedKeys()">🧹 清理失败</button>
   <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
   <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
   <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn">🙉 显示已屏蔽</button>
@@ -1634,10 +1640,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <button class="btn" style="font-size:11px" onclick="document.getElementById('batchTestResults').style.display='none'">收起</button>
   </div>
 </div>
-<table class="mtable"><thead><tr>
-<th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>
-<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">分组</th><th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th><th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th><th style="max-width:80px;white-space:nowrap">备注 <span onclick="toggleRemarkMode()" style="cursor:pointer;font-size:9px;color:#94a3b8;user-select:none" title="点击切换显示模式">🔄</span></th><th style="width:80px"></th>
-</tr></thead><tbody id="mgrBody"></tbody></table>
+<table class="mtable"><thead id="mgrThead"></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
 <button class="btn" onclick="addKeyRow()">+ 添加一行</button>
 <div style="flex:1"></div>
@@ -2428,6 +2431,7 @@ function toggleRemarkMode(){
 }
 let mgrSearchCache=[],dragIdx=-1,grpCache=null,mgrSortBy="default",mgrRemarkMode="remark";
 let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=true;
+let mgrViewMode="default",mgrSortDir="asc";
 function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
   renderMgr();
@@ -2463,13 +2467,32 @@ function renderMgr(){
   const lastFailDays=parseInt(document.getElementById("mgrLastFailDays")?.value)||0;
   const lastFailInput=document.getElementById("mgrLastFailDays");
   if(lastFailInput)lastFailInput.style.display=statusFilter==="lastFail"?"inline-block":"none";
+  mgrViewMode=statusFilter==="lastResp"?"lastResp":"default";
+  const sortEl=document.getElementById("mgrSortBy");
+  if(sortEl)sortEl.style.display=mgrViewMode==="lastResp"?"none":"inline-block";
+  const thead=document.getElementById("mgrThead");
+  if(mgrViewMode==="lastResp"){
+    thead.innerHTML='<tr><th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>'+
+      '<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">分组</th>'+
+      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastStatus\\')">状态码<span id="mgrSortIcon_lastStatus"> '+((mgrSortBy==="lastStatus"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
+      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastTime\\')">最后响应<span id="mgrSortIcon_lastTime"> '+((mgrSortBy==="lastTime"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
+      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastModel\\')">响应模型<span id="mgrSortIcon_lastModel"> '+((mgrSortBy==="lastModel"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
+      '<th style="width:100px"></th></tr>';
+  }else{
+    thead.innerHTML='<tr><th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>'+
+      '<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">分组</th>'+
+      '<th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th>'+
+      '<th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th>'+
+      '<th style="max-width:80px;white-space:nowrap">备注 <span onclick="toggleRemarkMode()" style="cursor:pointer;font-size:9px;color:#94a3b8;user-select:none" title="点击切换显示模式">🔄</span></th>'+
+      '<th style="width:80px"></th></tr>';
+  }
   const tbody=document.getElementById("mgrBody");
   tbody.innerHTML="";
   const filtered=[];const grp={};
   for(let i=0;i<mgrKeys.length;i++){
     const k=mgrKeys[i];
     if(q&&!(k.remark||"").toLowerCase().includes(q)&&!(k.url||"").toLowerCase().includes(q)&&!(k.key||"").toLowerCase().includes(q)&&!String(k._failCode||"").includes(q))continue;
-    if(codeFilter&&String(k._failCode||"")!==codeFilter)continue;
+    if(codeFilter){const ec=k._failCode!=null?String(k._failCode):(k._lastStatus!=null?String(k._lastStatus):"");if(ec!==codeFilter)continue;}
     if(mf&&!((k.models||k._models||[])||[]).some(m=>m.toLowerCase().includes(mf)))continue;
     if(statusFilter==="available"&&k._available!==true)continue;
     if(statusFilter==="cooldown"&&k._available!==false)continue;
@@ -2504,6 +2527,15 @@ function renderMgr(){
     Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>(mgrKeys[b]._activatedAt||0)-(mgrKeys[a]._activatedAt||0))});
   }else if(mgrSortBy==="group"){
     Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>(mgrKeys[a].group||"A").localeCompare(mgrKeys[b].group||"A"))});
+  }else if(mgrSortBy==="lastStatus"){
+    const dir=mgrSortDir==="desc"?-1:1;
+    Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>dir*((mgrKeys[a]._lastStatus??-1)-(mgrKeys[b]._lastStatus??-1)))});
+  }else if(mgrSortBy==="lastTime"){
+    const dir=mgrSortDir==="desc"?-1:1;
+    Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>dir*((mgrKeys[b]._lastTime||0)-(mgrKeys[a]._lastTime||0)))});
+  }else if(mgrSortBy==="lastModel"){
+    const dir=mgrSortDir==="desc"?-1:1;
+    Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>dir*((mgrKeys[a]._lastModel||"").localeCompare(mgrKeys[b]._lastModel||"")))});
   }
   const groups=Object.keys(grp);
   for(let gi=0;gi<groups.length;gi++){
@@ -2512,7 +2544,8 @@ function renderMgr(){
     const hdr=document.createElement("tr");
     hdr.style.background="#1e293b";hdr.style.cursor="pointer";
     hdr.onclick=function(){toggleGroup(g)};
-    hdr.innerHTML='<td colspan="12" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
+    const colspan=mgrViewMode==="lastResp"?9:12;
+    hdr.innerHTML='<td colspan="'+colspan+'" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
       (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')</td>';
     tbody.appendChild(hdr);
     if(collapsed)continue;
@@ -2535,40 +2568,81 @@ function renderMgr(){
       if(sh)badges+='<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>';
       if(lk)badges+='<span class="badge" style="background:#2e1065;color:#a78bfa;white-space:nowrap;margin-left:2px">🔒 锁死</span>';
       const fc=k._failCode||"";
-      const fcBadge=fc?'<span class="badge" style="background:#1e293b;color:'+(fc==="429"?"#fbbf24":fc==="401"?"#fb923c":fc==="403"?"#f87171":"#94a3b8")+';border:1px solid #475569">'+fc+'</span>':'';
-      tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
-        '<td>'+(i+1)+'</td>'+
-        '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
-        '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
-        '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
-        '<td style="text-align:center">'+fcBadge+'</td>'+
-        '<td style="display:flex;gap:4px;align-items:center">'+
-        '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');var h=this.parentNode.querySelector(\\'.kresethours\\');d&&(d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\');h&&(h.style.display=this.value===\\'hourly\\'?\\'inline-block\\':\\'none\\')"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="hourly"'+(k.reset==="hourly"?" selected":"")+'>每N小时</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
-        '<input class="kresethours" type="number" min="1" max="168" style="display:'+(k.reset==="hourly"?"inline-block":"none")+';width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" value="'+(k.resetHours||"")+'" placeholder="h">'+
-        '<select class="kresetday" style="display:'+(k.reset==="weekly"?"inline-block":"none")+';width:60px;font-size:10px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
-          '<option value="">自动</option>'+
-          '<option value="1"'+(k.resetDay=="1"?" selected":"")+'>周一</option>'+
-          '<option value="2"'+(k.resetDay=="2"?" selected":"")+'>周二</option>'+
-          '<option value="3"'+(k.resetDay=="3"?" selected":"")+'>周三</option>'+
-          '<option value="4"'+(k.resetDay=="4"?" selected":"")+'>周四</option>'+
-          '<option value="5"'+(k.resetDay=="5"?" selected":"")+'>周五</option>'+
-          '<option value="6"'+(k.resetDay=="6"?" selected":"")+'>周六</option>'+
-          '<option value="7"'+(k.resetDay=="7"?" selected":"")+'>周日</option>'+
-        '</select></td>'+
-        '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
-        '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="指定模型名" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="逗号分隔，如 gpt-5.5, gpt-5.4-mini"></td>'+
-        '<td><input class="kmodel" value="'+esc(k.model||"")+'" placeholder="覆盖模型" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="非空时转发请求时强制替换 model 为此值"></td>'+
-        '<td>'+(mgrRemarkMode==="activated"&&k._activatedAt?'<span class="kremark" style="font-size:10px;color:#94a3b8;cursor:default"'+(k.remark?' title="'+esc(k.remark)+'"':'')+'>'+fmtDate(k._activatedAt)+' / '+fmtDuration(Date.now()-k._activatedAt)+'</span>':'<input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"'+(k._activatedAt?' title="首次启用: '+fmtDate(k._activatedAt)+' | 启用至今: '+fmtDuration(Date.now()-k._activatedAt)+'"':'')+'>')+'</td>'+
-        '<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
+      function mgrStatusBadge(code){if(code==null||code==="")return'<span style="color:#64748b">-</span>';const c=code>=200&&code<300?"#4ade80":code===429?"#fbbf24":code>=400&&code<500?"#fb923c":code>=500?"#f87171":code===0?"#f87171":"#94a3b8";return'<span style="color:'+c+';font-weight:500">'+code+'</span>';}
+      const fcBadge=fc?'<span class="badge" style="background:#1e293b;color:'+(fc===429||fc==="429"?"#fbbf24":fc===401||fc==="401"?"#fb923c":fc===403||fc==="403"?"#f87171":"#94a3b8")+';border:1px solid #475569">'+fc+'</span>':(!sh&&k._available?'<span class="badge" style="background:#1e293b;color:#4ade80;border:1px solid #475569">200</span>':'');
+      const actionsTd='<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
           '<span class="del" onclick="testKey('+i+')" title="#'+(i+1)+' 测试连通性">🔍</span>'+
           '<span class="del" onclick="resetKeyStatus('+i+')" title="#'+(i+1)+' 重置状态（清除冷却/废弃/锁死）">🔄</span>'+
           '<span class="del" onclick="toggleShield('+i+')" title="#'+(i+1)+' '+(sh?'恢复使用':'屏蔽')+'">'+(sh?'🔄':'🔇')+'</span>'+
           (lk?'<span class="del" onclick="unlockKey('+i+')" title="#'+(i+1)+' 解锁 Key" style="color:#a78bfa">🔓</span>':'')+
           '<span class="del" onclick="delKeyRow('+i+')" title="#'+(i+1)+' 删除">✕</span></td>';
+      if(mgrViewMode==="lastResp"){
+        const ls=k._lastStatus!=null?k._lastStatus:(k._failCode!=null?k._failCode:null);
+        const lt=k._lastTime||k._failTime||null;
+        const lm=k._lastModel||"";
+        tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
+          '<td>'+(i+1)+'</td>'+
+          '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
+          '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
+          '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
+          '<td style="text-align:center;white-space:nowrap">'+mgrStatusBadge(ls)+'</td>'+
+          '<td style="font-size:10px;white-space:nowrap">'+(lt?fmtTimeAgo(Date.now()-lt)+'前':'<span style="color:#64748b">未使用</span>')+'</td>'+
+          '<td style="font-size:10px;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(lm)+'">'+(lm?esc(lm):'<span style="color:#64748b">-</span>')+'</td>'+
+          actionsTd;
+      }else{
+        tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
+          '<td>'+(i+1)+'</td>'+
+          '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
+          '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
+          '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
+          '<td style="text-align:center">'+fcBadge+'</td>'+
+          '<td style="display:flex;gap:4px;align-items:center">'+
+          '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');var h=this.parentNode.querySelector(\\'.kresethours\\');d&&(d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\');h&&(h.style.display=this.value===\\'hourly\\'?\\'inline-block\\':\\'none\\')"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="hourly"'+(k.reset==="hourly"?" selected":"")+'>每N小时</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
+          '<input class="kresethours" type="number" min="1" max="168" style="display:'+(k.reset==="hourly"?"inline-block":"none")+';width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" value="'+(k.resetHours||"")+'" placeholder="h">'+
+          '<select class="kresetday" style="display:'+(k.reset==="weekly"?"inline-block":"none")+';width:60px;font-size:10px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
+            '<option value="">自动</option>'+
+            '<option value="1"'+(k.resetDay=="1"?" selected":"")+'>周一</option>'+
+            '<option value="2"'+(k.resetDay=="2"?" selected":"")+'>周二</option>'+
+            '<option value="3"'+(k.resetDay=="3"?" selected":"")+'>周三</option>'+
+            '<option value="4"'+(k.resetDay=="4"?" selected":"")+'>周四</option>'+
+            '<option value="5"'+(k.resetDay=="5"?" selected":"")+'>周五</option>'+
+            '<option value="6"'+(k.resetDay=="6"?" selected":"")+'>周六</option>'+
+            '<option value="7"'+(k.resetDay=="7"?" selected":"")+'>周日</option>'+
+          '</select></td>'+
+          '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
+          '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="指定模型名" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="逗号分隔，如 gpt-5.5, gpt-5.4-mini"></td>'+
+          '<td><input class="kmodel" value="'+esc(k.model||"")+'" placeholder="覆盖模型" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="非空时转发请求时强制替换 model 为此值"></td>'+
+          '<td>'+(mgrRemarkMode==="activated"&&k._activatedAt?'<span class="kremark" style="font-size:10px;color:#94a3b8;cursor:default"'+(k.remark?' title="'+esc(k.remark)+'"':'')+'>'+fmtDate(k._activatedAt)+' / '+fmtDuration(Date.now()-k._activatedAt)+'</span>':'<input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"'+(k._activatedAt?' title="首次启用: '+fmtDate(k._activatedAt)+' | 启用至今: '+fmtDuration(Date.now()-k._activatedAt)+'"':'')+'>')+'</td>'+
+          actionsTd;
+      }
       tbody.appendChild(tr);
     }
   }
   document.getElementById("mgrSelectAll").checked=false;
+}
+function toggleMgrSort(field){
+  if(mgrSortBy===field){mgrSortDir=mgrSortDir==="asc"?"desc":"asc";}
+  else{mgrSortBy=field;mgrSortDir="asc";}
+  renderMgr();
+}
+function cleanFailedKeys(){
+  const days=prompt("清理条件：最后响应距今 ≥ ? 天","7");
+  if(days===null)return;
+  const d=parseInt(days)||0;
+  if(d<=0){alert("请输入正整数天数");return}
+  const cutoff=Date.now()-d*86400000;
+  let count=0;
+  document.querySelectorAll("#mgrBody .mgr-cb").forEach(cb=>{
+    const i=parseInt(cb.value);
+    const k=mgrKeys[i];
+    if(!k)return;
+    const badStatus=k._lastStatus!=null&&(k._lastStatus>=400||k._lastStatus===0);
+    const oldTime=k._lastTime&&k._lastTime<cutoff;
+    const neverUsed=!k._lastTime;
+    if(badStatus&&(oldTime||neverUsed)){cb.checked=true;count++;}
+    else cb.checked=false;
+  });
+  alert("已选中 "+count+" 个符合条件的 Key\\n（最后响应≥"+d+"天 且 状态码≥400 或 网络错误）\\n\\n可使用「批量屏蔽」处理");
 }
 function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0,resetHours:void 0,group:"A"});renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
@@ -2592,7 +2666,7 @@ function clearMgrSearch(){
   const durEl=document.getElementById("mgrDurationDays");if(durEl)durEl.value="";
   const lfEl=document.getElementById("mgrLastFailDays");if(lfEl)lfEl.value="";
   const rdEl=document.getElementById("mgrResetDayFilter");if(rdEl)rdEl.value="";
-  mgrSortBy="default";
+  mgrSortBy="default";mgrSortDir="asc";
   document.getElementById("mgrSortBy").value="default";
   renderMgr();
 }
@@ -2638,8 +2712,10 @@ function collectMgr(){
     const key=r.querySelector(".kkey")?.value.trim();
     if(!key)continue;
     result[sidx].key=key;
-    result[sidx].url=r.querySelector(".kurl").value.trim();
-    result[sidx].reset=r.querySelector(".kreset").value;
+    const urlEl=r.querySelector(".kurl");
+    result[sidx].url=urlEl?urlEl.value.trim():result[sidx].url;
+    const resetEl=r.querySelector(".kreset");
+    result[sidx].reset=resetEl?resetEl.value:result[sidx].reset;
     const resetDayEl=r.querySelector(".kresetday");
     result[sidx].resetDay=resetDayEl?resetDayEl.value||void 0:void 0;
     const resetHoursEl=r.querySelector(".kresethours");
@@ -3924,6 +4000,9 @@ function createGroupServer(groupName, port) {
         if (ks && ks.status === "locked") raw[i]._locked = true;
         if (ks && (ks.failCode || ks.failCode === 0)) raw[i]._failCode = ks.failCode;
         if (ks && ks.failTime) raw[i]._failTime = ks.failTime;
+        if (ks && ks.lastStatus != null) raw[i]._lastStatus = ks.lastStatus;
+        if (ks && ks.lastTime) raw[i]._lastTime = ks.lastTime;
+        if (ks && ks.lastModel) raw[i]._lastModel = ks.lastModel;
         if (ks) {
           const act = raw[i].activatedAt || ks.activatedAt || null;
           raw[i].activatedAt = raw[i]._activatedAt = act;
