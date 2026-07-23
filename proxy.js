@@ -756,6 +756,53 @@ function inCooldown(idx) {
   return ks.failPeriod === curr;
 }
 
+function parseTz(tz) {
+  if (!tz) return 0;
+  const m = String(tz).match(/^([+-]?)(\d+(?:\.\d+)?)$/);
+  if (!m) return 0;
+  return (m[1] === "-" ? -1 : 1) * parseFloat(m[2]);
+}
+function isInTimeWindow(key) {
+  if (!key || !key.timeWindow) return true;
+  const { start, end } = key.timeWindow;
+  if (start == null || end == null) return true;
+  if (start === end) return true;
+  const offset = parseTz(key.tz);
+  const now = new Date();
+  const localHour = (now.getUTCHours() + offset + 24) % 24;
+  if (start < end) return localHour >= start && localHour < end;
+  return localHour >= start || localHour < end;
+}
+function timeWindowCountdown(key) {
+  if (!key || !key.timeWindow) return null;
+  const { start, end } = key.timeWindow;
+  if (start == null || end == null) return null;
+  if (start === end) return null;
+  const offset = parseTz(key.tz);
+  const now = new Date();
+  const localHour = now.getUTCHours();
+  const localMin = now.getUTCMinutes();
+  const localSec = now.getUTCSeconds();
+  const currentMinutes = localHour * 60 + localMin + localSec / 60;
+  const offsetMinutes = offset * 60;
+  const localMinutes = ((currentMinutes + offsetMinutes) % 1440 + 1440) % 1440;
+  const startMinutes = start * 60;
+  const endMinutes = end * 60;
+  if (start < end) {
+    if (localMinutes >= startMinutes && localMinutes < endMinutes) {
+      return { inWindow: true, remaining: Math.floor(endMinutes - localMinutes) };
+    }
+    const wait = localMinutes < startMinutes ? startMinutes - localMinutes : 1440 - localMinutes + startMinutes;
+    return { inWindow: false, remaining: wait };
+  } else {
+    if (localMinutes >= startMinutes || localMinutes < endMinutes) {
+      const remaining = localMinutes >= startMinutes ? (1440 - localMinutes + endMinutes) : (endMinutes - localMinutes);
+      return { inWindow: true, remaining: Math.floor(remaining) };
+    }
+    return { inWindow: false, remaining: Math.floor(startMinutes - localMinutes) };
+  }
+}
+
 function daysUntilReset(resetDay) {
   if (resetDay == null) return 99;
   const jsDay = new Date().getDay();
@@ -795,7 +842,7 @@ function pickKey(model, group) {
   }
   // Boost: 持续高优
   if (_boostKey >= 0 && _boostKey < accounts.length) {
-    if (matchesModel(accounts[_boostKey]) && matchesGroup(accounts[_boostKey]) && accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && rateLimitAllow(_boostKey) && getKeyState(_boostKey).status !== "discarded") {
+    if (matchesModel(accounts[_boostKey]) && matchesGroup(accounts[_boostKey]) && accounts[_boostKey].status === "active" && !inCooldown(_boostKey) && rateLimitAllow(_boostKey) && getKeyState(_boostKey).status !== "discarded" && isInTimeWindow(accounts[_boostKey])) {
       return _boostKey;
     }
     // boosted key no longer available, auto-clear
@@ -805,7 +852,7 @@ function pickKey(model, group) {
   // Batch Boost
   if (_boostBatch.length && _boostBatchMode === "use") {
     for (const idx of _boostBatch) {
-      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") return idx;
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded" && isInTimeWindow(accounts[idx])) return idx;
     }
   }
   if (_boostBatch.length && _boostBatchMode === "roundrobin") {
@@ -813,7 +860,7 @@ function pickKey(model, group) {
     for (let i = 0; i < _boostBatch.length; i++) {
       const bi = (_boostBatchCursor + i) % _boostBatch.length;
       const idx = _boostBatch[bi];
-      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") {
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded" && isInTimeWindow(accounts[idx])) {
         _boostBatchCursor = (bi + 1) % _boostBatch.length;
         return idx;
       }
@@ -830,7 +877,7 @@ function pickKey(model, group) {
     }
     for (let i = _boostBatchPoolIdx; i < _boostBatchPool.length; i++) {
       const idx = _boostBatchPool[i];
-      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") {
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded" && isInTimeWindow(accounts[idx])) {
         _boostBatchPoolIdx = i + 1;
         return idx;
       }
@@ -846,6 +893,7 @@ function pickKey(model, group) {
       if (!matchesGroup(accounts[i])) continue;
       const ks = getKeyState(i);
       if (ks.status === "discarded" || ks.status === "locked") continue;
+      if (!isInTimeWindow(accounts[i])) continue;
       groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
     }
     for (const g of groups) g.sort((a, b) => {
@@ -907,7 +955,7 @@ function pickKey(model, group) {
     if (!matchesModel(accounts[i])) continue;
     if (!matchesGroup(accounts[i])) continue;
     const ks = getKeyState(i);
-    if (ks.status !== "discarded" && ks.status !== "locked") groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
+    if (ks.status !== "discarded" && ks.status !== "locked" && isInTimeWindow(accounts[i])) groups[PRIORITY[accounts[i].reset] ?? 0].push(i);
   }
   for (const g of groups) g.sort((a, b) => {
     if (config.weeklySortBy === "expiry" && accounts[a].reset === "weekly" && accounts[b].reset === "weekly") {
@@ -983,6 +1031,8 @@ function loadAccounts() {
     maxReqPerMin: a.maxReqPerMin > 0 ? a.maxReqPerMin : null,
     maxTokPerMin: a.maxTokPerMin > 0 ? a.maxTokPerMin : null,
     group: (a.group || "A").toUpperCase(),
+    tz: a.tz || undefined,
+    timeWindow: a.timeWindow || undefined,
   }));
   if (!accounts.length) { console.error("[proxy] No valid accounts, reverting"); accounts = oldAccounts; return; }
   loadState();
@@ -1333,6 +1383,9 @@ function buildStatusData() {
       ...s,
       daily: s.daily || {},
       hourly: s.hourly || {},
+      timeWindow: a.timeWindow || undefined,
+      tz: a.tz || undefined,
+      _inTimeWindow: a.timeWindow ? isInTimeWindow(a) : undefined,
     });
   }
   return data;
@@ -1619,6 +1672,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
     <option value="lastFail">最后失败</option>
     <option value="lastResp">最后响应</option>
     <option value="resetDay">周重置日</option>
+    <option value="timeIn">时段内</option>
+    <option value="timeOut">非时段</option>
   </select>
   <input id="mgrDurationDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选启用距今 ≥ X 天的 Key，可与其他条件组合">
   <input id="mgrLastFailDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选最后失败距今 ≥ X 天的 Key，可与其他条件组合">
@@ -1646,6 +1701,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px" onclick="batchResetMgr()">🔄 批量重置</button>
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
   <button class="btn" style="font-size:11px;color:#f59e0b" onclick="cleanFailedKeys()">🧹 清理失败</button>
+  <button class="btn" style="font-size:11px;color:#4ade80" onclick="batchSetTimeWindow()">⏰ 设置时段</button>
+  <button class="btn" style="font-size:11px;color:#fb923c" onclick="batchClearTimeWindow()">⏰ 清除时段</button>
   <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
   <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
   <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn">🙉 显示已屏蔽</button>
@@ -1967,6 +2024,9 @@ async function loadConfigUI(){
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
     updateAutoCountdown();
+    if(window.twBadgeTimer)clearInterval(window.twBadgeTimer);
+    window.twBadgeTimer=setInterval(updateTimeWindowBadges,60000);
+    updateTimeWindowBadges();
   }catch(e){}
 }
 function renderPortGroups(groups, groupEnabled, groupKeyInfo){
@@ -2063,6 +2123,33 @@ function updateAutoCountdown(){
       resumeEl.textContent="🧬 闲置恢复: 等待中";
     }
   }
+}
+function updateTimeWindowBadges(){
+  document.querySelectorAll('[data-tw]').forEach(el=>{
+    const idx=parseInt(el.dataset.tw);
+    const k=data&&data[idx];
+    if(!k||!k.timeWindow)return;
+    const tz=k.tz||"+0";
+    const m=String(tz).match(/^([+-]?)(\d+(?:\.\d+)?)$/);
+    const offset=m?(m[1]==="-"?-1:1)*parseFloat(m[2]):0;
+    const now=new Date();
+    const lh=(now.getUTCHours()+offset+24)%24;
+    const lm=now.getUTCMinutes();
+    const start=k.timeWindow.start,end=k.timeWindow.end;
+    const inWin=start<end?(lh>=start&&lh<end):(lh>=start||lh<end);
+    let remaining;
+    if(start<end){
+      remaining=inWin?((end-lh)*60-lm):((lh<start?(start-lh)*60-lm:(24-lh+start)*60-lm));
+    }else{
+      if(lh>=start)remaining=(24-lh+end)*60-lm;
+      else if(lh<end)remaining=(end-lh)*60-lm;
+      else remaining=(start-lh)*60-lm;
+    }
+    const h=Math.floor(remaining/60),m2=remaining%60;
+    const timeStr=start+':00-'+end+':00 (UTC'+tz+')';
+    if(inWin){el.title='时段: '+timeStr+' | 剩余 '+h+'小时'+m2+'分钟';el.style.background='#1a3a2e';el.style.color='#4ade80';el.style.borderColor='#22c55e';}
+    else{el.title='时段: '+timeStr+' | 距可用 '+h+'小时'+m2+'分钟';el.style.background='#3b2a1a';el.style.color='#fb923c';el.style.borderColor='#f97316';}
+  });
 }
 
 function renderResumeProjects(projects){
@@ -2349,6 +2436,7 @@ function render(){
     }
 
     html+='</div><div class="sbar"><span><span class="dot '+dot+'"></span>'+st+'</span>'+
+      (a.timeWindow?'<span style="margin-left:6px;font-size:10px;color:'+(a._inTimeWindow?'#4ade80':'#fb923c')+'">🕐 '+(a._inTimeWindow?'时段内':'非时段')+' | '+a.timeWindow.start+':00-'+a.timeWindow.end+':00 (UTC'+esc(a.tz||'+0')+')</span>':'')+
       '<span style="display:flex;gap:3px;align-items:center">'+
       (!isDiscard?'<span class="btn-act" onclick="cardShield('+a.idx+')" title="屏蔽此 Key（不再参与调度）">🔇</span>':'')+
       (isDiscard?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="重置此 Key">🔄</span>':'')+
@@ -2362,6 +2450,7 @@ function render(){
   checkedIdxs.forEach(i=>{const cb=document.querySelector('#grid .card-cb[data-idx="'+i+'"]');if(cb)cb.checked=true});
   updateBatchBar();
   for(const idx in collapsedCards){const b=document.getElementById("body-"+idx);if(b)b.classList.toggle("collapsed",collapsedCards[idx])}
+  updateTimeWindowBadges();
 }
 
 function toggleCollapse(idx){
@@ -2523,6 +2612,8 @@ function renderMgr(){
     if(statusFilter==="duration"&&durationDays>0){const cutoff=Date.now()-durationDays*86400000;if(!k._activatedAt||k._activatedAt>cutoff)continue;}
     if(statusFilter==="lastFail"&&lastFailDays>0){const cutoff=Date.now()-lastFailDays*86400000;if(!k._failTime||k._failTime>cutoff)continue;}
     if(statusFilter==="resetDay"&&resetDayVal!==""){if(resetDayVal==="auto"){if(k.resetDay!=null)continue;}else{if(String(k.resetDay||"")!==resetDayVal)continue;}}
+    if(statusFilter==="timeIn"&&k._inTimeWindow!==true)continue;
+    if(statusFilter==="timeOut"&&k._inTimeWindow!==false)continue;
     if(mgrHideShielded&&k.status==="shielded")continue;
     filtered.push(i);
     const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
@@ -2603,7 +2694,7 @@ function renderMgr(){
         const lm=k._lastModel||"";
         tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
           '<td>'+(i+1)+'</td>'+
-          '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
+          '<td style="display:flex;align-items:center;gap:4px"'+(k.timeWindow?' title="错峰时段: '+k.timeWindow.start+':00-'+k.timeWindow.end+':00 (UTC'+(k.tz||'+0')+') | '+(k._inTimeWindow?'时段内':'非时段')+'"':'')+'><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
           '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
           '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
           '<td style="text-align:center;white-space:nowrap">'+mgrStatusBadge(ls)+'</td>'+
@@ -2613,7 +2704,7 @@ function renderMgr(){
       }else{
         tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
           '<td>'+(i+1)+'</td>'+
-          '<td style="display:flex;align-items:center;gap:4px"><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
+          '<td style="display:flex;align-items:center;gap:4px"'+(k.timeWindow?' title="错峰时段: '+k.timeWindow.start+':00-'+k.timeWindow.end+':00 (UTC'+(k.tz||'+0')+') | '+(k._inTimeWindow?'时段内':'非时段')+'"':'')+'><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
           '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
           '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
           '<td style="text-align:center">'+fcBadge+'</td>'+
@@ -2722,8 +2813,58 @@ function batchDeleteMgr(){
   renderMgr();
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
 }
+function batchSetTimeWindow(){
+  const sel=getSelectedMgr();
+  if(!sel.length){alert("请先勾选要设置时段的 Key");return}
+  const tzOpts=Array.from({length:25},(_, i)=>i-12).map(v=>'<option value="'+(v>=0?"+":"")+v+'">UTC'+(v>=0?"+":"")+v+'</option>').join('');
+  const hourOpts=Array.from({length:24},(_, i)=>'<option value="'+i+'">'+(i<10?'0':'')+i+':00</option>').join('');
+  const html='<div style="padding:12px;background:#1e293b;border-radius:8px;min-width:280px">'+
+    '<div style="margin-bottom:8px;color:#e2e8f0;font-size:13px;font-weight:500">设置选中 '+sel.length+' 个 Key 的时段</div>'+
+    '<div style="display:grid;grid-template-columns:auto 1fr;gap:8px;font-size:12px;align-items:center">'+
+    '<label style="color:#94a3b8">时区</label><select id="twTz" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+tzOpts+'</select>'+
+    '<label style="color:#94a3b8">开始</label><select id="twStart" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
+    '<label style="color:#94a3b8">结束</label><select id="twEnd" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
+    '</div>'+
+    '<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">'+
+    '<button class="btn" onclick="this.closest(\\.modal-cover\\').remove()">取消</button>'+
+    '<button class="btn btn-p" onclick="confirmSetTimeWindow()">确认设置</button>'+
+    '</div></div>';
+  const cover=document.createElement('div');
+  cover.className='modal-cover';
+  cover.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000';
+  cover.innerHTML=html;
+  cover.addEventListener('click',e=>{if(e.target===cover)cover.remove()});
+  document.body.appendChild(cover);
+  document.getElementById('twTz').value='+0';
+}
+function confirmSetTimeWindow(){
+  const sel=getSelectedMgr();
+  const tz=document.getElementById('twTz').value;
+  const start=parseInt(document.getElementById('twStart').value);
+  const end=parseInt(document.getElementById('twEnd').value);
+  sel.forEach(i=>{
+    mgrKeys[i].tz=tz;
+    mgrKeys[i].timeWindow={start,end};
+    fetch("http://localhost:3456/__patch-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1,tz,timeWindow:{start,end}})}).catch(()=>{});
+  });
+  document.querySelector('.modal-cover')?.remove();
+  renderMgr();
+  setTimeout(loadKeys,200);
+}
+function batchClearTimeWindow(){
+  const sel=getSelectedMgr();
+  if(!sel.length){alert("请先勾选要清除时段的 Key");return}
+  if(!confirm('确定清除选中的 '+sel.length+' 个 Key 的时段设置？'))return;
+  sel.forEach(i=>{
+    delete mgrKeys[i].tz;
+    delete mgrKeys[i].timeWindow;
+    fetch("http://localhost:3456/__patch-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1,tz:null,timeWindow:null})}).catch(()=>{});
+  });
+  renderMgr();
+  setTimeout(loadKeys,200);
+}
 function collectMgr(){
-  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,group:k.group||"A",resetDay:k.resetDay||void 0,resetHours:k.resetHours>0?k.resetHours:void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0}));
+  const result=mgrKeys.map(k=>({key:k.key,url:k.url,reset:k.reset,remark:k.remark||"",priority:k.priority||0,models:k.models||[],model:k.model||null,group:k.group||"A",resetDay:k.resetDay||void 0,resetHours:k.resetHours>0?k.resetHours:void 0,activatedAt:k.activatedAt||void 0,status:k.status&&k.status!=="active"?k.status:void 0,tz:k.tz||void 0,timeWindow:k.timeWindow||void 0}));
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
@@ -4032,6 +4173,7 @@ function createGroupServer(groupName, port) {
           raw[i].activatedAt = raw[i]._activatedAt = act;
         }
         if (i < accounts.length && accounts[i]) { raw[i]._available = !inCooldown(i); if (accounts[i].models && accounts[i].models.length) raw[i]._models = accounts[i].models; }
+        if (raw[i].timeWindow) raw[i]._inTimeWindow = isInTimeWindow(raw[i]);
       }
       res.writeHead(200, cors);
       res.end(JSON.stringify(raw, null, 2));
@@ -4437,6 +4579,46 @@ function createGroupServer(groupName, port) {
           broadcastStatus();
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true, boosted: _boostKey >= 0 }));
+        } catch (e) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+  if (pathname === "/__patch-key") {
+    if (req.method === "POST") {
+      const bodyChunks = [];
+      req.on("data", c => bodyChunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(bodyChunks).toString('utf-8');
+        try {
+          const { idx, tz, timeWindow } = JSON.parse(body);
+          if (typeof idx !== "number") throw new Error("idx required");
+          const raw = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8"));
+          const ai = idx - 1;
+          if (ai < 0 || ai >= raw.length) throw new Error("invalid idx");
+          if (tz !== undefined) {
+            if (tz === null || tz === "") { delete raw[ai].tz; }
+            else { raw[ai].tz = String(tz); }
+          }
+          if (timeWindow !== undefined) {
+            if (timeWindow === null) { delete raw[ai].timeWindow; }
+            else {
+              const s = parseInt(timeWindow.start), e = parseInt(timeWindow.end);
+              if (isNaN(s) || isNaN(e) || s < 0 || s > 23 || e < 0 || e > 23) throw new Error("invalid timeWindow start/end (must be 0-23)");
+              if (s === 0 && e === 0) { delete raw[ai].timeWindow; }
+              else { raw[ai].timeWindow = { start: s, end: e }; }
+            }
+          }
+          fs.writeFileSync(KEYS_FILE, JSON.stringify(raw, null, 2), "utf-8");
+          loadAccounts();
+          res.writeHead(200, cors);
+          res.end(JSON.stringify({ ok: true }));
         } catch (e) {
           res.writeHead(400, cors);
           res.end(JSON.stringify({ error: e.message }));

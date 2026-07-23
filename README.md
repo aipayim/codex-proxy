@@ -135,6 +135,7 @@ npm install
 #   {"key": "sk-xxx...", "url": "https://api.openai.com/v1",   "reset": "weekly", "remark": "主力 Key"},
 #   {"key": "sk-yyy...", "url": "https://api.provider.com/v1", "reset": "daily",  "remark": "备用额度卡", "models": ["gpt-5.5", "gpt-5.4-mini"]},
 #   {"key": "sk-zzz...", "url": "http://proxy.example.com:8080", "reset": "never",  "remark": "一次性", "status": "shielded"}
+#   {"key": "sk-tw1...", "url": "https://api.example.com/v1", "reset": "daily",  "remark": "错峰 Key", "tz": "+8", "timeWindow": {"start": 22, "end": 8}}
 # ]
 ```
 
@@ -287,6 +288,35 @@ codex
 # CLI 发 model=gpt-5.5 → pickKey 匹配 → 转发时替换为 gpt-5.6-sol
 ```
 
+### 错峰时段
+
+为 Key 设置可用时段，不在时段内的 Key 不参与调度。
+
+在 `keys.json` 中为 Key 添加 `timeWindow` 和 `tz` 字段：
+
+```json
+{"key": "sk-xxx...", "url": "https://...", "reset": "daily", "tz": "+8", "timeWindow": {"start": 22, "end": 8}}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `tz` | 时区偏移，字符串，如 `"+8"`、`"-5"`，默认 `"+0"`（UTC） |
+| `timeWindow` | `{"start": 22, "end": 8}`，小时级（0-23），可选字段，不设=全时段 |
+
+**时段规则**：
+- `start < end`：同天窗口（如 `08:00-17:00`）
+- `start > end`：跨夜窗口（如 `22:00-08:00`）
+- `start == end`：全时段（无限制）
+
+**与现有功能叠加**：
+- 轮询/随机轮询/批量优先：只在时段内的 Key 参与
+- cooldown/rate limit：叠加生效
+- 每周重置/优先级组：不受影响
+
+**管理面板**：
+- 卡片底部状态栏显示错峰时段（绿色=时段内，橙色=非时段）
+- 管理弹窗：筛选「时段内」/「非时段」，批量「⏰ 设置时段」/「⏰ 清除时段」
+
 ### 管理面板
 
 「管理 Key」弹窗每行提供两列模型输入：
@@ -364,6 +394,9 @@ codex
 - **最后失败筛选**：选择「最后失败」后出现 X 天输入框，筛选最后失败距今 ≥ X 天的 Key（如：最后失败 `30` 天 = 筛选出 30 天前失败且未恢复的 Key）
 - **最后响应视图**：选择「最后响应」后表格切换为精简视图（9列），显示所有 Key 最后一次请求的状态码（彩色显示：200=绿/429=黄/4xx=橙/5xx=红/网络错误=红/null=灰）、最后响应时间（X天X小时）、响应模型。若 `lastStatus` 为空则回退显示 `failCode`（确保所有 Key 都有状态码显示）。可用的 Key 默认视图也显示绿色 200 徽章。列头可点击排序（升序/降序）。配合「🧹 清理失败」可一键选中长期失败的 Key 后批量屏蔽
 - **周重置日筛选**：选择「周重置日」后出现日选择下拉（全部/自动/周一~周日），筛选指定重置日的 Key。可与其他条件组合（如：状态码 `401` + 周重置日 `周一` = 筛选出失败码为 401 且重置日为周一的 Key）
+- **错峰时段筛选**：下拉选择「时段内」或「非时段」，筛选当前在/不在可用时段内的 Key
+- **错峰时段设置**：勾选 Key 后点击「⏰ 设置时段」，弹出表单设置时区（UTC-12~UTC+12）和可用时段（开始/结束小时）。点击「⏰ 清除时段」一键清除选中 Key 的时段设置（等效于全时段可用）
+- **错峰时段悬停**：设置了时段的 Key 行悬停时显示完整时段信息（时区 + 时间范围 + 当前状态：时段内/非时段），未设置时段的 Key 无提示
 - **隐藏已屏蔽**：🙈 按钮一键隐藏所有「已屏蔽」的 Key（默认开启），方便对非屏蔽 Key 批量操作。状态跨模态打开保持。再次点击 🙉 恢复显示
 - **数量显示**：实时显示 `共 X 个，筛选后 Y 个`，并单独统计已屏蔽数量
 - **自动分组**：按备注前缀（中文逗号/英文逗号/空格分割的第一段）自动分组折叠
@@ -403,7 +436,7 @@ codex
 点击标题可在「📊 流量趋势」（按字节数）和「📈 次数趋势」（按请求数）间切换，柱高自动按当前模式归一化。
 
 ### Key 卡片
-脱敏显示（点击明文切换）、重置类型徽章（每周 Key 额外显示具体周几/自动）、并发徽章、批量优先徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、首次启用时间+启用至今、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮、锁死 Key 紫色标记
+脱敏显示（点击明文切换）、重置类型徽章（每周 Key 额外显示具体周几/自动）、并发徽章、批量优先徽章、健康评分进度条、折叠按钮、冷却倒计时、统计指标（请求数/流量/延迟/P50-P95-P99/滑动成功率/费用）、首次启用时间+启用至今、日/小时明细、失败码悬停中文含义、最后失败时间、活跃 Key 发光高亮、锁死 Key 紫色标记、底部状态栏错峰时段（绿色=时段内，橙色=非时段）
 
 ### 状态栏快捷操作
 - 🔍 测试连通性
@@ -440,7 +473,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 |---|---|---|
 | `/` 或 `/dashboard` | GET | 监控面板 HTML |
 | `/__status` | GET | JSON 状态（所有 Key 的完整指标） |
-| `/__keys` | GET | 读取 keys.json（富化 `_locked`/`_failCode`/`_failTime`/`_activatedAt`/`_available`/`_lastStatus`/`_lastTime`/`_lastModel` 字段） |
+| `/__keys` | GET | 读取 keys.json（富化 `_locked`/`_failCode`/`_failTime`/`_activatedAt`/`_available`/`_lastStatus`/`_lastTime`/`_lastModel`/`_inTimeWindow` 字段） |
 | `/__keys` | PUT | 写入 keys.json（自动重载；自动清除因 reset/resetDay 变更导致的过期 failCode） |
 | `/__config` | GET | 读取 config.json |
 | `/__config` | PUT | 写入 config.json（自动重载） |
@@ -448,6 +481,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__apply-test-result` | POST | 应用批量测试结果：`{"idx":1, "failCode":429}` → markFailure；`failCode=null/200` → 清空冷却（`{"idx":1, "failCode":null}`） |
 | `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`），返回 `model`（逗号分隔可用模型列表）和 `modelCount`（模型数量） |
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
+| `/__patch-key` | POST | 修改 Key 配置（`{"idx":1,"tz":"+8","timeWindow":{"start":22,"end":8}}`），`timeWindow:null` 清除时段 |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":"random","idxs":[1,3,5]}`（随机轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
@@ -537,6 +571,9 @@ Anthropic 账号和非 Anthropic 账号可共存，无需额外配置。
 | `lastStatus` | int/null | 最后一次请求的上游状态码（200/429/5xx 等），仅在请求完成后写入 |
 | `lastTime` | int/null | 最后一次请求完成的时间戳（ms） |
 | `lastModel` | string/null | 最后一次请求使用的模型名 |
+| `timeWindow` | object/null | 错峰时段 `{"start":22,"end":8}`，小时级，`start==end` 表示全时段 |
+| `tz` | string/null | 时区偏移，如 `"+8"`、`"-5"`，默认 `"+0"` |
+| `inTimeWindow` | bool/null | 当前是否在可用时段内（仅 `/__keys` GET 返回） |
 | `daily` | object | 按日统计 `{"YYYY-MM-DD": {...}}` |
 | `hourly` | object | 按小时统计 `{"YYYY-MM-DD-HH": {...}}` |
 | `boostedBatch` | array | 批量优先中的 Key 序号列表（始终为 1-based） |
