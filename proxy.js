@@ -79,6 +79,8 @@ let _boostKey = -1;
 let _boostBatch = [];
 let _boostBatchMode = "";
 let _boostBatchCursor = 0;
+let _boostBatchPool = [];
+let _boostBatchPoolIdx = 0;
 
 process.on("uncaughtException", err => {
   console.error("[proxy] UNCAUGHT EXCEPTION:", err.stack || err.message);
@@ -817,6 +819,24 @@ function pickKey(model, group) {
       }
     }
   }
+  if (_boostBatch.length && _boostBatchMode === "random") {
+    if (!_boostBatchPool.length || _boostBatchPoolIdx >= _boostBatchPool.length) {
+      _boostBatchPool = [..._boostBatch];
+      for (let i = _boostBatchPool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [_boostBatchPool[i], _boostBatchPool[j]] = [_boostBatchPool[j], _boostBatchPool[i]];
+      }
+      _boostBatchPoolIdx = 0;
+    }
+    for (let i = _boostBatchPoolIdx; i < _boostBatchPool.length; i++) {
+      const idx = _boostBatchPool[i];
+      if (idx >= 0 && idx < accounts.length && matchesModel(accounts[idx]) && matchesGroup(accounts[idx]) && accounts[idx].status === "active" && !inCooldown(idx) && rateLimitAllow(idx) && getKeyState(idx).status !== "discarded") {
+        _boostBatchPoolIdx = i + 1;
+        return idx;
+      }
+    }
+    _boostBatchPoolIdx = _boostBatchPool.length;
+  }
 
   if (config.roundRobin) {
     const groups = [[], [], []];
@@ -945,7 +965,7 @@ function processQueue() {
 }
 
 function loadAccounts() {
-  _boostKey = -1; _boostBatch=[]; _boostBatchMode=""; _boostBatchCursor=0; // clear boost on key reload
+  _boostKey = -1; _boostBatch=[]; _boostBatchMode=""; _boostBatchCursor=0; _boostBatchPool=[]; _boostBatchPoolIdx=0; // clear boost on key reload
   const raw = fs.readFileSync(KEYS_FILE, "utf-8");
   const parsed = JSON.parse(raw);
   const oldAccounts = accounts;
@@ -1569,6 +1589,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px;color:#94a3b8;border-color:#64748b" onclick="deselectAllCards()">☐ 全取消</button>
   <button class="btn" id="batchBoostUseBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('use')">⚡ 优先使用</button>
   <button class="btn" id="batchBoostRRBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('roundrobin')">⭕ 优先轮询</button>
+  <button class="btn" id="batchBoostRandBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('random')">🎲 随机轮询</button>
   <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
@@ -2288,7 +2309,7 @@ function render(){
       (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
-      (boostedBatch.includes(a.idx)?((a.group||"A")!=="A"?' <span class="badge" style="background:#1a3a2e;color:#ef4444;border:1px solid #ef4444;text-decoration:line-through" title="此 Key 属于 '+esc(a.group||"A")+' 组，不参与当前端口轮询">⚡ '+(boostedBatchMode==="use"?"队列":"轮询")+'</span>':' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+(boostedBatchMode==="use"?"队列":"轮询")+'</span>'):'')+
+      (boostedBatch.includes(a.idx)?((a.group||"A")!=="A"?' <span class="badge" style="background:#1a3a2e;color:#ef4444;border:1px solid #ef4444;text-decoration:line-through" title="此 Key 属于 '+esc(a.group||"A")+' 组，不参与当前端口轮询">⚡ '+({"use":"队列","roundrobin":"轮询","random":"🎲 随机"}[boostedBatchMode]||"轮询")+'</span>':' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+({"use":"队列","roundrobin":"轮询","random":"🎲 随机"}[boostedBatchMode]||"轮询")+'</span>'):'')+
       ' <span class="badge bd-score">'+score+'分</span>'+
       '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="折叠">▼</span></span></div>'+
       '<div class="meter"><div class="meter-fill" style="width:'+score+'%;background:'+meterColor+'"></div></div>'+
@@ -3241,7 +3262,7 @@ function batchActionCards(action){
     sel.forEach(i=>fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i,status:"shielded"})}).catch(()=>{}));
   }else if(action==="reset"){
     sel.forEach(i=>fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i})}).catch(()=>{}));
-  }else if(action==="use"||action==="roundrobin"){
+  }else if(action==="use"||action==="roundrobin"||action==="random"){
     fetch("http://localhost:3456/__boost-batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:action,idxs:sel})}).then(()=>setTimeout(loadKeys,100)).catch(()=>{});
   }
 }
@@ -3264,19 +3285,22 @@ function updateBatchBar(){
   const modeStatus=document.getElementById("batchModeStatus");
   const useBtn=document.getElementById("batchBoostUseBtn");
   const rrBtn=document.getElementById("batchBoostRRBtn");
+  const randBtn=document.getElementById("batchBoostRandBtn");
   const cancelBtn=document.getElementById("batchCancelBoostBtn");
   if(!bar||!cnt)return;
   if(boostedBatchMode){
     bar.style.display="flex";cnt.style.display="none";
-    if(modeStatus){modeStatus.style.display="inline";modeStatus.textContent="⏳ 批量优先 ("+(boostedBatchMode==="use"?"队列":"轮询")+") 中"}
+    if(modeStatus){modeStatus.style.display="inline";modeStatus.textContent="⏳ 批量优先 ("+({"use":"队列","roundrobin":"轮询","random":"🎲 随机"}[boostedBatchMode]||"")+") 中"}
     if(useBtn)useBtn.style.display="none";
     if(rrBtn)rrBtn.style.display="none";
+    if(randBtn)randBtn.style.display="none";
     if(cancelBtn)cancelBtn.style.display="inline";
   }else if(cbs.length){
     bar.style.display="flex";cnt.style.display="inline";cnt.textContent="已选 "+cbs.length+" 个";
     if(modeStatus)modeStatus.style.display="none";
     if(useBtn)useBtn.style.display="inline";
     if(rrBtn)rrBtn.style.display="inline";
+    if(randBtn)randBtn.style.display="inline";
     if(cancelBtn)cancelBtn.style.display="none";
   }else{
     bar.style.display="none";
@@ -4434,12 +4458,12 @@ function createGroupServer(groupName, port) {
         try {
           const { mode, idxs } = JSON.parse(body);
           if (!mode) {
-            _boostBatch = []; _boostBatchMode = ""; _boostBatchCursor = 0;
+            _boostBatch = []; _boostBatchMode = ""; _boostBatchCursor = 0; _boostBatchPool = []; _boostBatchPoolIdx = 0;
           } else {
-            if (mode !== "use" && mode !== "roundrobin") throw new Error("mode must be 'use', 'roundrobin', or empty");
+            if (mode !== "use" && mode !== "roundrobin" && mode !== "random") throw new Error("mode must be 'use', 'roundrobin', 'random', or empty");
             if (!Array.isArray(idxs) || !idxs.length) throw new Error("idxs required");
             const arr = [...new Set(idxs)].map(i => { const n = parseInt(i); if (isNaN(n) || n < 1) throw new Error("invalid idx"); return n - 1; }).sort((a, b) => a - b);
-            _boostBatch = arr; _boostBatchMode = mode; _boostBatchCursor = 0;
+            _boostBatch = arr; _boostBatchMode = mode; _boostBatchCursor = 0; _boostBatchPool = []; _boostBatchPoolIdx = 0;
             _boostKey = -1; // mutually exclusive with single boost
             console.log(`[proxy] batch boost set: mode=${mode} idxs=[${arr.map(i=>i+1).join(",")}]`);
           }

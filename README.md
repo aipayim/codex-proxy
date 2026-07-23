@@ -393,7 +393,7 @@ codex
 - 状态码筛选：输入 `401` 等过滤指定失败码或最后响应状态码的 Key
 - 搜索：ID / 备注 / 地址
 - 实时显示筛选后数量：`显示 X / Y 个`
-- 批量：勾选卡片 → 批量操作栏出现（含「全选」「全取消」按钮）/ 批量重置 / 批量屏蔽 / ⚡优先使用（逐个使用勾选的key，用完恢复常态）/ ⭕优先轮询（勾选的key间轮询，全冷却后恢复常态）
+- 批量：勾选卡片 → 批量操作栏出现（含「全选」「全取消」按钮）/ 批量重置 / 批量屏蔽 / ⚡优先使用（逐个使用勾选的key，用完恢复常态）/ ⭕优先轮询（勾选的key间轮询，全冷却后恢复常态）/ 🎲随机轮询（Fisher-Yates洗牌随机顺序，每轮每个key恰好出现一次后重洗）
 
 **批量清理过期 Key 示例**：状态码输入 `429` → 全部状态选「启用时长」→ 输入 `30` → 点击「全选」→ 点击「批量屏蔽」→ 保存
 
@@ -448,7 +448,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__apply-test-result` | POST | 应用批量测试结果：`{"idx":1, "failCode":429}` → markFailure；`failCode=null/200` → 清空冷却（`{"idx":1, "failCode":null}`） |
 | `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`），返回 `model`（逗号分隔可用模型列表）和 `modelCount`（模型数量） |
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
-| `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":""}`（取消） |
+| `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":"random","idxs":[1,3,5]}`（随机轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
 | `/__test_port?port=3457` | GET | 检测分组端口是否运行（查询内存中 `servers` 注册表） |
@@ -540,7 +540,7 @@ Anthropic 账号和非 Anthropic 账号可共存，无需额外配置。
 | `daily` | object | 按日统计 `{"YYYY-MM-DD": {...}}` |
 | `hourly` | object | 按小时统计 `{"YYYY-MM-DD-HH": {...}}` |
 | `boostedBatch` | array | 批量优先中的 Key 序号列表（始终为 1-based） |
-| `boostedBatchMode` | string | 批量优先模式：`"use"` / `"roundrobin"` / `""` |
+| `boostedBatchMode` | string | 批量优先模式：`"use"` / `"roundrobin"` / `"random"` / `""` |
 
 ### /metrics Prometheus
 
