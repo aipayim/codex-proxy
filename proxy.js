@@ -1603,7 +1603,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <h1>OpenAPI 多 Key 代理监控</h1>
 <div style="display:flex;gap:6px;flex-wrap:wrap">
 <button class="btn" onclick="openLogs()">📋 日志</button>
-<button class="btn" onclick="exportCSV()">⬇ 导出 CSV</button>
+<button class="btn" onclick="openExportCover()">⬇ 导出 CSV</button>
 <button class="btn btn-p" onclick="openMgr()">⚙ 管理 Key</button>
 <button class="btn btn-s" onclick="openConfig()">⚙ 配置</button>
 </div>
@@ -1703,7 +1703,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px;color:#f59e0b" onclick="cleanFailedKeys()">🧹 清理失败</button>
   <button class="btn" style="font-size:11px;color:#4ade80" onclick="batchSetTimeWindow()">⏰ 设置时段</button>
   <button class="btn" style="font-size:11px;color:#fb923c" onclick="batchClearTimeWindow()">⏰ 清除时段</button>
-  <button class="btn" style="font-size:11px" onclick="importKeys()">📋 导入</button>
+  <button class="btn" style="font-size:11px" onclick="openImportMgr()">📋 导入</button>
+  <button class="btn" style="font-size:11px" onclick="openExportMgr()">📥 导出</button>
   <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
   <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn">🙉 显示已屏蔽</button>
 </div>
@@ -1726,6 +1727,80 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <button class="btn btn-p" onclick="saveKeys()">保存</button>
 </div>
 </div></div>
+<div id="importMgrCover" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10001;align-items:center;justify-content:center">
+<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;min-width:420px;max-width:90vw">
+<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px">批量导入 Key</div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px;line-height:1.6">
+每行一个 Key，格式：<code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-xxx URL [重置类型] [优先级] [分组] [备注]</code><br>
+URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/永久/每N小时）<br>
+示例：<code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-abc123 https://your-api.com weekly 0 A 我的Key</code>
+</div>
+<textarea id="importMgrTxt" style="width:100%;height:200px;resize:both;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px;border-radius:4px;font-family:monospace;font-size:12px;box-sizing:border-box" placeholder="粘贴 Key 数据到此处..."></textarea>
+<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
+<button class="btn" onclick="closeImportMgr()">取消</button>
+<button class="btn btn-p" onclick="doImportKeys()">导入</button>
+</div>
+</div>
+</div>
+
+<div id="exportMgrCover" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10001;align-items:center;justify-content:center">
+<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;min-width:360px;max-width:90vw">
+<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px">导出 CSV（选择字段）</div>
+<div id="exportMgrFields" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:#cbd5e1;margin-bottom:12px">
+<label><input type="checkbox" checked disabled> Key</label>
+<label><input type="checkbox" checked disabled> URL</label>
+<label><input type="checkbox" class="exp-f" value="reset"> 重置类型</label>
+<label><input type="checkbox" class="exp-f" value="priority"> 优先级</label>
+<label><input type="checkbox" class="exp-f" value="group"> 分组</label>
+<label><input type="checkbox" class="exp-f" value="remark"> 备注</label>
+<label><input type="checkbox" class="exp-f" value="models"> 指定模型</label>
+<label><input type="checkbox" class="exp-f" value="model"> 覆盖模型</label>
+<label><input type="checkbox" class="exp-f" value="resetDay"> 重置日</label>
+<label><input type="checkbox" class="exp-f" value="tz"> 时区</label>
+<label><input type="checkbox" class="exp-f" value="timeWindow"> 时段</label>
+</div>
+<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
+<button class="btn" onclick="closeExportMgr()">取消</button>
+<button class="btn btn-p" onclick="doExportCSV()">导出</button>
+</div>
+</div>
+</div>
+
+<div id="exportCover" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10001;align-items:center;justify-content:center">
+<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;min-width:380px;max-width:90vw">
+<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px">导出 CSV（选择字段）</div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">导出当前页面可见的所有 Key</div>
+<div id="exportCoverFields" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:#cbd5e1;margin-bottom:12px">
+<div style="grid-column:1/-1;font-size:11px;color:#64748b;margin-bottom:2px">── 配置字段 ──</div>
+<label><input type="checkbox" checked disabled> Key</label>
+<label><input type="checkbox" checked disabled> URL</label>
+<label><input type="checkbox" class="exp-cfg" value="reset"> 重置类型</label>
+<label><input type="checkbox" class="exp-cfg" value="remark"> 备注</label>
+<label><input type="checkbox" class="exp-cfg" value="group"> 分组</label>
+<label><input type="checkbox" class="exp-cfg" value="priority"> 优先级</label>
+<label><input type="checkbox" class="exp-cfg" value="models"> 指定模型</label>
+<label><input type="checkbox" class="exp-cfg" value="model"> 覆盖模型</label>
+<label><input type="checkbox" class="exp-cfg" value="resetDay"> 重置日</label>
+<label><input type="checkbox" class="exp-cfg" value="tz"> 时区</label>
+<label><input type="checkbox" class="exp-cfg" value="timeWindow"> 时段</label>
+<div style="grid-column:1/-1;font-size:11px;color:#64748b;margin:4px 0 2px">── 统计字段 ──</div>
+<label><input type="checkbox" class="exp-st" value="status"> 状态</label>
+<label><input type="checkbox" class="exp-st" value="failCode"> 失败码</label>
+<label><input type="checkbox" class="exp-st" value="totalRequests"> 请求数</label>
+<label><input type="checkbox" class="exp-st" value="successRequests"> 成功数</label>
+<label><input type="checkbox" class="exp-st" value="failRequests"> 失败数</label>
+<label><input type="checkbox" class="exp-st" value="inputBytes"> 输入字节</label>
+<label><input type="checkbox" class="exp-st" value="outputBytes"> 输出字节</label>
+<label><input type="checkbox" class="exp-st" value="avgDuration"> 平均耗时</label>
+<label><input type="checkbox" class="exp-st" value="healthScore"> 健康分</label>
+<label><input type="checkbox" class="exp-st" value="totalCost"> 费用</label>
+</div>
+<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
+<button class="btn" onclick="closeExportCover()">取消</button>
+<button class="btn btn-p" onclick="doFrontendExport()">导出</button>
+</div>
+</div>
+</div>
 
 <div class="modal" id="configModal">
 <div class="mcontent">
@@ -1896,7 +1971,7 @@ function daysUntilResetClient(resetDay) {
   const target = parseInt(resetDay);
   return (target - isoDay + 7) % 7 || 7;
 }
-let data=[],curDate="",fullKeys={};
+let data=[],curDate="",fullKeys={},filtered=[];
 let sortBy="idx",filterBy="all",trendRange="24h",trendMode="bytes",searchQ="",statusCodeQ="",modelSQ="",groupFilter="all";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
@@ -2299,7 +2374,7 @@ function render(){
   const curVal=groupSel.value;
   const knownGroups=Object.keys(groupsSet).sort();
   groupSel.innerHTML='<option value="all">全部</option>'+knownGroups.map(g=>'<option value="'+g+'"'+(curVal===g?' selected':'')+'>'+g+'组</option>').join("");
-  let filtered=data;
+  filtered=data;
   if(filterBy!=="locked")filtered=filtered.filter(x=>!x.locked);
   if(filterBy!=="shielded")filtered=filtered.filter(x=>!x.shielded);
   if(filterBy==="available")filtered=filtered.filter(x=>x.available);
@@ -2523,10 +2598,11 @@ async function openMgr(){
     mgrKeys=[{key:"",url:"",reset:"weekly",remark:""}];
   }
   if(!mgrKeys.length)mgrKeys=[{key:"",url:"",reset:"weekly",remark:""}];
+  mgrDirty=false;
   renderMgr();
   document.getElementById("mgrModal").classList.add("on");
 }
-function closeMgr(){document.getElementById("mgrModal").classList.remove("on")}
+function closeMgr(){if(mgrDirty&&!confirm('有未保存的变更，确定退出？\\n点击「确定」不保存退出，点击「取消」返回编辑'))return;document.getElementById("mgrModal").classList.remove("on")}
 function toggleRemarkMode(){
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
@@ -2541,7 +2617,7 @@ function toggleRemarkMode(){
 }
 let mgrSearchCache=[],dragIdx=-1,grpCache=null,mgrSortBy="default",mgrRemarkMode="remark";
 let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=true;
-let mgrViewMode="default",mgrSortDir="asc";
+let mgrViewMode="default",mgrSortDir="asc",mgrDirty=false;
 function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
   renderMgr();
@@ -2756,7 +2832,7 @@ function cleanFailedKeys(){
   });
   alert("已选中 "+count+" 个符合条件的 Key\\n（最后响应≥"+d+"天 且 状态码≥400 或 网络错误）\\n\\n可使用「批量屏蔽」处理");
 }
-function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0,resetHours:void 0,group:"A"});renderMgr()}
+function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0,resetHours:void 0,group:"A"});mgrDirty=true;renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
 async function resetKeyStatus(i){
   try{
@@ -2768,7 +2844,7 @@ async function resetKeyStatus(i){
 function delKeyRow(i){
   if(!confirm('确定要删除 Key #'+(i+1)+'？\\n删除后不再显示和调用，可在 keys.json 中恢复。'))return;
   mgrKeys[i].status="deleted";renderMgr();
-  setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
+  setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok){mgrDirty=false;loadKeys()}})},100);
 }
 function clearMgrSearch(){
   document.getElementById("mgrSearch").value="";
@@ -2794,6 +2870,7 @@ function batchShieldMgr(){
   const sel=getSelectedMgr();
   if(!sel.length){alert("请先勾选要屏蔽的 Key");return}
   sel.forEach(i=>{mgrKeys[i].status="shielded"});
+  mgrDirty=true;
   renderMgr();
 }
 function batchResetMgr(){
@@ -2803,6 +2880,7 @@ function batchResetMgr(){
     mgrKeys[i].status="active";
     fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})}).catch(()=>{});
   });
+  mgrDirty=true;
   renderMgr();
 }
 function batchDeleteMgr(){
@@ -2811,7 +2889,7 @@ function batchDeleteMgr(){
   if(!confirm('确定要删除选中的 '+sel.length+' 个 Key？\\n删除后不再显示和调用，可在 keys.json 中恢复。'))return;
   sel.forEach(i=>{mgrKeys[i].status="deleted"});
   renderMgr();
-  setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok)loadKeys()})},100);
+  setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok){mgrDirty=false;loadKeys()}})},100);
 }
 function batchSetTimeWindow(){
   const sel=getSelectedMgr();
@@ -2826,7 +2904,7 @@ function batchSetTimeWindow(){
     '<label style="color:#94a3b8">结束</label><select id="twEnd" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
     '</div>'+
     '<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">'+
-    '<button class="btn" onclick="this.closest(\\.modal-cover\\').remove()">取消</button>'+
+    '<button class="btn" onclick="this.closest(\\'.modal-cover\\').remove()">取消</button>'+
     '<button class="btn btn-p" onclick="confirmSetTimeWindow()">确认设置</button>'+
     '</div></div>';
   const cover=document.createElement('div');
@@ -2848,6 +2926,7 @@ function confirmSetTimeWindow(){
     fetch("http://localhost:3456/__patch-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1,tz,timeWindow:{start,end}})}).catch(()=>{});
   });
   document.querySelector('.modal-cover')?.remove();
+  mgrDirty=true;
   renderMgr();
   setTimeout(loadKeys,200);
 }
@@ -2860,6 +2939,7 @@ function batchClearTimeWindow(){
     delete mgrKeys[i].timeWindow;
     fetch("http://localhost:3456/__patch-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1,tz:null,timeWindow:null})}).catch(()=>{});
   });
+  mgrDirty=true;
   renderMgr();
   setTimeout(loadKeys,200);
 }
@@ -2907,27 +2987,61 @@ async function saveKeys(){
     });
     const j=await r.json();
     if(j.error){alert("保存失败: "+j.error);return}
+    mgrDirty=false;
     closeMgr();loadKeys();
   }catch(e){alert("保存失败: "+e.message)}
 }
-function importKeys(){
-  const txt=prompt("批量导入 Key\\n每行一个，格式：sk-xxx 或 sk-xxx https://url 或者 sk-xxx https://url 每日/每周/永久 备注\\n\\n粘贴后点击确定即可添加");
-  if(!txt)return;
+function openImportMgr(){document.getElementById("importMgrTxt").value="";document.getElementById("importMgrCover").style.display="flex"}
+function closeImportMgr(){document.getElementById("importMgrCover").style.display="none"}
+function doImportKeys(){
+  const txt=document.getElementById("importMgrTxt").value;
+  if(!txt.trim()){alert("请粘贴 Key 数据");return}
   const lines=txt.trim().split("\\n").filter(l=>l.trim());
-  let added=0;
+  let added=0,skipped=0;
   for(const line of lines){
-    const parts=line.trim().split(/\s+/);
-    if(!parts[0]||!parts[0].startsWith("sk-"))continue;
+    const parts=line.trim().split(/\\s+/);
+    if(!parts[0]||!parts[0].startsWith("sk-")){skipped++;continue}
     const key=parts[0];
-    const url=parts[1]||"https://api.fenno.ai";
-    const resetMap={"daily":"每日","weekly":"每周","never":"永久","hourly":"每N小时","每日":"daily","每周":"weekly","永久":"never","每N小时":"hourly"};
+    if(!parts[1]||!parts[1].startsWith("http")){skipped++;continue}
+    const url=parts[1];
+    const resetMap={"daily":"daily","weekly":"weekly","never":"never","hourly":"hourly","每日":"daily","每周":"weekly","永久":"never","每N小时":"hourly"};
     const reset=resetMap[parts[2]]||"weekly";
-    const remark=parts.slice(3).join(" ")||"";
-    mgrKeys.push({key,url,reset,remark});
+    const priority=parseInt(parts[3])||0;
+    const group=(parts[4]||"A").toUpperCase();
+    const remark=parts.slice(5).join(" ")||"";
+    mgrKeys.push({key,url,reset,remark,priority,group,models:[],model:null,resetDay:void 0,resetHours:void 0});
     added++;
   }
-  if(added)renderMgr();
-  alert("成功添加 "+added+" 个 Key"+(lines.length-added>0?"，"+(lines.length-added)+" 行被跳过（格式错误）":""));
+  if(added){mgrDirty=true;renderMgr()}
+  closeImportMgr();
+  alert("成功添加 "+added+" 个 Key"+(skipped>0?"，"+skipped+" 行被跳过（格式错误或缺少 URL）":""));
+}
+function openExportMgr(){document.getElementById("exportMgrCover").style.display="flex"}
+function closeExportMgr(){document.getElementById("exportMgrCover").style.display="none"}
+function doExportCSV(){
+  const fields=["key","url"];
+  document.querySelectorAll(".exp-f:checked").forEach(el=>fields.push(el.value));
+  const esc=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
+  const headers=["key","url"];
+  const labels={"key":"Key","url":"URL","reset":"reset","priority":"priority","group":"group","remark":"remark","models":"models","model":"model","resetDay":"resetDay","tz":"tz","timeWindow":"timeWindow"};
+  const sel=getSelectedMgr();
+  if(!sel.length){alert("请先勾选要导出的 Key");return}
+  const rows=sel.map(i=>mgrKeys[i]).filter(k=>k&&k.key).map(k=>{
+    return fields.map(f=>{
+      if(f==="timeWindow")return k.timeWindow?(k.timeWindow.start+":"+k.timeWindow.end):"";
+      if(f==="models")return(k.models||[]).join(";");
+      return k[f]||"";
+    }).map(esc).join(",");
+  });
+  const csv="\uFEFF"+fields.map(f=>labels[f]||f).join(",")+"\\n"+rows.join("\\n");
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");
+  const d=new Date();
+  a.download="keys_export_"+d.getFullYear()+String(d.getMonth()+1).padStart(2,"0")+String(d.getDate()).padStart(2,"0")+".csv";
+  a.href=URL.createObjectURL(blob);
+  a.click();
+  URL.revokeObjectURL(a.href);
+  closeExportMgr();
 }
 async function testKey(i){
   const k=mgrKeys[i];
@@ -3015,8 +3129,31 @@ async function batchTestResetAll(){
   document.getElementById("batchTestResults").style.display="none";
   loadKeys();
 }
-function exportCSV(){window.open("http://localhost:3456/__export")}
-
+function openExportCover(){document.getElementById("exportCover").style.display="flex"}
+function closeExportCover(){document.getElementById("exportCover").style.display="none"}
+function doFrontendExport(){
+  const fields=["key","url"];
+  document.querySelectorAll(".exp-cfg:checked,.exp-st:checked").forEach(el=>fields.push(el.value));
+  if(!filtered.length){alert("当前没有可见的 Key 可导出");return}
+  const esc=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
+  const labels={key:"Key",url:"URL",reset:"reset",remark:"remark",group:"group",priority:"priority",models:"指定模型",model:"覆盖模型",resetDay:"resetDay",tz:"tz",timeWindow:"时段",status:"状态",failCode:"失败码",totalRequests:"请求数",successRequests:"成功数",failRequests:"失败数",inputBytes:"输入字节",outputBytes:"输出字节",avgDuration:"平均耗时",healthScore:"健康分",totalCost:"费用"};
+  const rows=filtered.map(k=>{
+    return fields.map(f=>{
+      if(f==="timeWindow")return k.timeWindow?(k.timeWindow.start+":"+k.timeWindow.end):"";
+      if(f==="models")return(k.models||[]).join(";");
+      return k[f]==null?"":k[f];
+    }).map(esc).join(",");
+  });
+  const csv="\uFEFF"+fields.map(f=>labels[f]||f).join(",")+"\\n"+rows.join("\\n");
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");
+  const d=new Date();
+  a.download="openapi-export-"+d.getFullYear()+String(d.getMonth()+1).padStart(2,"0")+String(d.getDate()).padStart(2,"0")+".csv";
+  a.href=URL.createObjectURL(blob);
+  a.click();
+  URL.revokeObjectURL(a.href);
+  closeExportCover();
+}
 // --- Log panel state ---
 let logCurrentPage = 1;
 let logTotalPages = 1;
