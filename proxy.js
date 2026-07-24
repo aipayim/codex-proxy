@@ -1178,6 +1178,9 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       cleanup();
       if (!clientRes.destroyed) clientRes.end();
     });
+    clientRes.on("close", () => {
+      if (!cleaned && !apiRes.destroyed) apiRes.destroy();
+    });
     onDone({ switched: false });
   });
 
