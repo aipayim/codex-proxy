@@ -972,9 +972,9 @@ function pickKey(model, group) {
 }
 
 // --- Request Queue ---
-function enqueueRequest(method, headers, body, clientRes, pathname, group) {
+function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform) {
   group = group || "A";
-  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now() });
+  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform });
   console.log(`[proxy] Queue depth: ${requestQueue.length}`);
   clientRes.on("close", () => {
     const i = requestQueue.findIndex(r => r.clientRes === clientRes);
@@ -1007,7 +1007,7 @@ function processQueue() {
       if (result.switched) {
         requestQueue.push(r);
       }
-    });
+    }, r.extraTransform);
   }
   queueProcessing = false;
 }
@@ -1179,10 +1179,14 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       console.error(`[proxy] #${idx+1} Stream error: ${err.message}`);
       if (!cleaned) markFailure(idx, 0);
       cleanup();
-      if (!clientRes.destroyed) clientRes.end();
+      if (!clientRes.destroyed) {
+        try { clientRes.write('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_'+idx+'","status":"completed"}}\n\n'); } catch(e) {}
+        clientRes.end();
+      }
     });
     onDone({ switched: false });
   });
+  proxyReq.setTimeout(TIMEOUT);
 
   proxyReq.on("error", (err) => {
     if (onDone.done) return;
@@ -1205,6 +1209,9 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     const dur = Date.now() - reqStart;
     activeDecr(idx);
     console.error(`[proxy] #${idx + 1} Timeout`);
+    if (!clientRes.destroyed) {
+      try { clientRes.write('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_'+idx+'","status":"completed"}}\n\n'); } catch(e) {}
+    }
     proxyReq.destroy();
     markFailure(idx, 0);
     recordRequest(idx, false, 0, 0, dur);
@@ -1259,7 +1266,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     if (retries >= MAX_RETRIES) {
       if (responded) return;
       console.error(`[proxy] Max retries (${MAX_RETRIES}) reached, queueing`);
-      enqueueRequest(method, headers, body, clientRes, pathname, group);
+      enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform);
       responded = true;
       return;
     }
@@ -1269,7 +1276,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
       if (idx < 0) {
         console.log(`[proxy] No available keys, queueing request`);
-        enqueueRequest(method, headers, body, clientRes, pathname, group);
+        enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform);
         responded = true;
         return;
       }
@@ -1451,7 +1458,7 @@ function getDashboardHTML() {
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;padding:clamp(8px,2vw,20px)}
 h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
-.sub{color:#94a3b8;font-size:clamp(10px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.sub{color:#94a3b8;font-size:clamp(10px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px);display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:28px}
 .sub-ts{flex-shrink:0;white-space:nowrap}
 .ticker-wrap{display:flex;align-items:center;gap:8px;min-width:0;flex:1;justify-content:flex-end}
 .ticker-label{color:#4ade80;font-size:13px;font-weight:700;white-space:nowrap;flex-shrink:0;display:none}
@@ -2001,7 +2008,7 @@ async function httpLoad(){
     if(!r.ok)throw new Error("HTTP "+r.status);
     const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;boostedBatch=j.boostedBatch||[];boostedBatchMode=j.boostedBatchMode||"";if(j.lastRequestTime)lastRequestTime=j.lastRequestTime;if(j.lastResumeTime)lastResumeTime=j.lastResumeTime;render();
   }catch(e){
-    if(!wsFailed)document.getElementById("sub").textContent="连接失败，正在重试...";
+    if(!wsFailed)document.getElementById("subText").textContent="连接失败，正在重试...";
   }
 }
 
@@ -2590,7 +2597,7 @@ function toggleAllCollapse(){
   const isCollapsed=all[0].classList.contains("collapsed");
   all.forEach(b=>{b.classList.toggle("collapsed",!isCollapsed);const idx=b.id.replace("body-","");collapsedCards[idx]=!isCollapsed});
 }
-function showAlert(txt){document.getElementById("sub").textContent=txt}
+function showAlert(txt){document.getElementById("subText").textContent=txt}
 function cardReset(idx){
   fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx})})
     .then(r=>r.json()).then(j=>{if(j.ok)loadKeys()}).catch(()=>{});
