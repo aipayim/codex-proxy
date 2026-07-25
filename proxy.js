@@ -1076,18 +1076,21 @@ function makeUsageTransform(idx, inputBytes, reqStart, ttfb) {
 }
 
 function activeDecr(idx) {
-  if (activeRequests[idx] !== undefined) {
-    activeRequests[idx] = Math.max(0, activeRequests[idx] - 1);
-    if (activeRequests[idx] === 0) delete activeRequests[idx];
+  if (Array.isArray(activeRequests[idx])) {
+    activeRequests[idx].shift();
+    if (activeRequests[idx].length === 0) delete activeRequests[idx];
   }
 }
 
 function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform) {
-  activeRequests[idx] = (activeRequests[idx] || 0) + 1;
+  if (!Array.isArray(activeRequests[idx])) activeRequests[idx] = [];
+  let reqModel = null;
+  try { reqModel = JSON.parse(body.toString()).model || null; } catch(e) {}
+  const acct = accounts[idx];
+  activeRequests[idx].push({ start: Date.now(), model: acct.model || reqModel || "?" });
   const reqStart = Date.now();
   let ttfb = null;
 
-  const acct = accounts[idx];
   const targetUrl = new URL(acct.url);
   const mod = HTTP_MOD[targetUrl.protocol] || https;
 
@@ -1177,9 +1180,6 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       if (!cleaned) markFailure(idx, 0);
       cleanup();
       if (!clientRes.destroyed) clientRes.end();
-    });
-    clientRes.on("close", () => {
-      if (!cleaned && !apiRes.destroyed) apiRes.destroy();
     });
     onDone({ switched: false });
   });
@@ -1364,8 +1364,9 @@ function buildStatusData() {
       failCount: ks.failCount,
       locked: ks.status === "locked",
       shielded: a.status === "shielded",
-      active: (activeRequests[i] || 0) > 0,
-      activeRequests: activeRequests[i] || 0,
+      active: (activeRequests[i] || []).length > 0,
+      activeRequests: (activeRequests[i] || []).length,
+      actives: (activeRequests[i] || []).map(r => ({model: r.model || "?", since: r.start})),
       healthScore: computeHealthScore(ks, i),
       avgDuration: avgDur,
       avgTtfb: avgTtfb,
@@ -1614,6 +1615,10 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="sub" id="sub">加载中...</div>
 <div id="alert" class="alert">⚠️ 所有 Key 均不可用，请求将全部失败！</div>
 <div class="top-row" id="summary"></div>
+<div id="activeBar" style="display:none;padding:8px 12px;background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center;gap:6px">
+  <span style="color:#60a5fa;font-size:13px;font-weight:600">⚡ 并发中</span>
+  <span id="activeBarContent" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"></span>
+</div>
 <div class="controls" id="controls">
   <label>排序</label>
   <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="activatedAt">首次启用（早→晚）</option><option value="duration">使用时长（长→短）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option><option value="group">按分组</option></select>
@@ -2411,6 +2416,25 @@ function render(){
       actEl.style.display="none";
     }
   }
+  const activeBar=document.getElementById("activeBar");
+  const activeBarContent=document.getElementById("activeBarContent");
+  if(activeBar&&activeBarContent){
+    const badges=[];
+    actKeys.forEach(k=>{
+      const acts=k.actives||[];
+      acts.forEach(r=>{
+        const sec=Math.max(0,Math.round((Date.now()-r.since)/1000));
+        const dur=sec>=60?Math.floor(sec/60)+"m"+(sec%60)+"s":sec+"s";
+        badges.push('<span style="background:#1e3a5f;color:#93c5fd;border:1px solid #3b82f6;border-radius:4px;padding:2px 8px;font-size:12px;white-space:nowrap">#'+k.idx+' '+esc(r.model)+' <span style="color:#60a5fa">'+dur+'</span></span>');
+      });
+    });
+    if(badges.length>0){
+      activeBarContent.innerHTML=badges.join('');
+      activeBar.style.display="flex";
+    }else{
+      activeBar.style.display="none";
+    }
+  }
   if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
   else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
   else if(sortBy==="rate5m"){
@@ -2601,7 +2625,7 @@ async function openMgr(){
     mgrKeys=[{key:"",url:"",reset:"weekly",remark:""}];
   }
   if(!mgrKeys.length)mgrKeys=[{key:"",url:"",reset:"weekly",remark:""}];
-  mgrDirty=false;
+  mgrDirty=false;mgrGroupCodeFilter=null;
   renderMgr();
   document.getElementById("mgrModal").classList.add("on");
 }
@@ -2620,7 +2644,7 @@ function toggleRemarkMode(){
 }
 let mgrSearchCache=[],dragIdx=-1,grpCache=null,mgrSortBy="default",mgrRemarkMode="remark";
 let mgrCollapsed={},mgrCollapsedExpandedAll=true,mgrHideShielded=true;
-let mgrViewMode="default",mgrSortDir="asc",mgrDirty=false;
+let mgrViewMode="default",mgrSortDir="asc",mgrDirty=false,mgrGroupCodeFilter=null;
 function toggleGroup(g){
   mgrCollapsed[g]=!mgrCollapsed[g];
   renderMgr();
@@ -2694,8 +2718,21 @@ function renderMgr(){
     if(statusFilter==="timeIn"&&k._inTimeWindow!==true)continue;
     if(statusFilter==="timeOut"&&k._inTimeWindow!==false)continue;
     if(mgrHideShielded&&k.status==="shielded")continue;
+    if(mgrGroupCodeFilter){
+      let _kg;
+      if(statusFilter==="resetDay"){const _dm={1:"\\u5468\\u4e00",2:"\\u5468\\u4e8c",3:"\\u5468\\u4e09",4:"\\u5468\\u56db",5:"\\u5468\\u4e94",6:"\\u5468\\u516d",7:"\\u5468\\u65e5"};_kg=k.resetDay!=null?(_dm[k.resetDay]||"\\u672a\\u77e5"):"\\u81ea\\u52a8\\uff08\\u672a\\u8bbe\\u7f6e\\uff09";}
+      else{_kg=(k.remark||"").split(/[，,\\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"\\u672a\\u5206\\u7c7b";}
+      const _ec=k._failCode!=null?String(k._failCode):(k._lastStatus!=null?String(k._lastStatus):"");
+      if(_kg!==mgrGroupCodeFilter.group||_ec!==String(mgrGroupCodeFilter.code))continue;
+    }
     filtered.push(i);
-    const g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"未分类";
+    let g;
+    if(statusFilter==="resetDay"){
+      const dayMap={1:"\\u5468\\u4e00",2:"\\u5468\\u4e8c",3:"\\u5468\\u4e09",4:"\\u5468\\u56db",5:"\\u5468\\u4e94",6:"\\u5468\\u516d",7:"\\u5468\\u65e5"};
+      g=k.resetDay!=null?(dayMap[k.resetDay]||"\\u672a\\u77e5"):"\\u81ea\\u52a8\\uff08\\u672a\\u8bbe\\u7f6e\\uff09";
+    }else{
+      g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"\\u672a\\u5206\\u7c7b";
+    }
     if(!grp[g])grp[g]=[];
     grp[g].push(i);
   }
@@ -2729,15 +2766,28 @@ function renderMgr(){
     Object.keys(grp).forEach(g=>{grp[g].sort((a,b)=>dir*((mgrKeys[a]._lastModel||"").localeCompare(mgrKeys[b]._lastModel||"")))});
   }
   const groups=Object.keys(grp);
+  if(statusFilter==="resetDay"){
+    const dayOrder={"周一":1,"周二":2,"周三":3,"周四":4,"周五":5,"周六":6,"周日":7,"未知":8,"自动（未设置）":9};
+    groups.sort((a,b)=>(dayOrder[a]??99)-(dayOrder[b]??99));
+  }
   for(let gi=0;gi<groups.length;gi++){
     const g=groups[gi],items=grp[g];
     const collapsed=mgrCollapsed[g]===true;
+    const codeCounts={};
+    items.forEach(idx=>{const k=mgrKeys[idx];const c=k._failCode!=null?k._failCode:(k._lastStatus!=null?k._lastStatus:null);if(c!=null)codeCounts[c]=(codeCounts[c]||0)+1;});
+    const codeBadges=Object.entries(codeCounts).sort((a,b)=>b[1]-a[1]).map(([code,cnt])=>{
+      const color=code>=200&&code<300?"#4ade80":code===429?"#fbbf24":code>=400&&code<500?"#fb923c":code>=500?"#f87171":code===0?"#f87171":"#94a3b8";
+      const isActive=mgrGroupCodeFilter&&mgrGroupCodeFilter.group===g&&String(mgrGroupCodeFilter.code)===String(code);
+      const border=isActive?'border-color:'+color:'border-color:#475569';
+      const cancelBtn=isActive?'<span onclick="event.stopPropagation();mgrGroupCodeFilter=null;renderMgr();" style="cursor:pointer;color:#94a3b8;margin-left:2px" title="\\u53d6\\u6d88\\u7b5b\\u9009">\\u2715</span>':'';
+      return'<span onclick="event.stopPropagation();mgrGroupCodeFilter={group:\\''+esc(g).replace(/'/g,"\\\\'")+'\\',code:'+code+'};renderMgr();" style="cursor:pointer;background:#1e293b;color:'+color+';'+border+';border-radius:3px;padding:1px 4px;font-size:10px;margin-left:4px">'+esc(String(code))+'\\u00d7'+cnt+cancelBtn+'</span>';
+    }).join('');
     const hdr=document.createElement("tr");
     hdr.style.background="#1e293b";hdr.style.cursor="pointer";
     hdr.onclick=function(){toggleGroup(g)};
     const colspan=mgrViewMode==="lastResp"?9:12;
     hdr.innerHTML='<td colspan="'+colspan+'" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
-      (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')</td>';
+      (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')'+codeBadges+'</td>';
     tbody.appendChild(hdr);
     if(collapsed)continue;
     for(let ii=0;ii<items.length;ii++){
@@ -2810,6 +2860,7 @@ function renderMgr(){
     }
   }
   document.getElementById("mgrSelectAll").checked=false;
+  if(mgrGroupCodeFilter){setTimeout(()=>{document.querySelectorAll("#mgrBody .mgr-cb").forEach(c=>c.checked=true);const sa=document.getElementById("mgrSelectAll");if(sa)sa.checked=true;},0);}
 }
 function toggleMgrSort(field){
   if(mgrSortBy===field){mgrSortDir=mgrSortDir==="asc"?"desc":"asc";}
@@ -2857,7 +2908,7 @@ function clearMgrSearch(){
   const durEl=document.getElementById("mgrDurationDays");if(durEl)durEl.value="";
   const lfEl=document.getElementById("mgrLastFailDays");if(lfEl)lfEl.value="";
   const rdEl=document.getElementById("mgrResetDayFilter");if(rdEl)rdEl.value="";
-  mgrSortBy="default";mgrSortDir="asc";
+  mgrSortBy="default";mgrSortDir="asc";mgrGroupCodeFilter=null;
   document.getElementById("mgrSortBy").value="default";
   renderMgr();
 }
