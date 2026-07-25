@@ -1451,7 +1451,13 @@ function getDashboardHTML() {
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;padding:clamp(8px,2vw,20px)}
 h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
-.sub{color:#94a3b8;font-size:clamp(10px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px)}
+.sub{color:#94a3b8;font-size:clamp(10px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.sub-ts{flex-shrink:0;white-space:nowrap}
+.ticker-wrap{display:flex;align-items:center;gap:8px;min-width:0;flex:1;justify-content:flex-end}
+.ticker-label{color:#4ade80;font-size:13px;font-weight:700;white-space:nowrap;flex-shrink:0;display:none}
+#ticker{display:flex;gap:6px;flex-wrap:nowrap;overflow:hidden;min-width:0;transition:transform .3s ease}
+.ticker-item{display:inline-flex;align-items:center;gap:4px;background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:5px;padding:2px 8px;font-size:13px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.ticker-item .t-dur{color:#86efac;font-weight:400;font-size:12px}
 .top-row{display:flex;gap:clamp(6px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px);flex-wrap:wrap}
 .sum-item{background:#1e293b;border-radius:8px;padding:clamp(6px,1.5vw,10px) clamp(8px,2vw,16px);text-align:center;border:1px solid #334155;min-width:60px;flex:1}
 .sum-num{font-size:clamp(16px,3vw,22px);font-weight:700}
@@ -1612,13 +1618,15 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <button class="btn btn-s" onclick="openConfig()">⚙ 配置</button>
 </div>
 </div>
-<div class="sub" id="sub">加载中...</div>
+<div class="sub" id="sub">
+  <span class="sub-ts" id="subText">加载中...</span>
+  <div class="ticker-wrap">
+    <span class="ticker-label" id="tickerLabel">⚡ 并发中：</span>
+    <div id="ticker"></div>
+  </div>
+</div>
 <div id="alert" class="alert">⚠️ 所有 Key 均不可用，请求将全部失败！</div>
 <div class="top-row" id="summary"></div>
-<div id="activeBar" style="display:none;padding:8px 12px;background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center;gap:6px">
-  <span style="color:#60a5fa;font-size:13px;font-weight:600">⚡ 并发中</span>
-  <span id="activeBarContent" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"></span>
-</div>
 <div class="controls" id="controls">
   <label>排序</label>
   <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="activatedAt">首次启用（早→晚）</option><option value="duration">使用时长（长→短）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option><option value="group">按分组</option></select>
@@ -1639,7 +1647,6 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
   <span style="color:#94a3b8;font-size:11px;margin-left:8px" id="filterCount"></span>
   <span style="color:#22c55e;font-size:11px;margin-left:8px;font-weight:500" id="dashResumeStatus"></span>
-  <span style="color:#4ade80;font-size:11px;margin-left:8px;font-weight:500;display:none" id="dashActiveKeys"></span>
 </div>
 <div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
   <span style="color:#94a3b8;font-size:12px" id="batchCount">已选 0 个</span>
@@ -2353,7 +2360,7 @@ function render(){
   const totalCost=data.reduce((s,x)=>s+(x.totalCost||0),0);
   const q="http://localhost:3456/";
 
-  document.getElementById("sub").textContent="最后更新: "+new Date().toLocaleString("zh-CN")+" | 实时推送";
+  document.getElementById("subText").textContent="最后更新: "+new Date().toLocaleString("zh-CN")+" | 实时推送";
 
   document.getElementById("alert").style.display=(tot>0&&ok===0)?"flex":"none";
 
@@ -2407,33 +2414,41 @@ function render(){
     else dashResume.textContent="🧬空闲"+idleMin+"m";
   }
   const actKeys=data.filter(x=>x.active);
-  const actEl=document.getElementById("dashActiveKeys");
-  if(actEl){
-    if(actKeys.length>0){
-      actEl.textContent="并发: "+actKeys.map(x=>"#"+x.idx).join(", ");
-      actEl.style.display="inline";
-    }else{
-      actEl.style.display="none";
-    }
-  }
-  const activeBar=document.getElementById("activeBar");
-  const activeBarContent=document.getElementById("activeBarContent");
-  if(activeBar&&activeBarContent){
-    const badges=[];
-    actKeys.forEach(k=>{
-      const acts=k.actives||[];
-      acts.forEach(r=>{
-        const sec=Math.max(0,Math.round((Date.now()-r.since)/1000));
+  if(!window._tickerInit){
+    window._tickerInit=true;
+    setInterval(()=>{
+      document.querySelectorAll("#ticker .ticker-item").forEach(el=>{
+        const since=+el.dataset.since;if(!since)return;
+        const sec=Math.max(0,Math.round((Date.now()-since)/1000));
         const dur=sec>=60?Math.floor(sec/60)+"m"+(sec%60)+"s":sec+"s";
-        badges.push('<span style="background:#1e3a5f;color:#93c5fd;border:1px solid #3b82f6;border-radius:4px;padding:2px 8px;font-size:12px;white-space:nowrap">#'+k.idx+' '+esc(r.model)+' <span style="color:#60a5fa">'+dur+'</span></span>');
+        const d=el.querySelector(".t-dur");if(d)d.textContent=dur;
       });
+    },1000);
+  }
+  const curSet=new Set();
+  actKeys.forEach(k=>{(k.actives||[]).forEach(r=>{curSet.add(k.idx+"#"+(r.model||""));});});
+  const tickerEl=document.getElementById("ticker");
+  const tickerLabel=document.getElementById("tickerLabel");
+  [...tickerEl.children].forEach(el=>{if(!curSet.has(el.dataset.key))el.remove();});
+  actKeys.forEach(k=>{
+    (k.actives||[]).forEach(r=>{
+      const tk=k.idx+"#"+(r.model||"");
+      if(tickerEl.querySelector('[data-key="'+tk+'"]'))return;
+      const sec=Math.max(0,Math.round((Date.now()-r.since)/1000));
+      const dur=sec>=60?Math.floor(sec/60)+"m"+(sec%60)+"s":sec+"s";
+      const el=document.createElement("span");
+      el.className="ticker-item";
+      el.dataset.key=tk;
+      el.dataset.since=r.since;
+      el.innerHTML="#"+k.idx+" "+esc(r.model)+' <span class="t-dur">'+dur+"</span>";
+      tickerEl.appendChild(el);
     });
-    if(badges.length>0){
-      activeBarContent.innerHTML=badges.join('');
-      activeBar.style.display="flex";
-    }else{
-      activeBar.style.display="none";
-    }
+  });
+  tickerLabel.style.display=curSet.size>0?"inline":"none";
+  if(tickerEl.scrollWidth>tickerEl.clientWidth){
+    tickerEl.style.transform="translateX(-"+(tickerEl.scrollWidth-tickerEl.clientWidth)+"px)";
+  }else{
+    tickerEl.style.transform="none";
   }
   if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
   else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
