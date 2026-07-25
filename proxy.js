@@ -2426,13 +2426,13 @@ function render(){
     },1000);
   }
   const curSet=new Set();
-  actKeys.forEach(k=>{(k.actives||[]).forEach(r=>{curSet.add(k.idx+"#"+(r.model||""));});});
+  actKeys.forEach(k=>{(k.actives||[]).forEach(r=>{curSet.add(k.idx+"#"+r.since);});});
   const tickerEl=document.getElementById("ticker");
   const tickerLabel=document.getElementById("tickerLabel");
   [...tickerEl.children].forEach(el=>{if(!curSet.has(el.dataset.key))el.remove();});
   actKeys.forEach(k=>{
     (k.actives||[]).forEach(r=>{
-      const tk=k.idx+"#"+(r.model||"");
+      const tk=k.idx+"#"+r.since;
       if(tickerEl.querySelector('[data-key="'+tk+'"]'))return;
       const sec=Math.max(0,Math.round((Date.now()-r.since)/1000));
       const dur=sec>=60?Math.floor(sec/60)+"m"+(sec%60)+"s":sec+"s";
