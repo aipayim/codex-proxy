@@ -634,7 +634,7 @@ function getKeyState(idx) {
   return ks;
 }
 
-function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb) {
+function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, model) {
   const ks = getKeyState(idx);
   const s = ks.stats;
   const cost = estimateCost(inputBytes || 0, outputBytes || 0);
@@ -661,10 +661,15 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb) {
 
   const now = new Date();
   const hk = d + "-" + String(now.getHours()).padStart(2, "0");
-  if (!s.hourly[hk]) s.hourly[hk] = { requests: 0, inputBytes: 0, outputBytes: 0 };
+  if (!s.hourly[hk]) s.hourly[hk] = { requests: 0, inputBytes: 0, outputBytes: 0, models: {} };
   s.hourly[hk].requests++;
   if (inputBytes) s.hourly[hk].inputBytes += inputBytes;
   if (outputBytes) s.hourly[hk].outputBytes += outputBytes;
+  const _mk = model || "(未知)";
+  if (!s.hourly[hk].models[_mk]) s.hourly[hk].models[_mk] = { requests: 0, inputBytes: 0, outputBytes: 0 };
+  s.hourly[hk].models[_mk].requests++;
+  if (inputBytes) s.hourly[hk].models[_mk].inputBytes += inputBytes;
+  if (outputBytes) s.hourly[hk].models[_mk].outputBytes += outputBytes;
 
   state.activeKey = idx;
   recordSliding(idx, success, duration);
@@ -1056,7 +1061,7 @@ function loadAccounts() {
   broadcastStatus();
 }
 
-function makeUsageTransform(idx, inputBytes, reqStart, ttfb) {
+function makeUsageTransform(idx, inputBytes, reqStart, ttfb, model) {
   let outputBytes = 0;
   const tr = new Transform({
     transform(chunk, encoding, cb) {
@@ -1067,7 +1072,7 @@ function makeUsageTransform(idx, inputBytes, reqStart, ttfb) {
     },
     flush(cb) {
       const duration = Date.now() - reqStart;
-      recordRequest(idx, true, inputBytes, outputBytes, duration, ttfb);
+      recordRequest(idx, true, inputBytes, outputBytes, duration, ttfb, model);
       cb();
     }
   });
@@ -1087,6 +1092,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   let reqModel = null;
   try { reqModel = JSON.parse(body.toString()).model || null; } catch(e) {}
   const acct = accounts[idx];
+  const resolvedModel = acct.model || reqModel || null;
   activeRequests[idx].push({ start: Date.now(), model: acct.model || reqModel || "?" });
   const reqStart = Date.now();
   let ttfb = null;
@@ -1128,7 +1134,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       const dur = Date.now() - reqStart;
       activeDecr(idx);
       markFailure(idx, apiRes.statusCode);
-      recordRequest(idx, false, 0, 0, dur);
+      recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
       recordPath(pathname, method, 0, 0, dur);
       Object.assign(logEntry, { status: apiRes.statusCode, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
       addLog(logEntry);
@@ -1154,7 +1160,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     clientRes.writeHead(apiRes.statusCode, safeHeaders);
 
     const inputBytes = body ? body.length : 0;
-    const transform = makeUsageTransform(idx, inputBytes, reqStart, ttfb);
+    const transform = makeUsageTransform(idx, inputBytes, reqStart, ttfb, resolvedModel);
     if (extraTransform) {
       apiRes.pipe(transform).pipe(extraTransform).pipe(clientRes);
     } else {
@@ -1201,7 +1207,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     activeDecr(idx);
     console.error(`[proxy] #${idx + 1} Error: ${err.message}`);
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur);
+    recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
     recordPath(pathname, method, 0, 0, dur);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
     addLog(logEntry);
@@ -1221,7 +1227,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     }
     proxyReq.destroy();
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur);
+    recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
     recordPath(pathname, method, 0, 0, dur);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
     addLog(logEntry);
@@ -1558,6 +1564,12 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .trend-bar:hover{background:#60a5fa}
 .trend-labels{display:flex;gap:2px;margin-top:4px}
 .trend-label{flex:1;font-size:clamp(7px,1vw,8px);color:#64748b;text-align:center;min-width:4px;overflow:hidden;white-space:nowrap}
+.trend-stack{display:flex;flex-direction:column;align-items:stretch;border-radius:2px 2px 0 0;overflow:hidden}
+.trend-stack:hover{filter:brightness(1.2)}
+.trend-seg{width:100%;min-height:1px}
+.trend-legend{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:6px;font-size:clamp(9px,1.2vw,11px);color:#94a3b8}
+.trend-legend-item{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.trend-legend-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
 .log-table{width:100%;border-collapse:collapse;font-size:clamp(10px,1.3vw,11px)}
 .log-table th,.log-table td{padding:2px 4px;text-align:left;border-bottom:1px solid #334155;white-space:nowrap}
 .log-table th{color:#94a3b8;font-weight:600;position:sticky;top:0;background:#1e293b}
@@ -1679,6 +1691,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="trend-title"><span id="trendModeLabel" style="cursor:pointer;user-select:none" onclick="toggleTrendMode()">📊 流量趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
 <div class="trend-bars" id="trendBars"></div>
 <div class="trend-labels" id="trendLabels"></div>
+<div id="trendLegend" class="trend-legend"></div>
 </div>
 <div class="tabs" id="tabs"></div>
 <div class="grid" id="grid"></div>
@@ -2308,8 +2321,9 @@ function removeResumeProject(btn){
 }
 
 function toggleTrendMode(){
-  trendMode=trendMode==="bytes"?"req":"bytes";
-  document.getElementById("trendModeLabel").textContent=trendMode==="bytes"?"📊 流量趋势":"📈 次数趋势";
+  trendMode=trendMode==="bytes"?"req":(trendMode==="req"?"model":"bytes");
+  const labels={bytes:"📊 流量趋势",req:"📈 次数趋势",model:"📊 模型趋势"};
+  document.getElementById("trendModeLabel").textContent=labels[trendMode]||"📊 流量趋势";
   renderTrend();
 }
 function renderTrend(){
@@ -2319,8 +2333,9 @@ function renderTrend(){
   for(let i=hours-1;i>=0;i--){
     const d=new Date(now-i*3600000);
     const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0"),hh=String(d.getHours()).padStart(2,"0");
-    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,keys:{}};
+    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,keys:{},models:{}};
   }
+  const allModels={};
   for(const a of data){
     if(!a.hourly)continue;
     const ai=a.idx;
@@ -2332,26 +2347,91 @@ function renderTrend(){
       if(!h.keys[ai])h.keys[ai]={bytes:0,req:0};
       h.keys[ai].bytes+=ib+ob;
       h.keys[ai].req+=v.requests||0;
+      if(v.models){
+        for(const [mk,mv] of Object.entries(v.models)){
+          if(!h.models[mk])h.models[mk]={requests:0,inputBytes:0,outputBytes:0};
+          h.models[mk].requests+=mv.requests||0;
+          h.models[mk].inputBytes+=mv.inputBytes||0;
+          h.models[mk].outputBytes+=mv.outputBytes||0;
+          if(!allModels[mk])allModels[mk]=0;
+          allModels[mk]+=mv.requests||0;
+        }
+      }
     }
   }
+  const modelColors=["#3b82f6","#f59e0b","#10b981","#ef4444","#8b5cf6","#ec4899","#06b6d4","#f97316"];
+  const sortedModels=Object.keys(allModels).sort((a,b)=>allModels[b]-allModels[a]);
+  const topModels=sortedModels.slice(0,8);
+  const modelColorMap={};
+  topModels.forEach((m,i)=>{modelColorMap[m]=modelColors[i%modelColors.length];});
+  if(sortedModels.length>8){
+    modelColorMap["(其他)"]="#6b7280";
+  }
   const keys=Object.keys(hMap);
-  const vals=keys.map(k=>hMap[k][trendMode]);
-  const max=Math.max(...vals,1);
+  let vals,max;
+  if(trendMode==="model"){
+    vals=keys.map(k=>{let s=0;for(const mk of topModels)s+=hMap[k].models[mk]?.requests||0;if(sortedModels.length>8){for(const [mk,mv] of Object.entries(hMap[k].models)){if(!topModels.includes(mk))s+=mv.requests||0;}}return s;});
+    max=Math.max(...vals,1);
+  }else{
+    vals=keys.map(k=>hMap[k][trendMode]);
+    max=Math.max(...vals,1);
+  }
   const bars=document.getElementById("trendBars");
   const labels=document.getElementById("trendLabels");
-  bars.innerHTML=keys.map((k,i)=>{
-    const h=hMap[k];
-    const lines=[];
-    const mmdd=k.slice(0,10),hh=k.slice(11);
-    lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-    lines.push("合计: ↑"+fmtBytes(h.input)+" / ↓"+fmtBytes(h.output)+" | "+h.req+"次");
-    const kidx=Object.keys(h.keys).sort((a,b)=>h.keys[b].bytes-h.keys[a].bytes);
-    for(const ki of kidx){
-      const kv=h.keys[ki];
-      lines.push("  #"+ki+"  "+fmtBytes(kv.bytes)+"  "+kv.req+"次");
-    }
-    return '<div class="trend-bar" style="height:'+Math.max(2,hMap[k][trendMode]/max*80)+'px" title="'+esc(lines.join("\\n"))+'"></div>';
-  }).join("");
+  if(trendMode==="model"){
+    bars.innerHTML=keys.map((k,i)=>{
+      const h=hMap[k];
+      const total=h.req||0;
+      const lines=[];
+      const mmdd=k.slice(0,10),hh=k.slice(11);
+      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+      lines.push("合计: "+h.req+"次");
+      const segments=[];
+      for(const mk of topModels){
+        const mv=h.models[mk]||{requests:0};
+        if(mv.requests>0){
+          const pct=mv.requests/total*100;
+          const clr=modelColorMap[mk];
+          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+clr+'"></div>');
+          lines.push("  "+mk+": "+mv.requests+"次");
+        }
+      }
+      if(sortedModels.length>8){
+        let otherReq=0;
+        for(const [mk,mv] of Object.entries(h.models)){
+          if(!topModels.includes(mk))otherReq+=mv.requests||0;
+        }
+        if(otherReq>0){
+          const pct=otherReq/total*100;
+          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:#6b7280"></div>');
+          lines.push("  (其他): "+otherReq+"次");
+        }
+      }
+      const barH=Math.max(2,vals[i]/max*80);
+      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n"))+'">'+segments.join("")+'</div>';
+    }).join("");
+    const legendModels=topModels.slice();
+    if(sortedModels.length>8)legendModels.push("(其他)");
+    const legendHtml=legendModels.map(mk=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+modelColorMap[mk]+'"></span>'+esc(mk)+' ('+allModels[mk]+')</span>').join("");
+    const legendEl=document.getElementById("trendLegend");
+    if(legendEl)legendEl.innerHTML=legendHtml;
+  }else{
+    bars.innerHTML=keys.map((k,i)=>{
+      const h=hMap[k];
+      const lines=[];
+      const mmdd=k.slice(0,10),hh=k.slice(11);
+      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+      lines.push("合计: ↑"+fmtBytes(h.input)+" / ↓"+fmtBytes(h.output)+" | "+h.req+"次");
+      const kidx=Object.keys(h.keys).sort((a,b)=>h.keys[b].bytes-h.keys[a].bytes);
+      for(const ki of kidx){
+        const kv=h.keys[ki];
+        lines.push("  #"+ki+"  "+fmtBytes(kv.bytes)+"  "+kv.req+"次");
+      }
+      return '<div class="trend-bar" style="height:'+Math.max(2,hMap[k][trendMode]/max*80)+'px" title="'+esc(lines.join("\\n"))+'"></div>';
+    }).join("");
+    const legendEl=document.getElementById("trendLegend");
+    if(legendEl)legendEl.innerHTML="";
+  }
   const labelStep=trendRange==="30d"?24:(trendRange==="7d"?12:1);
   labels.innerHTML=keys.map((k,i)=>{
     const hh=k.slice(-2);
