@@ -1184,6 +1184,12 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         clientRes.end();
       }
     });
+    clientRes.on("close", () => {
+      if (!cleaned) {
+        if (!apiRes.destroyed) apiRes.destroy();
+        cleanup();
+      }
+    });
     onDone({ switched: false });
   });
   proxyReq.setTimeout(TIMEOUT);
@@ -1208,9 +1214,10 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     onDone.done = true;
     const dur = Date.now() - reqStart;
     activeDecr(idx);
-    console.error(`[proxy] #${idx + 1} Timeout`);
+    console.error(`[proxy] #${idx+1} Timeout`);
     if (!clientRes.destroyed) {
       try { clientRes.write('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_'+idx+'","status":"completed"}}\n\n'); } catch(e) {}
+      try { clientRes.end(); } catch(e) {}
     }
     proxyReq.destroy();
     markFailure(idx, 0);
@@ -1460,10 +1467,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .sub{color:#94a3b8;font-size:clamp(10px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px);display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:28px}
 .sub-ts{flex-shrink:0;white-space:nowrap}
-.ticker-wrap{display:flex;align-items:center;gap:8px;min-width:0;flex:1;justify-content:flex-end}
+.ticker-wrap{display:flex;align-items:center;gap:8px;min-width:0;flex:1;justify-content:flex-end;overflow:hidden}
 .ticker-label{color:#4ade80;font-size:13px;font-weight:700;white-space:nowrap;flex-shrink:0;display:none}
-#ticker{display:flex;gap:6px;flex-wrap:nowrap;overflow:hidden;min-width:0;transition:transform .3s ease}
+#ticker{display:flex;gap:6px;flex-wrap:nowrap;overflow:hidden;min-width:0}
 .ticker-item{display:inline-flex;align-items:center;gap:4px;background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:5px;padding:2px 8px;font-size:13px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.ticker-overflow{display:inline-flex;align-items:center;background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:2px 8px;font-size:12px;font-weight:600;white-space:nowrap;flex-shrink:0}
 .ticker-item .t-dur{color:#86efac;font-weight:400;font-size:12px}
 .top-row{display:flex;gap:clamp(6px,1.5vw,12px);margin-bottom:clamp(8px,2vw,16px);flex-wrap:wrap}
 .sum-item{background:#1e293b;border-radius:8px;padding:clamp(6px,1.5vw,10px) clamp(8px,2vw,16px);text-align:center;border:1px solid #334155;min-width:60px;flex:1}
@@ -2452,10 +2460,26 @@ function render(){
     });
   });
   tickerLabel.style.display=curSet.size>0?"inline":"none";
+  const existingOverflow=tickerEl.querySelector(".ticker-overflow");
+  if(existingOverflow)existingOverflow.remove();
   if(tickerEl.scrollWidth>tickerEl.clientWidth){
-    tickerEl.style.transform="translateX(-"+(tickerEl.scrollWidth-tickerEl.clientWidth)+"px)";
-  }else{
-    tickerEl.style.transform="none";
+    while(tickerEl.children.length>1&&tickerEl.scrollWidth>tickerEl.clientWidth){
+      tickerEl.removeChild(tickerEl.lastChild);
+    }
+    let hiddenCount=curSet.size-tickerEl.children.length;
+    if(hiddenCount>0){
+      const badge=document.createElement("span");
+      badge.className="ticker-overflow";
+      badge.textContent="+"+hiddenCount;
+      badge.title=hiddenCount+" 个并发请求未显示";
+      tickerEl.prepend(badge);
+      if(tickerEl.scrollWidth>tickerEl.clientWidth&&tickerEl.children.length>2){
+        tickerEl.removeChild(tickerEl.children[1]);
+        hiddenCount++;
+        badge.textContent="+"+hiddenCount;
+        badge.title=hiddenCount+" 个并发请求未显示";
+      }
+    }
   }
   if(sortBy==="score")filtered.sort((a,b)=>(b.healthScore||0)-(a.healthScore||0));
   else if(sortBy==="latency")filtered.sort((a,b)=>(a.avgDuration||0)-(b.avgDuration||0));
@@ -3701,6 +3725,7 @@ function createChatToResponsesStream(upstreamUrl) {
   let model = "";
   let fullContent = "";
   let inputTokens = 0, outputTokens = 0;
+  let completed = false;
   return new Transform({
     readableObjectMode: false, writableObjectMode: false,
     transform(chunk, encoding, cb) {
@@ -3711,9 +3736,12 @@ function createChatToResponsesStream(upstreamUrl) {
         if (!line.startsWith("data: ")) continue;
         const data = line.slice(6).trim();
         if (data === "[DONE]") {
-          this.push(`event: response.output_text.done\ndata: {"type":"response.output_text.done","delta":""}\n\n`);
-          this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
-          this.push("data: [DONE]\n\n");
+          if (!completed) {
+            completed = true;
+            this.push(`event: response.output_text.done\ndata: {"type":"response.output_text.done","delta":""}\n\n`);
+            this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"total_tokens":${inputTokens + outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
+            this.push("data: [DONE]\n\n");
+          }
           return cb();
         }
         let parsed;
@@ -3743,9 +3771,10 @@ function createChatToResponsesStream(upstreamUrl) {
       cb();
     },
     flush(cb) {
-      if (fullContent) {
+      if (!completed) {
+        completed = true;
         this.push(`event: response.output_text.done\ndata: {"type":"response.output_text.done","delta":""}\n\n`);
-        this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
+        this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"total_tokens":${inputTokens + outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
         this.push("data: [DONE]\n\n");
       }
       cb();
