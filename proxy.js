@@ -17,6 +17,7 @@ const HTTP_MOD = { "http:": http, "https:": https };
 const TZ = "Asia/Shanghai";
 const MAX_LOG = 2000;
 const QUEUE_TIMEOUT = 30000;
+const STREAM_LIFETIME = 1800000;
 const LOG_DIR = path.join(__dirname, "logs");
 const PID_FILE = path.join(__dirname, "proxy.pid");
 let LOG_RETENTION_DAYS = 7;
@@ -1156,7 +1157,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     safeHeaders["x-proxy-key"] = `${preview}...`;
     safeHeaders["x-proxy-url"] = a.url;
 
-    if (clientRes.headersSent) { apiRes.destroy(); return; }
+    if (clientRes.headersSent) { apiRes.destroy(); activeDecr(idx); onDone({ switched: false }); return; }
     clientRes.writeHead(apiRes.statusCode, safeHeaders);
 
     const inputBytes = body ? body.length : 0;
@@ -1167,9 +1168,11 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       apiRes.pipe(transform).pipe(clientRes);
     }
     let cleaned = false;
+    let streamTimer = null;
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
+      if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
       activeDecr(idx);
       const dur = Date.now() - reqStart;
       const accBytes = transform.accBytes || 0;
@@ -1196,6 +1199,12 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         cleanup();
       }
     });
+    streamTimer = setTimeout(() => {
+      if (!cleaned) {
+        console.error(`[proxy] #${idx+1} Stream lifetime timeout (${STREAM_LIFETIME/60000}min)`);
+        if (!apiRes.destroyed) apiRes.destroy();
+      }
+    }, STREAM_LIFETIME);
     onDone({ switched: false });
   });
   proxyReq.setTimeout(TIMEOUT);
