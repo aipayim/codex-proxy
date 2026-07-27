@@ -1003,7 +1003,36 @@ function processQueue() {
       continue;
     }
     let rmodel = null;
-    try { const parsed = JSON.parse(r.body.toString()); rmodel = parsed.model || null; } catch(e) {}
+    let rforceIdx = -1;
+    try {
+      const parsed = JSON.parse(r.body.toString());
+      rmodel = parsed.model || null;
+      if (rmodel) {
+        const hm = rmodel.match(/#(\d+)$/);
+        if (hm) {
+          rforceIdx = parseInt(hm[1], 10) - 1;
+          rmodel = rmodel.slice(0, -hm[0].length) || null;
+        }
+      }
+    } catch(e) {}
+    if (rforceIdx >= 0) {
+      if (rforceIdx >= accounts.length) {
+        if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
+          r.clientRes.writeHead(400, { "content-type": "application/json" });
+          r.clientRes.end(JSON.stringify({ error: `Key #${rforceIdx+1} does not exist` }));
+        }
+        continue;
+      }
+      forwardRequest(rforceIdx, r.method, r.headers, r.body, r.clientRes, r.pathname, (result) => {
+        if (result.switched) {
+          if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
+            r.clientRes.writeHead(502, { "content-type": "application/json" });
+            r.clientRes.end(JSON.stringify({ error: `Key #${rforceIdx+1} failed` }));
+          }
+        }
+      }, r.extraTransform, rmodel);
+      continue;
+    }
     const idx = pickKey(rmodel, r.group);
     if (idx < 0 || inCooldown(idx)) {
       requestQueue.push(r);
@@ -1088,13 +1117,13 @@ function activeDecr(idx) {
   }
 }
 
-function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform) {
+function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel) {
   if (!Array.isArray(activeRequests[idx])) activeRequests[idx] = [];
   let reqModel = null;
   try { reqModel = JSON.parse(body.toString()).model || null; } catch(e) {}
   const acct = accounts[idx];
-  const resolvedModel = acct.model || reqModel || null;
-  activeRequests[idx].push({ start: Date.now(), model: acct.model || reqModel || "?" });
+  const resolvedModel = acct.model || cleanModel || reqModel || null;
+  activeRequests[idx].push({ start: Date.now(), model: resolvedModel || "?" });
   const reqStart = Date.now();
   let ttfb = null;
 
@@ -1252,6 +1281,12 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         parsed.model = acct.model;
         bodyToWrite = Buffer.from(JSON.stringify(parsed));
       } catch(e) {}
+    } else if (cleanModel) {
+      try {
+        const parsed = JSON.parse(body.toString());
+        parsed.model = cleanModel;
+        bodyToWrite = Buffer.from(JSON.stringify(parsed));
+      } catch(e) {}
     }
     if (!supportsCacheControl(acct.url)) {
       try {
@@ -1283,10 +1318,43 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
   let retries = 0;
   const MAX_RETRIES = Math.max(activeCount * 2, 10);
   let model = null;
-  try { const parsed = JSON.parse(body.toString()); model = parsed.model || null; } catch(e) {}
+  let forceIdx = -1;
+  try {
+    const parsed = JSON.parse(body.toString());
+    model = parsed.model || null;
+    if (model) {
+      const hashMatch = model.match(/#(\d+)$/);
+      if (hashMatch) {
+        forceIdx = parseInt(hashMatch[1], 10) - 1;
+        model = model.slice(0, -hashMatch[0].length) || null;
+      }
+    }
+  } catch(e) {}
   function attempt() {
+    if (responded) return;
+    if (forceIdx >= 0) {
+      if (forceIdx >= accounts.length) {
+        console.error(`[proxy] #N routing: #${forceIdx+1} does not exist (max ${accounts.length})`);
+        if (!clientRes.destroyed && !clientRes.headersSent) {
+          clientRes.writeHead(400, { "content-type": "application/json" });
+          clientRes.end(JSON.stringify({ error: `Key #${forceIdx+1} does not exist, max key count is ${accounts.length}` }));
+        }
+        responded = true;
+        return;
+      }
+      const a = accounts[forceIdx];
+      const tag = a.remark ? ` (${a.remark})` : "";
+      console.log(`[proxy] → #${forceIdx+1}${tag} (direct via #N) ${a.url}`);
+      forwardRequest(forceIdx, method, headers, body, clientRes, pathname, (r) => {
+        if (r.switched && !clientRes.destroyed && !clientRes.headersSent) {
+          clientRes.writeHead(502, { "content-type": "application/json" });
+          clientRes.end(JSON.stringify({ error: `Key #${forceIdx+1} failed: ${r.code || r.error?.message || "error"}` }));
+        }
+        responded = true;
+      }, extraTransform, model);
+      return;
+    }
     if (retries >= MAX_RETRIES) {
-      if (responded) return;
       console.error(`[proxy] Max retries (${MAX_RETRIES}) reached, queueing`);
       enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform);
       responded = true;
@@ -1294,7 +1362,6 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     }
     retries++;
     const idx = pickKey(model, group);
-    if (responded) return;
     if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
       if (idx < 0) {
         console.log(`[proxy] No available keys, queueing request`);
@@ -1697,7 +1764,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
-<div class="trend-title"><span id="trendModeLabel" style="cursor:pointer;user-select:none" onclick="toggleTrendMode()">📊 流量趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
+<div class="trend-title"><span id="trendModeLabel" style="cursor:pointer;user-select:none" onclick="toggleTrendMode()">📊 模型趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
 <div class="trend-bars" id="trendBars"></div>
 <div class="trend-labels" id="trendLabels"></div>
 <div id="trendLegend" class="trend-legend"></div>
@@ -2024,7 +2091,7 @@ function daysUntilResetClient(resetDay) {
   return (target - isoDay + 7) % 7 || 7;
 }
 let data=[],curDate="",fullKeys={},filtered=[];
-let sortBy="idx",filterBy="all",trendRange="24h",trendMode="bytes",searchQ="",statusCodeQ="",modelSQ="",groupFilter="all";
+let sortBy="idx",filterBy="all",trendRange="24h",trendMode="model",searchQ="",statusCodeQ="",modelSQ="",groupFilter="all";
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
@@ -2420,7 +2487,12 @@ function renderTrend(){
       return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n"))+'">'+segments.join("")+'</div>';
     }).join("");
     const legendModels=topModels.slice();
-    if(sortedModels.length>8)legendModels.push("(其他)");
+    if(sortedModels.length>8){
+      let otherTotal=0;
+      for(const mk of sortedModels){if(!topModels.includes(mk))otherTotal+=allModels[mk]||0;}
+      allModels["(其他)"]=otherTotal;
+      legendModels.push("(其他)");
+    }
     const legendHtml=legendModels.map(mk=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+modelColorMap[mk]+'"></span>'+esc(mk)+' ('+allModels[mk]+')</span>').join("");
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML=legendHtml;

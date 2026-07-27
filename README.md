@@ -837,6 +837,46 @@ codex-ask-c "检查这个函数的格式"
 codex-ask-c "简单查询：1+1等于几"
 ```
 
+#### 指定 Key 发送（`#N` 语法）
+
+在 model 名称后加 `#N`（N 为 Key 编号）可**直接路由到指定 Key**，跳过 `pickKey()` 调度。适用于测试特定 Key、调试问题 Key、或手动控制请求分配。
+
+**语法**：`model#N`，其中 N 为 keys.json 中的 1-based 编号。
+
+```
+模型名示例：
+  o3#87       → 使用 Key #87（B 组），模型名 o3 发送到上游
+  gpt-4o#6    → 使用 Key #6（C 组），模型名 gpt-4o 发送到上游
+  o3#253      → 使用 Key #253（A 组）
+```
+
+**Codex CLI 配置**：
+
+```toml
+# ~/.codex/config.toml
+# 不加 #N：自动调度
+model = "o3"
+
+# 加 #N：固定到指定 Key
+model = "o3#87"
+```
+
+**Claude Code CLI 配置**：
+
+```json
+// ~/.claude/settings.json
+{
+  "model": "o3#87",
+  "apiBaseUrl": "http://localhost:3456"
+}
+```
+
+**行为说明**：
+- 如果 Key #N 不存在 → 返回 `400 Key #N does not exist`
+- 如果 Key #N 的 URL 不可达 → 正常返回 502 错误
+- 如果 Key 配置了 `model` 覆盖字段（`acct.model`） → 优先使用覆盖模型，而非 `#N` 前的模型名
+- 如果 Key 没有覆盖模型 → 从 model 名中去除 `#N` 后缀，以干净的模型名发送上游
+
 #### Group C 上游 API 兼容性说明
 
 部分上游 API 的非流式响应存在格式缺陷：`message.content` 字段缺失，但报告了 `completion_tokens`。此问题仅影响非流式请求，流式请求正常。
