@@ -2129,10 +2129,11 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 </div>
 
 <script>
+let __adminToken=null;
 const __origFetch=window.fetch;
 window.fetch=function(u,o){
   o=o||{};
-  const t=sessionStorage.getItem("adminToken");
+  const t=__adminToken;
   if(t){
     const isLocal=typeof u==="string"&&(u.startsWith("/__")||u.indexOf("localhost:3456")>=0||u.indexOf("127.0.0.1:3456")>=0);
     if(isLocal){
@@ -2147,8 +2148,8 @@ function requireAdminToken(){
   return new Promise((resolve)=>{
     __origFetch("/__auth_check").then(r=>r.json()).then(j=>{
       if(!j.configured){resolve(true);return;}
-      const saved=sessionStorage.getItem("adminToken");
-      if(saved){__origFetch("/__status",{headers:{"Authorization":"Bearer "+saved}}).then(r=>{resolve(r.ok);if(!r.ok)sessionStorage.removeItem("adminToken");}).catch(()=>resolve(false));return;}
+      const saved=__adminToken;
+      if(saved){__origFetch("/__status",{headers:{"Authorization":"Bearer "+saved}}).then(r=>{resolve(r.ok);if(!r.ok){__adminToken=null;}}).catch(()=>resolve(false));return;}
       const d=document.createElement("div");
       d.id="tokenDialog";
       d.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999";
@@ -2159,10 +2160,10 @@ function requireAdminToken(){
       const submitToken=()=>{
         const v=tokenInput.value.trim();
         if(!v){tokenErr.textContent="请输入 Token";tokenErr.style.display="block";return;}
-        sessionStorage.setItem("adminToken",v);
+        __adminToken=v;
         __origFetch("/__status",{headers:{"Authorization":"Bearer "+v}}).then(r=>{
           if(r.ok){d.remove();resolve(true);}
-          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";sessionStorage.removeItem("adminToken");}
+          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";__adminToken=null;}
         }).catch(()=>{tokenErr.textContent="连接失败";tokenErr.style.display="block";});
       };
       document.getElementById("tokenConfirmBtn").addEventListener("click",submitToken);
