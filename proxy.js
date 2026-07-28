@@ -10,9 +10,9 @@ const { WebSocketServer } = require("ws");
 
 const PORT = 3456;
 const servers = {};
-const KEYS_FILE = path.join(__dirname, "keys.json");
+const KEYS_FILE = (process.env && process.env.PROXY_KEYS_FILE) || path.join(__dirname, "keys.json");
 const STATE_FILE = path.join(__dirname, "state.json");
-const CONFIG_FILE = path.join(__dirname, "config.json");
+const CONFIG_FILE = (process.env && process.env.PROXY_CONFIG_FILE) || path.join(__dirname, "config.json");
 const TIMEOUT = 1500000;
 const PRIORITY = { daily: 0, weekly: 1, never: 2, hourly: 0 };
 const HTTP_MOD = { "http:": http, "https:": https };
@@ -1823,14 +1823,22 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
 }
 
 // --- WebSocket ---
-function setupWebSocket(server) {
+function setupWebSocket(server, port) {
   wss = new WebSocketServer({ server });
   wss.on("connection", (ws, req) => {
-    const url = new URL(req.url, "http://localhost");
-    const token = url.searchParams.get("token");
-    if (config.adminToken && token !== config.adminToken) {
-      ws.close(4001, "unauthorized");
+    const origin = req.headers.origin;
+    if (origin && origin !== `http://localhost:${port}` && origin !== `http://127.0.0.1:${port}`) {
+      ws.close(1008, "Forbidden");
       return;
+    }
+    if (config.adminToken) {
+      const u = new URL(req.url, "http://localhost");
+      const tok = u.searchParams.get("token") || "";
+      let diff = tok.length !== config.adminToken.length ? 1 : 0;
+      for (let i = 0; i < config.adminToken.length; i++) {
+        diff |= (tok.charCodeAt(i) || 0) ^ config.adminToken.charCodeAt(i);
+      }
+      if (diff !== 0) { ws.close(1008, "Unauthorized"); return; }
     }
     wsClients.add(ws);
     const data = buildStatusData();
@@ -6267,7 +6275,7 @@ function startGroup(name, port) {
       console.log(`[proxy] Group ${name} listening on http://localhost:${port}`);
       if (name === "A") {
         fs.writeFileSync(PID_FILE, String(process.pid));
-        setupWebSocket(srv);
+        setupWebSocket(srv, port);
         const n = (() => { try { return JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8")).length; } catch { return 0; } })();
         console.log(`
 ╔══════════════════════════════════════════════╗
