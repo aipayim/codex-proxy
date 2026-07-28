@@ -3,3 +3,6 @@ node_modules/
 *.log
 proxy.pid
 state.json
+build-info.json
+release-manifest.json
+dist/

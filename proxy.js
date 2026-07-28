@@ -5,13 +5,14 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const { Transform } = require("stream");
+const { spawnSync } = require("child_process");
 const { WebSocketServer } = require("ws");
 
 const PORT = 3456;
 const servers = {};
-const KEYS_FILE = process.env.PROXY_KEYS_FILE || path.join(__dirname, "keys.json");
+const KEYS_FILE = (process.env && process.env.PROXY_KEYS_FILE) || path.join(__dirname, "keys.json");
 const STATE_FILE = path.join(__dirname, "state.json");
-const CONFIG_FILE = process.env.PROXY_CONFIG_FILE || path.join(__dirname, "config.json");
+const CONFIG_FILE = (process.env && process.env.PROXY_CONFIG_FILE) || path.join(__dirname, "config.json");
 const TIMEOUT = 1500000;
 const PRIORITY = { daily: 0, weekly: 1, never: 2, hourly: 0 };
 const HTTP_MOD = { "http:": http, "https:": https };
@@ -21,6 +22,33 @@ const QUEUE_TIMEOUT = 30000;
 let STREAM_LIFETIME = 1800000;
 const LOG_DIR = path.join(__dirname, "logs");
 const PID_FILE = path.join(__dirname, "proxy.pid");
+const UPSTREAM_REPOSITORY = "aipayim/codex-proxy";
+const UPSTREAM_REPOSITORY_URL = "https://github.com/aipayim/codex-proxy";
+const UPSTREAM_LATEST_RELEASE_API = "https://api.github.com/repos/aipayim/codex-proxy/releases/latest";
+const BUILD_INFO_FILE = path.join(__dirname, "build-info.json");
+const RELEASE_MANIFEST_FILE = path.join(__dirname, "release-manifest.json");
+const BUILD_INFO_MAX_BYTES = 16 * 1024;
+const RELEASE_MANIFEST_MAX_BYTES = 64 * 1024;
+const RELEASE_INTEGRITY_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const GIT_PROBE_TIMEOUT_MS = 1000;
+const RELEASE_INTEGRITY_FILES = new Set([
+  "proxy.js",
+  "package.json",
+  "package-lock.json",
+  "dashboard.html",
+  "install.sh",
+  "start-proxy.sh",
+  "watchdog.sh",
+  "resume-codex.sh",
+  "edit-keys.sh",
+  "codex-proxy.service",
+]);
+const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json"]);
+const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_MIN_REFRESH_MS = 60 * 1000;
+const UPDATE_REQUEST_TIMEOUT_MS = 8000;
+const UPDATE_MAX_RESPONSE_BYTES = 64 * 1024;
+const UPDATE_MAX_RELEASE_NOTES_CHARS = 24000;
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
 let LOG_DETAIL = "full";
@@ -60,7 +88,19 @@ const slidingWindows = {};
 const pathStats = {};
 let requestQueue = [];
 let queueProcessing = false;
-let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5 };
+const INSTANCE_ID = crypto.randomUUID();
+const INSTANCE_STARTED_AT = Date.now();
+let restartState = { phase: "ready", startedAt: null };
+const updateCheckState = {
+  checkedAt: 0,
+  lastNetworkCheckAt: 0,
+  etag: "",
+  latest: null,
+  lastError: "",
+  inFlight: null,
+};
+let localBuildProvenance = null;
+let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, updateBaselineTag: "" };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -83,6 +123,334 @@ let _boostBatchMode = "";
 let _boostBatchCursor = 0;
 let _boostBatchPool = [];
 let _boostBatchPoolIdx = 0;
+
+function getActiveRequestCount() {
+  return Object.values(activeRequests).reduce((sum, requests) => sum + (Array.isArray(requests) ? requests.length : 0), 0);
+}
+
+function buildRestartStatus() {
+  return {
+    instanceId: INSTANCE_ID,
+    startedAt: INSTANCE_STARTED_AT,
+    phase: restartState.phase,
+    restartStartedAt: restartState.startedAt,
+    activeRequests: getActiveRequestCount(),
+    queuedRequests: requestQueue.length,
+  };
+}
+
+function rejectQueuedRequestsForRestart() {
+  const queued = requestQueue;
+  requestQueue = [];
+  for (const request of queued) {
+    if (!request.clientRes.destroyed && !request.clientRes.headersSent) {
+      request.clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
+      request.clientRes.end(JSON.stringify({ error: "proxy is restarting" }));
+    }
+  }
+  return queued.length;
+}
+
+function parseReleaseVersion(value) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i.exec(String(value || "").trim());
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function compareReleaseVersions(left, right) {
+  const a = parseReleaseVersion(left);
+  const b = parseReleaseVersion(right);
+  if (!a || !b) return null;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+function normalizeUpdateBaselineTag(value) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/i.exec(String(value || "").trim());
+  return match ? `v${match[1]}.${match[2]}.${match[3]}` : "";
+}
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function readSmallLocalFile(filePath, maxBytes) {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 0 || stat.size > maxBytes) return null;
+    return fs.readFileSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function parseLocalJson(buffer) {
+  try {
+    return JSON.parse(buffer.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCommit(value) {
+  const commit = String(value || "").trim();
+  return /^[0-9a-f]{7,64}$/i.test(commit) ? commit.toLowerCase() : null;
+}
+
+function inspectReleaseArtifactBuild() {
+  const infoBuffer = readSmallLocalFile(BUILD_INFO_FILE, BUILD_INFO_MAX_BYTES);
+  if (!infoBuffer) return { comparable: false, reason: "release-metadata-missing" };
+  const info = parseLocalJson(infoBuffer);
+  const baselineTag = info && info.schema === 1 && info.channel === "official-release"
+    ? normalizeUpdateBaselineTag(info.releaseTag)
+    : "";
+  if (!baselineTag || info.manifestFile !== path.basename(RELEASE_MANIFEST_FILE) || !/^[0-9a-f]{64}$/i.test(String(info.manifestSha256 || ""))) {
+    return { comparable: false, reason: "release-metadata-invalid" };
+  }
+
+  const manifestBuffer = readSmallLocalFile(RELEASE_MANIFEST_FILE, RELEASE_MANIFEST_MAX_BYTES);
+  if (!manifestBuffer || sha256Hex(manifestBuffer) !== String(info.manifestSha256).toLowerCase()) {
+    return { comparable: false, reason: "release-manifest-mismatch" };
+  }
+  const manifest = parseLocalJson(manifestBuffer);
+  if (!manifest || manifest.schema !== 1 || normalizeUpdateBaselineTag(manifest.releaseTag) !== baselineTag || !manifest.files || typeof manifest.files !== "object" || Array.isArray(manifest.files)) {
+    return { comparable: false, reason: "release-manifest-invalid" };
+  }
+
+  const fileNames = Object.keys(manifest.files);
+  if (!fileNames.length || fileNames.length > RELEASE_INTEGRITY_FILES.size || [...REQUIRED_RELEASE_INTEGRITY_FILES].some(name => !fileNames.includes(name))) {
+    return { comparable: false, reason: "release-manifest-incomplete" };
+  }
+  for (const fileName of fileNames) {
+    const entry = manifest.files[fileName];
+    if (!RELEASE_INTEGRITY_FILES.has(fileName) || !entry || typeof entry !== "object" || !/^[0-9a-f]{64}$/i.test(String(entry.sha256 || "")) || !Number.isInteger(entry.size) || entry.size < 0 || entry.size > RELEASE_INTEGRITY_FILE_MAX_BYTES) {
+      return { comparable: false, reason: "release-manifest-invalid" };
+    }
+    const fileBuffer = readSmallLocalFile(path.join(__dirname, fileName), RELEASE_INTEGRITY_FILE_MAX_BYTES);
+    if (!fileBuffer || fileBuffer.length !== entry.size || sha256Hex(fileBuffer) !== String(entry.sha256).toLowerCase()) {
+      return { comparable: false, reason: "release-files-modified" };
+    }
+  }
+  return {
+    comparable: true,
+    source: "official-release",
+    baselineTag,
+    commit: normalizeCommit(info.commit),
+    verification: "release-manifest",
+    provenanceLabel: "官方发布包（清单校验通过）",
+  };
+}
+
+function runGitProbe(args) {
+  try {
+    const result = spawnSync("git", ["-C", __dirname, ...args], {
+      encoding: "utf8",
+      timeout: GIT_PROBE_TIMEOUT_MS,
+      maxBuffer: 16 * 1024,
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) return null;
+    return String(result.stdout || "").trim();
+  } catch {
+    return null;
+  }
+}
+
+function isOfficialRepositoryRemote(remote) {
+  const normalized = String(remote || "").trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  return /(?:^|[/:@])github\.com[:/]aipayim\/codex-proxy$/i.test(normalized);
+}
+
+function inspectGitBuild() {
+  if (runGitProbe(["rev-parse", "--is-inside-work-tree"]) !== "true") {
+    return { comparable: false, reason: "git-unavailable" };
+  }
+  const remote = runGitProbe(["config", "--get", "remote.origin.url"]);
+  if (!isOfficialRepositoryRemote(remote)) return { comparable: false, reason: "git-remote-untrusted" };
+  const status = runGitProbe(["status", "--porcelain", "--untracked-files=no"]);
+  if (status === null) return { comparable: false, reason: "git-status-unavailable" };
+  if (status) return { comparable: false, reason: "git-worktree-modified" };
+  const baselineTag = normalizeUpdateBaselineTag(runGitProbe(["describe", "--exact-match", "--tags", "HEAD"]));
+  if (!baselineTag) return { comparable: false, reason: "git-not-at-release-tag" };
+  return {
+    comparable: true,
+    source: "git-clean-tag",
+    baselineTag,
+    commit: normalizeCommit(runGitProbe(["rev-parse", "HEAD"])),
+    verification: "git-clean-exact-tag",
+    provenanceLabel: "官方 Git 干净正式标签",
+  };
+}
+
+function inspectLocalBuildProvenance() {
+  const releaseBuild = inspectReleaseArtifactBuild();
+  if (releaseBuild.comparable) return releaseBuild;
+  const gitBuild = inspectGitBuild();
+  if (gitBuild.comparable) return gitBuild;
+  return {
+    comparable: false,
+    source: "unknown",
+    verification: "none",
+    provenanceLabel: "本地来源未验证",
+    reason: releaseBuild.reason || gitBuild.reason || "unknown",
+  };
+}
+
+function refreshLocalBuildProvenance() {
+  localBuildProvenance = inspectLocalBuildProvenance();
+  return localBuildProvenance;
+}
+
+function getCachedLocalBuildProvenance() {
+  return localBuildProvenance || refreshLocalBuildProvenance();
+}
+
+function getLocalBuildInfo() {
+  const manualBaselineTag = normalizeUpdateBaselineTag(config.updateBaselineTag);
+  if (manualBaselineTag) {
+    return {
+      version: manualBaselineTag,
+      baselineTag: manualBaselineTag,
+      label: `${manualBaselineTag}（定制构建的手动基线）`,
+      customized: true,
+      comparable: true,
+      source: "manual-config",
+      verification: "manual",
+      provenanceLabel: "定制构建的手动基线",
+    };
+  }
+  const provenance = getCachedLocalBuildProvenance();
+  if (provenance.comparable) {
+    return {
+      version: provenance.baselineTag,
+      baselineTag: provenance.baselineTag,
+      label: `${provenance.baselineTag}（${provenance.provenanceLabel}）`,
+      customized: provenance.source !== "official-release",
+      comparable: true,
+      source: provenance.source,
+      verification: provenance.verification,
+      provenanceLabel: provenance.provenanceLabel,
+      commit: provenance.commit || null,
+    };
+  }
+  return {
+    version: null,
+    baselineTag: null,
+    label: "本地开发/定制版本（未能验证发布基线）",
+    customized: true,
+    comparable: false,
+    source: "unknown",
+    verification: "none",
+    provenanceLabel: "本地来源未验证",
+    reason: provenance.reason || "unknown",
+  };
+}
+
+function buildUpdateStatus() {
+  const latest = updateCheckState.latest;
+  const current = getLocalBuildInfo();
+  const comparison = latest && current.comparable ? compareReleaseVersions(latest.tag, current.version) : null;
+  return {
+    ok: !!latest,
+    repository: { slug: UPSTREAM_REPOSITORY, url: UPSTREAM_REPOSITORY_URL },
+    current,
+    latest: latest ? { ...latest } : null,
+    updateAvailable: current.comparable && comparison !== null && comparison > 0,
+    comparison: comparison === null ? "unknown" : comparison,
+    checkedAt: updateCheckState.checkedAt || null,
+    cacheTtlMs: UPDATE_CHECK_TTL_MS,
+    lastError: updateCheckState.lastError || null,
+    updateMode: "manual-review-required",
+  };
+}
+
+function fetchLatestRelease() {
+  return new Promise((resolve, reject) => {
+    const headers = {
+      accept: "application/vnd.github+json",
+      "user-agent": "codex-proxy-update-check",
+    };
+    if (updateCheckState.etag) headers["if-none-match"] = updateCheckState.etag;
+
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+    const req = https.get(UPSTREAM_LATEST_RELEASE_API, { headers }, (upstreamRes) => {
+      const chunks = [];
+      let size = 0;
+      upstreamRes.on("data", (chunk) => {
+        if (settled) return;
+        size += chunk.length;
+        if (size > UPDATE_MAX_RESPONSE_BYTES) {
+          req.destroy(new Error("update response exceeded size limit"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      upstreamRes.on("error", (err) => finish(reject, err));
+      upstreamRes.on("end", () => {
+        if (settled) return;
+        if (upstreamRes.statusCode === 304 && updateCheckState.latest) {
+          finish(resolve, null);
+          return;
+        }
+        if (upstreamRes.statusCode !== 200) {
+          finish(reject, new Error(`GitHub release check returned HTTP ${upstreamRes.statusCode || 0}`));
+          return;
+        }
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          const tag = typeof parsed.tag_name === "string" ? parsed.tag_name.trim().slice(0, 120) : "";
+          if (!tag) throw new Error("GitHub release is missing tag_name");
+          const expectedPrefix = `${UPSTREAM_REPOSITORY_URL}/releases/`;
+          const releaseUrl = typeof parsed.html_url === "string" && parsed.html_url.startsWith(expectedPrefix)
+            ? parsed.html_url
+            : `${UPSTREAM_REPOSITORY_URL}/releases/tag/${encodeURIComponent(tag)}`;
+          updateCheckState.etag = typeof upstreamRes.headers.etag === "string" ? upstreamRes.headers.etag : updateCheckState.etag;
+          finish(resolve, {
+            tag,
+            name: typeof parsed.name === "string" ? parsed.name.slice(0, 240) : tag,
+            publishedAt: typeof parsed.published_at === "string" ? parsed.published_at : null,
+            url: releaseUrl,
+            notes: typeof parsed.body === "string" ? parsed.body.replace(/\0/g, "").slice(0, UPDATE_MAX_RELEASE_NOTES_CHARS) : "",
+          });
+        } catch (err) {
+          finish(reject, err);
+        }
+      });
+    });
+    req.setTimeout(UPDATE_REQUEST_TIMEOUT_MS, () => req.destroy(new Error("GitHub release check timed out")));
+    req.on("error", (err) => finish(reject, err));
+  });
+}
+
+function getUpdateStatus(forceRefresh = false) {
+  const now = Date.now();
+  if (updateCheckState.inFlight) return updateCheckState.inFlight;
+  const cacheFresh = updateCheckState.checkedAt && now - updateCheckState.checkedAt < UPDATE_CHECK_TTL_MS;
+  const refreshTooSoon = forceRefresh && updateCheckState.lastNetworkCheckAt && now - updateCheckState.lastNetworkCheckAt < UPDATE_CHECK_MIN_REFRESH_MS;
+  if ((cacheFresh && !forceRefresh) || refreshTooSoon) return Promise.resolve(buildUpdateStatus());
+
+  updateCheckState.lastNetworkCheckAt = now;
+  updateCheckState.inFlight = fetchLatestRelease()
+    .then((latest) => {
+      if (latest) updateCheckState.latest = latest;
+      updateCheckState.lastError = "";
+      updateCheckState.checkedAt = Date.now();
+      return buildUpdateStatus();
+    })
+    .catch((err) => {
+      updateCheckState.lastError = String(err && err.message ? err.message : err).slice(0, 240);
+      updateCheckState.checkedAt = Date.now();
+      return buildUpdateStatus();
+    })
+    .finally(() => { updateCheckState.inFlight = null; });
+  return updateCheckState.inFlight;
+}
 
 process.on("uncaughtException", err => {
   console.error("[proxy] UNCAUGHT EXCEPTION:", err.stack || err.message);
@@ -171,6 +539,7 @@ function loadConfig() {
     STREAM_LIFETIME = Math.min(7200000, Math.max(60000, parseInt(c.streamLifetime) || 1800000));
     config.streamLifetime = STREAM_LIFETIME;
     config.adminToken = c.adminToken || "";
+    config.updateBaselineTag = normalizeUpdateBaselineTag(c.updateBaselineTag);
     config.rateLimit = c.rateLimit !== false;
     config.maxRequestsPerMin = Math.max(1, parseInt(c.maxRequestsPerMin) || 10);
     config.maxTokensPerMin = Math.max(0, parseInt(c.maxTokensPerMin) || 0);
@@ -1000,6 +1369,13 @@ function pickKey(model, group) {
 
 // --- Request Queue ---
 function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform) {
+  if (restartState.phase === "draining") {
+    if (!clientRes.destroyed && !clientRes.headersSent) {
+      clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
+      clientRes.end(JSON.stringify({ error: "proxy is restarting" }));
+    }
+    return;
+  }
   group = group || "A";
   requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform });
   console.log(`[proxy] Queue depth: ${requestQueue.length}`);
@@ -1010,12 +1386,23 @@ function enqueueRequest(method, headers, body, clientRes, pathname, group, extra
 }
 
 function processQueue() {
+  if (restartState.phase === "draining") {
+    rejectQueuedRequestsForRestart();
+    return;
+  }
   if (queueProcessing) return;
   queueProcessing = true;
   const now = Date.now();
   const batch = [...requestQueue];
   requestQueue = [];
   for (const r of batch) {
+    if (restartState.phase === "draining") {
+      if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
+        r.clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
+        r.clientRes.end(JSON.stringify({ error: "proxy is restarting" }));
+      }
+      continue;
+    }
     if (now - r.time > QUEUE_TIMEOUT) {
       if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
         r.clientRes.writeHead(503, { "content-type": "application/json" });
@@ -1665,6 +2052,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .tab:hover{background:#475569}
 .btn{background:#334155;border:1px solid #475569;color:#e2e8f0;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:clamp(11px,1.4vw,12px);white-space:nowrap}
 .btn:hover{background:#475569}
+.btn:disabled{cursor:wait;opacity:.65}
 .btn-p{background:#1e3a5f;border-color:#3b82f6}
 .btn-p:hover{background:#1e4a7f}
 .btn-d{background:#3b1f1e;border-color:#7f3f3e}
@@ -1754,6 +2142,20 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .log-key-popup .stat-row .r{color:#e2e8f0}
 .file-banner{display:none;background:#1e3a5f;border:1px solid #3b82f6;border-radius:8px;padding:clamp(8px,1.5vw,10px) clamp(10px,2vw,14px);margin-bottom:clamp(8px,2vw,12px);font-size:clamp(12px,1.8vw,13px);color:#93c5fd;align-items:center;gap:10px}
 .file-banner.on{display:flex}
+.restart-overlay{display:none;position:fixed;inset:0;z-index:10000;padding:20px;background:rgba(2,6,23,.88);align-items:center;justify-content:center}
+.restart-overlay.on{display:flex}
+.restart-panel{width:min(420px,100%);background:#1e293b;border:1px solid #3b82f6;border-radius:8px;padding:24px;text-align:center;box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.restart-spinner{width:34px;height:34px;margin:0 auto 14px;border:3px solid #475569;border-top-color:#60a5fa;border-radius:50%;animation:restart-spin .8s linear infinite}
+.restart-overlay.error .restart-spinner{display:none}
+.restart-title{color:#f1f5f9;font-size:16px;font-weight:700;margin-bottom:8px}
+.restart-detail{color:#94a3b8;font-size:13px;line-height:1.55;min-height:40px}
+.restart-elapsed{color:#60a5fa;font-size:12px;margin-top:10px;min-height:18px}
+@keyframes restart-spin{to{transform:rotate(360deg)}}
+.update-badge{display:none;align-items:center;justify-content:center;min-width:30px;padding:3px 7px;background:#4a2708;border:1px solid #f59e0b;color:#fbbf24;border-radius:4px;cursor:pointer;font-size:14px;line-height:1;animation:update-pulse 1.35s ease-in-out infinite}
+.update-badge.on{display:inline-flex}
+.update-badge:hover{background:#6b3809;color:#fde68a}
+@keyframes update-pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}50%{box-shadow:0 0 0 5px rgba(245,158,11,.24)}}
+.update-notes{margin-top:10px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#0f172a;border:1px solid #334155;border-radius:4px;padding:10px;color:#cbd5e1;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 @media(max-width:600px){
   .controls{flex-direction:column;align-items:stretch}
   .controls select,.controls input{width:100%}
@@ -1775,6 +2177,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <button class="btn" onclick="openExportCover()">⬇ 导出 CSV</button>
 <button class="btn btn-p" onclick="openMgr()">⚙ 管理 Key</button>
 <button class="btn btn-s" onclick="openConfig()">⚙ 配置</button>
+<button class="update-badge" id="updateBadge" type="button" onclick="openUpdateModal()" title="发现可升级版本，点击查看 Release 说明与安全升级方法" aria-label="发现可升级版本">⬆</button>
 </div>
 </div>
 <div class="sub" id="sub">
@@ -1982,6 +2385,18 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <div class="mcontent">
 <div class="mtitle"><span>系统配置</span><button class="btn" onclick="closeConfig()">✕</button></div>
 <div style="font-size:11px;color:#94a3b8;margin-bottom:12px" id="configStatus">修改后自动保存</div>
+<div id="cfgVersionInfo" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 12px;padding:7px 9px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:11px;color:#94a3b8">
+  <span>本地构建：<strong id="cfgCurrentVersion" style="color:#e2e8f0">本地开发/定制版本（未能验证发布基线）</strong></span>
+  <span id="cfgBuildProvenance" style="color:#64748b">来源：待识别</span>
+  <a href="https://github.com/aipayim/codex-proxy" target="_blank" rel="noopener noreferrer" title="升级前先备份本机定制代码、配置和状态；在 GitHub 查看 Release 后合并变更，并在维护窗口验证、重启代理。" style="color:#60a5fa">GitHub 升级说明 ↗</a>
+  <button class="btn" type="button" onclick="openUpdateModal()" style="font-size:10px;padding:2px 6px">检查更新</button>
+  <span id="cfgUpdateStatus" style="color:#64748b"></span>
+  <div style="width:100%;display:flex;align-items:center;gap:7px;flex-wrap:wrap;color:#94a3b8">
+    <label for="cfgUpdateBaselineTag">定制构建基线 Tag（高级、可选）</label>
+    <input id="cfgUpdateBaselineTag" style="width:140px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="例如 v1.2.3" title="官方发布包和干净的正式 Git Tag 会自动识别。仅在定制构建需要比较时填写已人工确认的正式 GitHub Release Tag。">
+    <span style="color:#64748b">官方发布包自动识别；定制构建留空则只显示 Release，不判断更新。</span>
+  </div>
+</div>
 <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;font-size:12px">
   <div style="color:#94a3b8;padding:4px 0">💰 输入价格（每百万token）</div>
   <div><input id="cfgPriceIn" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0"></div>
@@ -2060,7 +2475,21 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
 <div style="font-size:11px;color:#22c55e;margin-bottom:8px" id="cfgAutoResumeStatus">🧬 闲置恢复: --</div>
-<div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
+<div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
+</div></div>
+
+<div class="modal" id="updateModal">
+<div class="mcontent" style="max-width:720px">
+<div class="mtitle"><span>版本更新</span><button class="btn" type="button" onclick="closeUpdateModal()">✕</button></div>
+<div id="updateSummary" style="font-size:13px;color:#cbd5e1;line-height:1.6">正在读取 GitHub Release 信息…</div>
+<pre class="update-notes" id="updateReleaseNotes">正在读取更新说明…</pre>
+<div id="updateSafety" style="margin-top:10px;padding:9px 10px;background:#3b2f1e;border:1px solid #a16207;border-radius:4px;color:#fde68a;font-size:12px;line-height:1.6"></div>
+<div class="mfoot">
+  <a class="btn" id="updateReleaseLink" href="https://github.com/aipayim/codex-proxy/releases" target="_blank" rel="noopener noreferrer">在 GitHub 查看 Release ↗</a>
+  <button class="btn" id="updateRefreshBtn" type="button" onclick="checkForUpdates(true)">↻ 重新检查</button>
+  <button class="btn" id="updateUpgradeBtn" type="button" disabled title="自动覆盖可能丢失本地修改，因此已禁用。">一键升级已禁用</button>
+  <button class="btn btn-p" type="button" onclick="closeUpdateModal()">关闭</button>
+</div>
 </div></div>
 
 <div class="modal" id="logModal">
@@ -2142,14 +2571,36 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div id="logKeyPopupBody"></div>
 </div>
 
+<div class="restart-overlay" id="restartOverlay" role="status" aria-live="polite">
+  <div class="restart-panel">
+    <div class="restart-spinner" aria-hidden="true"></div>
+    <div class="restart-title" id="restartOverlayTitle">正在重启代理</div>
+    <div class="restart-detail" id="restartOverlayDetail"></div>
+    <div class="restart-elapsed" id="restartOverlayElapsed"></div>
+    <button class="btn" id="restartOverlayDismiss" type="button" style="display:none;margin-top:14px">返回 Dashboard</button>
+  </div>
+</div>
+
 <script>
-let __adminToken=null;
+const __adminTokenState=(()=>{
+  let token=null;
+  return {
+    get(){return token;},
+    set(value){token=typeof value==="string"&&value.trim()?value.trim():null;},
+    clear(){token=null;}
+  };
+})();
+try{sessionStorage.removeItem("adminToken");}catch(e){}
 const __origFetch=window.fetch;
 window.fetch=function(u,o){
   o=o||{};
-  const t=__adminToken;
+  const t=__adminTokenState.get();
   if(t){
-    const isLocal=typeof u==="string"&&(u.startsWith("/__")||u.indexOf("localhost:3456")>=0||u.indexOf("127.0.0.1:3456")>=0);
+    let isLocal=false;
+    if(typeof u==="string"){
+      if(u.startsWith("/__")){isLocal=true;}
+      else{try{const url=new URL(u,location.href);if(url.origin===location.origin&&url.pathname.startsWith("/__"))isLocal=true;}catch(e){}}
+    }
     if(isLocal){
       const h=o.headers instanceof Headers?o.headers:new Headers(o.headers||{});
       h.set("Authorization","Bearer "+t);
@@ -2160,29 +2611,39 @@ window.fetch=function(u,o){
 };
 function requireAdminToken(){
   return new Promise((resolve)=>{
-    __origFetch("/__auth_check").then(r=>r.json()).then(j=>{
-      if(!j.configured){resolve(true);return;}
-      const saved=__adminToken;
-      if(saved){__origFetch("/__status",{headers:{"Authorization":"Bearer "+saved}}).then(r=>{resolve(r.ok);if(!r.ok){__adminToken=null;}}).catch(()=>resolve(false));return;}
+    const promptForToken=()=>{
       const d=document.createElement("div");
       d.id="tokenDialog";
       d.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999";
-      d.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:360px;text-align:center"><div style="color:#e2e8f0;font-size:16px;margin-bottom:12px">🔐 管理员认证</div><div style="color:#94a3b8;font-size:13px;margin-bottom:16px">请输入管理 Token 以访问 Dashboard</div><input id="tokenInput" type="password" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:4px;margin-bottom:12px" placeholder="管理 Token"><div id="tokenErr" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div><button id="tokenConfirmBtn" type="button" style="background:#3b82f6;color:#fff;border:none;padding:8px 24px;border-radius:4px;cursor:pointer">确认</button></div>';
+      d.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:360px;text-align:center"><div style="color:#e2e8f0;font-size:16px;margin-bottom:12px">🔐 管理员认证</div><div style="color:#94a3b8;font-size:13px;margin-bottom:16px">请输入管理 Token 以访问 Dashboard</div><input id="tokenInput" type="password" autocomplete="off" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:4px;margin-bottom:12px" placeholder="管理 Token"><div id="tokenErr" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div><button id="tokenConfirmBtn" type="button" style="background:#3b82f6;color:#fff;border:none;padding:8px 24px;border-radius:4px;cursor:pointer">确认</button></div>';
       document.body.appendChild(d);
       const tokenInput=document.getElementById("tokenInput");
       const tokenErr=document.getElementById("tokenErr");
       const submitToken=()=>{
         const v=tokenInput.value.trim();
         if(!v){tokenErr.textContent="请输入 Token";tokenErr.style.display="block";return;}
-        __adminToken=v;
+        __adminTokenState.set(v);
         __origFetch("/__status",{headers:{"Authorization":"Bearer "+v}}).then(r=>{
-          if(r.ok){d.remove();resolve(true);}
-          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";__adminToken=null;}
+          if(r.ok){tokenInput.value="";d.remove();resolve(true);}
+          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";__adminTokenState.clear();}
         }).catch(()=>{tokenErr.textContent="连接失败";tokenErr.style.display="block";});
       };
       document.getElementById("tokenConfirmBtn").addEventListener("click",submitToken);
       tokenInput.focus();
       tokenInput.addEventListener("keydown",e=>{if(e.key==="Enter")submitToken();});
+    };
+    __origFetch("/__auth_check").then(r=>r.json()).then(j=>{
+      if(!j.configured){__adminTokenState.clear();resolve(true);return;}
+      const saved=__adminTokenState.get();
+      if(saved){
+        __origFetch("/__status",{headers:{"Authorization":"Bearer "+saved}}).then(r=>{
+          if(r.ok){resolve(true);return;}
+          __adminTokenState.clear();
+          promptForToken();
+        }).catch(()=>resolve(false));
+        return;
+      }
+      promptForToken();
     }).catch(()=>resolve(true));
   });
 }
@@ -2203,7 +2664,109 @@ let wsFailed=false;
 let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
 let lastRequestTime=0,lastResumeTime=0;
 let collapsedCards={};
+let updateInfo=null;
+const UPDATE_UI_RECHECK_MS=30*60*1000;
+const UNKNOWN_LOCAL_BUILD_LABEL="本地开发/定制版本（未能验证发布基线）";
 boostedBatch=[];boostedBatchMode="";
+
+function formatUpdateCheckTime(value){
+  if(!value)return "尚未检查";
+  const d=new Date(value);
+  if(isNaN(d.getTime()))return "刚刚检查";
+  return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+}
+function formatUpdatePublishedAt(value){
+  if(!value)return "";
+  const d=new Date(value);
+  if(isNaN(d.getTime()))return "";
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+}
+function renderUpdateInfo(){
+  const current=updateInfo&&updateInfo.current;
+  const latest=updateInfo&&updateInfo.latest;
+  const currentLabel=(current&&current.label)||UNKNOWN_LOCAL_BUILD_LABEL;
+  const currentComparable=!!(current&&current.comparable);
+  const provenanceLabel=(current&&current.provenanceLabel)||"本地来源未验证";
+  const currentEl=document.getElementById("cfgCurrentVersion");
+  if(currentEl)currentEl.textContent=currentLabel;
+  const provenanceEl=document.getElementById("cfgBuildProvenance");
+  if(provenanceEl)provenanceEl.textContent="来源："+provenanceLabel;
+  const badge=document.getElementById("updateBadge");
+  const hasUpdate=!!(updateInfo&&updateInfo.updateAvailable&&latest);
+  if(badge){
+    badge.classList.toggle("on",hasUpdate);
+    badge.title=hasUpdate?"发现 "+latest.tag+"，点击查看 Release 说明与安全升级方法":(currentComparable?"当前没有可升级的正式 Release":"本地来源未验证；仅展示 GitHub Release 信息");
+  }
+  const status=document.getElementById("cfgUpdateStatus");
+  if(status){
+    if(!updateInfo)status.textContent="正在检查 GitHub Release…";
+    else if(updateInfo.lastError&&!latest)status.textContent="检查失败："+updateInfo.lastError;
+    else if(latest&&!currentComparable)status.textContent="本地来源未验证；仅展示 Release（检查于 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
+    else if(hasUpdate)status.textContent="发现新版本 "+latest.tag+"（已检查 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
+    else status.textContent="已确认基线不低于最新 Release（检查于 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
+  }
+  renderUpdateModal();
+}
+function renderUpdateModal(){
+  const modal=document.getElementById("updateModal");
+  if(!modal||!modal.classList.contains("on"))return;
+  const summary=document.getElementById("updateSummary");
+  const notes=document.getElementById("updateReleaseNotes");
+  const safety=document.getElementById("updateSafety");
+  const link=document.getElementById("updateReleaseLink");
+  if(!updateInfo){
+    summary.textContent="正在读取 GitHub Release 信息…";
+    notes.textContent="正在读取更新说明…";
+    safety.textContent="自动覆盖升级不会在后台执行。";
+    return;
+  }
+  const currentInfo=updateInfo.current||{};
+  const current=currentInfo.label||UNKNOWN_LOCAL_BUILD_LABEL;
+  const currentComparable=currentInfo.comparable===true;
+  const provenanceLabel=currentInfo.provenanceLabel||"本地来源未验证";
+  const latest=updateInfo.latest;
+  if(latest){
+    const published=formatUpdatePublishedAt(latest.publishedAt);
+    const releaseMeta=published?" 发布于 "+published+"。":"";
+    summary.textContent=!currentComparable
+      ? "本地构建来源未验证（"+provenanceLabel+"）。最新正式 Release："+latest.tag+"。该信息仅供查看，不判断本机是否需要升级。"+releaseMeta
+      : updateInfo.updateAvailable
+        ? "发现可升级版本："+latest.tag+"。当前："+current+"。"+releaseMeta
+        : "当前："+current+"；最新正式 Release："+latest.tag+"。"+releaseMeta;
+    notes.textContent=latest.notes||"该 Release 未提供文字说明。";
+    link.href=latest.url||"https://github.com/aipayim/codex-proxy/releases";
+  }else{
+    summary.textContent="暂时无法读取 GitHub Release 信息。";
+    notes.textContent=updateInfo.lastError||"请稍后重新检查，或直接在 GitHub 查看 Release。";
+    link.href="https://github.com/aipayim/codex-proxy/releases";
+  }
+  safety.textContent="官方发布包会通过随包构建元数据和文件清单自动识别；官方 Git 工作树只有在干净且正好位于正式 Tag 时才自动识别。当前构建可能包含本地修改，因此自动覆盖式一键升级仍禁用。定制构建如需比较，可在系统配置填写已人工确认的正式 Release Tag；否则只查看 Release。升级前备份当前代理目录及配置/状态，审核变更、执行 node -c proxy.js 后，再于维护窗口重启代理。";
+}
+async function checkForUpdates(force){
+  const refresh=document.getElementById("updateRefreshBtn");
+  if(force&&refresh){refresh.disabled=true;refresh.textContent="检查中…";}
+  try{
+    const r=await fetch("/__update-status"+(force?"?refresh=1":""),{cache:"no-store"});
+    const result=await r.json();
+    if(!result||typeof result!=="object")throw new Error("更新检查返回格式无效");
+    updateInfo=result;
+  }catch(e){
+    updateInfo={current:{label:UNKNOWN_LOCAL_BUILD_LABEL,comparable:false,provenanceLabel:"本地来源未验证"},lastError:e.message||"更新检查失败"};
+  }finally{
+    renderUpdateInfo();
+    if(force&&refresh){refresh.disabled=false;refresh.textContent="↻ 重新检查";}
+  }
+}
+function startUpdateChecks(){
+  checkForUpdates(false);
+  if(!window.updateCheckTimer)window.updateCheckTimer=setInterval(function(){checkForUpdates(false);},UPDATE_UI_RECHECK_MS);
+}
+function openUpdateModal(){
+  document.getElementById("updateModal").classList.add("on");
+  renderUpdateModal();
+  checkForUpdates(false);
+}
+function closeUpdateModal(){document.getElementById("updateModal").classList.remove("on");}
 
 async function httpLoad(){
   try{
@@ -2217,8 +2780,8 @@ async function httpLoad(){
 
 function connectWS(){
   wsFailed=false;
-  const wsUrl="ws://localhost:3456"+(__adminToken?"?token="+encodeURIComponent(__adminToken):"");
-  ws=new WebSocket(wsUrl);
+  const t=__adminTokenState.get();
+  ws=new WebSocket("ws://localhost:3456"+(t?"?token="+encodeURIComponent(t):""));
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
@@ -2251,9 +2814,15 @@ function connectWS(){
       }
     }catch(e){}
   };
-  ws.onclose=function(){
+  ws.onclose=function(e){
     wsFailed=true;
     if(pollTimer)clearInterval(pollTimer);
+    if(e&&e.code===4001){
+      __adminTokenState.clear();
+      if(wsReconnectTimer){clearTimeout(wsReconnectTimer);wsReconnectTimer=null;}
+      requireAdminToken().then(ok=>{if(ok)connectWS()});
+      return;
+    }
     pollTimer=setInterval(httpLoad,5000);
     httpLoad();
     wsReconnectTimer=setTimeout(connectWS,5000);
@@ -2306,6 +2875,7 @@ async function loadConfigUI(){
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
     document.getElementById("cfgStreamLifetime").value=c.streamLifetime||1800000;
     document.getElementById("cfgAdminToken").value=c.adminToken||"";
+    document.getElementById("cfgUpdateBaselineTag").value=c.updateBaselineTag||"";
     try{
       const sr=await fetch("/__status");
       const sd=await sr.json();
@@ -2464,7 +3034,7 @@ function renderResumeProjects(projects){
     const p=list[i];
     html+='<div class="resume-proj-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px">'+
       '<input placeholder="项目名" class="rp-name" value="'+esc(p.name||'')+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-      '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+      '<input placeholder="WSL 路径 /mnt/d/..." class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
       '<input placeholder="命令 codex ..." class="rp-cmd" value="'+esc(p.cmd||'')+'" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
       '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button></div>';
   }
@@ -2480,7 +3050,7 @@ function addResumeProject(){
   div.className="resume-proj-row";
   div.style.cssText="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px";
   div.innerHTML='<input placeholder="项目名" class="rp-name" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-    '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+    '<input placeholder="WSL 路径 /mnt/d/..." class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
     '<input placeholder="命令 codex ..." class="rp-cmd" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
     '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button>';
   container.querySelector("div").appendChild(div);
@@ -2930,7 +3500,7 @@ function boostKey(idx){
   fetch("http://localhost:3456/__boost-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx})})
     .then(r=>r.json()).catch(()=>{});
 }
-requireAdminToken().then(ok=>{if(ok){loadKeys();connectWS();if(Notification.permission==="default")Notification.requestPermission();}});
+requireAdminToken().then(ok=>{if(ok){loadKeys();connectWS();startUpdateChecks();if(Notification.permission==="default")Notification.requestPermission();}});
 setTimeout(function(){if(!data.length)httpLoad()},3000);
 
 document.getElementById("sortBy").addEventListener("change",function(){sortBy=this.value;render()});
@@ -2942,6 +3512,7 @@ document.getElementById("searchBox").addEventListener("input",function(){searchQ
 document.getElementById("statusCodeBox").addEventListener("input",function(){statusCodeQ=this.value.trim();render()});
 document.getElementById("modelSearchBox").addEventListener("input",function(){modelSQ=this.value.trim();render()});
 document.getElementById("groupFilter").addEventListener("change",function(){groupFilter=this.value;render()});
+document.getElementById("restartOverlayDismiss").addEventListener("click",dismissRestartOverlay);
 
 let mgrKeys=[];
 let logInterval=null;
@@ -3862,7 +4433,7 @@ function exportLogs(){
   window.open("http://localhost:3456/__logs?"+q.toString()+"&format=csv");
 }
 
-function openConfig(){loadConfigUI();document.getElementById("configModal").classList.add("on")}
+function openConfig(){renderUpdateInfo();loadConfigUI();document.getElementById("configModal").classList.add("on")}
 function closeConfig(){document.getElementById("configModal").classList.remove("on")}
 async function saveConfig(){
   const c={
@@ -3889,6 +4460,7 @@ async function saveConfig(){
     maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0,
     streamLifetime:parseInt(document.getElementById("cfgStreamLifetime").value)||1800000,
     adminToken:document.getElementById("cfgAdminToken").value.trim(),
+    updateBaselineTag:document.getElementById("cfgUpdateBaselineTag").value.trim(),
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
     logFile:document.getElementById("cfgLogFile").checked,
@@ -3903,14 +4475,138 @@ async function saveConfig(){
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
     const j=await r.json();
-    if(j.ok){closeConfig()}else{document.getElementById("configStatus").textContent="保存失败"};
+    if(j.ok){closeConfig();checkForUpdates(false)}else{document.getElementById("configStatus").textContent="保存失败: "+(j.error||"未知错误")};
   }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
 }
-function restartProxy(){
-  if(!confirm("确定要重启代理进程？\\n正在进行的请求可能中断，但 codex 会自动重试。"))return;
-  fetch("http://localhost:3456/__restart",{method:"POST"})
-    .then(r=>r.json()).then(j=>{if(j.ok)setTimeout(function(){location.reload()},1500)})
-    .catch(()=>{});
+let restartPollTimer=null,restartElapsedTimer=null,restartPollingActive=false,restartOldInstanceId="",restartStartedAt=0;
+function restartElapsedText(){
+  const seconds=Math.max(0,Math.floor((Date.now()-restartStartedAt)/1000));
+  return seconds<60?seconds+" 秒":Math.floor(seconds/60)+" 分 "+(seconds%60)+" 秒";
+}
+function refreshRestartElapsed(){
+  const elapsed=document.getElementById("restartOverlayElapsed");
+  if(elapsed)elapsed.textContent=restartStartedAt?"已等待 "+restartElapsedText():"";
+}
+function startRestartElapsedTimer(){
+  if(restartElapsedTimer)clearInterval(restartElapsedTimer);
+  refreshRestartElapsed();
+  restartElapsedTimer=setInterval(refreshRestartElapsed,1000);
+}
+function stopRestartElapsedTimer(){
+  if(restartElapsedTimer){clearInterval(restartElapsedTimer);restartElapsedTimer=null;}
+}
+async function fetchRestartStatus(){
+  if(typeof AbortController==="undefined")return fetch("/__restart-status",{cache:"no-store"});
+  const controller=new AbortController();
+  const timeout=setTimeout(function(){controller.abort();},3500);
+  try{return await fetch("/__restart-status",{cache:"no-store",signal:controller.signal});}
+  finally{clearTimeout(timeout);}
+}
+function updateRestartOverlay(title,detail,isError){
+  const overlay=document.getElementById("restartOverlay");
+  overlay.classList.add("on");
+  overlay.classList.toggle("error",!!isError);
+  document.getElementById("restartOverlayTitle").textContent=title;
+  document.getElementById("restartOverlayDetail").textContent=detail;
+  refreshRestartElapsed();
+  document.getElementById("restartOverlayDismiss").style.display=isError?"inline-block":"none";
+}
+function dismissRestartOverlay(){
+  restartPollingActive=false;
+  if(restartPollTimer){clearTimeout(restartPollTimer);restartPollTimer=null;}
+  stopRestartElapsedTimer();
+  restartStartedAt=0;
+  document.getElementById("restartOverlay").classList.remove("on","error");
+  const btn=document.getElementById("restartProxyBtn");
+  if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+}
+function scheduleRestartStatusPoll(delay){
+  if(!restartPollingActive)return;
+  if(restartPollTimer)clearTimeout(restartPollTimer);
+  restartPollTimer=setTimeout(pollRestartStatus,delay);
+}
+async function pollRestartStatus(){
+  if(!restartPollingActive)return;
+  let title="正在等待新的代理实例",detail="旧代理已停止，正在等待 watchdog 启动新实例。";
+  try{
+    const r=await fetchRestartStatus();
+    if(!restartPollingActive)return;
+    if(r.status===401)throw new Error("管理认证失效，请重新打开 Dashboard 后重试");
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const status=await r.json();
+    if(!restartPollingActive)return;
+    if(restartOldInstanceId&&status.instanceId!==restartOldInstanceId&&status.phase==="ready"){
+      restartPollTimer=null;
+      restartPollingActive=false;
+      stopRestartElapsedTimer();
+      updateRestartOverlay("新代理实例已就绪","正在重新载入 Dashboard…",false);
+      setTimeout(function(){location.reload();},350);
+      return;
+    }
+    if(status.phase==="draining"){
+      title="正在排空进行中的请求";
+      detail="仍有 "+(status.activeRequests||0)+" 个请求正在完成"+((status.queuedRequests||0)>0?"，另有 "+(status.queuedRequests||0)+" 个排队请求。":"。");
+    }else{
+      title="正在等待旧代理退出";
+      detail="重启请求已提交，正在准备切换到新实例。";
+    }
+  }catch(e){
+    if(!restartPollingActive)return;
+    if(e.message.indexOf("管理认证失效")>=0){
+      restartPollingActive=false;
+      stopRestartElapsedTimer();
+      updateRestartOverlay("无法确认重启状态",e.message,true);
+      return;
+    }
+  }
+  if(!restartPollingActive)return;
+  if(Date.now()-restartStartedAt>=120000)detail+=" 已等待较久，请检查 watchdog 日志。";
+  updateRestartOverlay(title,detail,false);
+  scheduleRestartStatusPoll(1000);
+}
+async function restartProxy(){
+  if(!confirm("确定要重启代理进程？\\n新的 API 请求会暂时暂停，进行中的请求会先排空。"))return;
+  const btn=document.getElementById("restartProxyBtn");
+  if(btn){btn.disabled=true;btn.textContent="正在重启…";}
+  restartPollingActive=true;restartStartedAt=Date.now();restartOldInstanceId="";
+  startRestartElapsedTimer();
+  updateRestartOverlay("正在确认代理状态","正在提交安全重启请求…",false);
+  let restartRequestAttempted=false,restartRequestRejected=false;
+  try{
+    const beforeRes=await fetchRestartStatus();
+    if(!beforeRes.ok)throw new Error("无法读取当前代理状态（HTTP "+beforeRes.status+"）");
+    const before=await beforeRes.json();
+    restartOldInstanceId=before.instanceId||"";
+    restartRequestAttempted=true;
+    const r=await fetch("/__restart",{method:"POST",cache:"no-store"});
+    if(!r.ok){
+      let result={};
+      try{result=await r.json();}catch(e){}
+      restartRequestRejected=true;
+      throw new Error(result.error||"重启请求被拒绝（HTTP "+r.status+"）");
+    }
+    const result=await r.json();
+    if(!result.ok){
+      restartRequestRejected=true;
+      throw new Error(result.error||"重启请求被拒绝（HTTP "+r.status+"）");
+    }
+    restartOldInstanceId=result.instanceId||restartOldInstanceId;
+    const active=result.activeRequests||0;
+    const queued=result.cancelledQueuedRequests||0;
+    updateRestartOverlay("重启请求已提交",active?"正在等待 "+active+" 个进行中的请求完成。":"没有进行中的请求，正在停止旧代理实例。",false);
+    if(queued>0)document.getElementById("restartOverlayDetail").textContent+=" 已取消 "+queued+" 个排队请求。";
+    scheduleRestartStatusPoll(750);
+  }catch(e){
+    if(restartRequestAttempted&&!restartRequestRejected&&restartOldInstanceId){
+      updateRestartOverlay("正在确认重启状态","请求连接在重启期间中断，正在等待新实例恢复。",false);
+      scheduleRestartStatusPoll(1000);
+      return;
+    }
+    restartPollingActive=false;
+    stopRestartElapsedTimer();
+    updateRestartOverlay("未能提交重启请求",e.message||"请检查代理状态后重试。",true);
+    if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+  }
 }
 function batchActionCards(action){
   if(action==="cancelboost"){
@@ -4499,7 +5195,7 @@ function createGroupServer(groupName, port) {
 
   const cors = { "content-type": "application/json; charset=utf-8" };
 
-  if (pathname.startsWith("/__") && pathname !== "/__auth_check" && !checkAdminAuth(req)) {
+  if ((pathname.startsWith("/__") || pathname === "/metrics") && pathname !== "/__auth_check" && !checkAdminAuth(req)) {
     res.writeHead(401, cors);
     res.end(JSON.stringify({ error: "unauthorized" }));
     return;
@@ -4508,6 +5204,33 @@ function createGroupServer(groupName, port) {
   if (req.method === "GET" && pathname === "/__auth_check") {
     res.writeHead(200, cors);
     res.end(JSON.stringify({ configured: !!(config.adminToken) }));
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/__restart-status") {
+    res.writeHead(200, { ...cors, "cache-control": "no-store" });
+    res.end(JSON.stringify({ ok: true, ...buildRestartStatus() }));
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/__update-status") {
+    const requestUrl = new URL(req.url, "http://localhost");
+    const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
+    getUpdateStatus(forceRefresh).then((status) => {
+      if (res.destroyed) return;
+      res.writeHead(status.ok ? 200 : 502, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify(status));
+    }).catch((err) => {
+      if (res.destroyed) return;
+      res.writeHead(502, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err).slice(0, 240) }));
+    });
+    return;
+  }
+
+  if (restartState.phase === "draining" && pathname !== "/__restart") {
+    res.writeHead(503, { ...cors, "retry-after": "5" });
+    res.end(JSON.stringify({ error: "proxy is restarting", ...buildRestartStatus() }));
     return;
   }
 
@@ -4543,6 +5266,14 @@ function createGroupServer(groupName, port) {
         const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const c = JSON.parse(body);
+          if (Object.prototype.hasOwnProperty.call(c, "updateBaselineTag")) {
+            const rawBaselineTag = c.updateBaselineTag == null ? "" : String(c.updateBaselineTag).trim();
+            const normalizedBaselineTag = normalizeUpdateBaselineTag(rawBaselineTag);
+            if (rawBaselineTag && !normalizedBaselineTag) {
+              throw new Error("updateBaselineTag must be a stable Release tag such as v2.29.1");
+            }
+            c.updateBaselineTag = normalizedBaselineTag;
+          }
           const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
           const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
           Object.assign(cur, c);
@@ -5340,16 +6071,24 @@ function createGroupServer(groupName, port) {
 
   if (pathname === "/__restart") {
     if (req.method === "POST") {
-      res.writeHead(200, cors);
-      res.end(JSON.stringify({ ok: true, message: "draining and exiting, watchdog will restart" }));
-      if (global._restarting) return;
+      if (global._restarting || restartState.phase === "draining") {
+        res.writeHead(409, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: false, error: "restart already in progress", ...buildRestartStatus() }));
+        return;
+      }
       global._restarting = true;
-      const drainStart = Date.now();
+      restartState = { phase: "draining", startedAt: Date.now() };
+      const cancelledQueuedRequests = rejectQueuedRequestsForRestart();
+      const initialStatus = buildRestartStatus();
+      res.writeHead(202, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({ ok: true, message: "draining active requests before restart", cancelledQueuedRequests, ...initialStatus }));
+      const drainStart = restartState.startedAt;
       const warnDrainMs = 30000;
       let warned = false;
       const drainCheck = () => {
-        const total = Object.values(activeRequests).reduce((s, a) => s + (Array.isArray(a) ? a.length : 0), 0);
+        const total = getActiveRequestCount();
         if (total === 0) {
+          restartState.phase = "stopping";
           console.log(`[proxy] drain complete (${Date.now()-drainStart}ms), exiting for watchdog restart...`);
           process.exit(0);
         } else if (!warned && Date.now() - drainStart >= warnDrainMs) {
@@ -5358,10 +6097,8 @@ function createGroupServer(groupName, port) {
         }
         setTimeout(drainCheck, 1000);
       };
-      setImmediate(() => {
-        for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
-        setTimeout(drainCheck, 1000);
-      });
+      // Keep the listener available for authenticated restart-status polling while in-flight requests drain.
+      setTimeout(drainCheck, 250);
       return;
     }
     res.writeHead(405, cors);
@@ -5614,5 +6351,6 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Start servers
 loadConfig();
+refreshLocalBuildProvenance();
 cleanOldLogs();
 initServers();
