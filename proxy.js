@@ -2574,10 +2574,19 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 </div>
 
 <script>
+const __adminTokenState=(()=>{
+  let token=null;
+  return {
+    get(){return token;},
+    set(value){token=typeof value==="string"&&value.trim()?value.trim():null;},
+    clear(){token=null;}
+  };
+})();
+try{sessionStorage.removeItem("adminToken");}catch(e){}
 const __origFetch=window.fetch;
 window.fetch=function(u,o){
   o=o||{};
-  const t=sessionStorage.getItem("adminToken");
+  const t=__adminTokenState.get();
   if(t){
     let isLocal=false;
     if(typeof u==="string"){
@@ -2594,29 +2603,39 @@ window.fetch=function(u,o){
 };
 function requireAdminToken(){
   return new Promise((resolve)=>{
-    __origFetch("/__auth_check").then(r=>r.json()).then(j=>{
-      if(!j.configured){resolve(true);return;}
-      const saved=sessionStorage.getItem("adminToken");
-      if(saved){__origFetch("/__status",{headers:{"Authorization":"Bearer "+saved}}).then(r=>{resolve(r.ok);if(!r.ok)sessionStorage.removeItem("adminToken");}).catch(()=>resolve(false));return;}
+    const promptForToken=()=>{
       const d=document.createElement("div");
       d.id="tokenDialog";
       d.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999";
-      d.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:360px;text-align:center"><div style="color:#e2e8f0;font-size:16px;margin-bottom:12px">🔐 管理员认证</div><div style="color:#94a3b8;font-size:13px;margin-bottom:16px">请输入管理 Token 以访问 Dashboard</div><input id="tokenInput" type="password" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:4px;margin-bottom:12px" placeholder="管理 Token"><div id="tokenErr" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div><button id="tokenConfirmBtn" type="button" style="background:#3b82f6;color:#fff;border:none;padding:8px 24px;border-radius:4px;cursor:pointer">确认</button></div>';
+      d.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:360px;text-align:center"><div style="color:#e2e8f0;font-size:16px;margin-bottom:12px">🔐 管理员认证</div><div style="color:#94a3b8;font-size:13px;margin-bottom:16px">请输入管理 Token 以访问 Dashboard</div><input id="tokenInput" type="password" autocomplete="off" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:4px;margin-bottom:12px" placeholder="管理 Token"><div id="tokenErr" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div><button id="tokenConfirmBtn" type="button" style="background:#3b82f6;color:#fff;border:none;padding:8px 24px;border-radius:4px;cursor:pointer">确认</button></div>';
       document.body.appendChild(d);
       const tokenInput=document.getElementById("tokenInput");
       const tokenErr=document.getElementById("tokenErr");
       const submitToken=()=>{
         const v=tokenInput.value.trim();
         if(!v){tokenErr.textContent="请输入 Token";tokenErr.style.display="block";return;}
-        sessionStorage.setItem("adminToken",v);
+        __adminTokenState.set(v);
         __origFetch("/__status",{headers:{"Authorization":"Bearer "+v}}).then(r=>{
-          if(r.ok){d.remove();resolve(true);}
-          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";sessionStorage.removeItem("adminToken");}
+          if(r.ok){tokenInput.value="";d.remove();resolve(true);}
+          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";__adminTokenState.clear();}
         }).catch(()=>{tokenErr.textContent="连接失败";tokenErr.style.display="block";});
       };
       document.getElementById("tokenConfirmBtn").addEventListener("click",submitToken);
       tokenInput.focus();
       tokenInput.addEventListener("keydown",e=>{if(e.key==="Enter")submitToken();});
+    };
+    __origFetch("/__auth_check").then(r=>r.json()).then(j=>{
+      if(!j.configured){__adminTokenState.clear();resolve(true);return;}
+      const saved=__adminTokenState.get();
+      if(saved){
+        __origFetch("/__status",{headers:{"Authorization":"Bearer "+saved}}).then(r=>{
+          if(r.ok){resolve(true);return;}
+          __adminTokenState.clear();
+          promptForToken();
+        }).catch(()=>resolve(false));
+        return;
+      }
+      promptForToken();
     }).catch(()=>resolve(true));
   });
 }
@@ -2753,7 +2772,7 @@ async function httpLoad(){
 
 function connectWS(){
   wsFailed=false;
-  const t=sessionStorage.getItem("adminToken");
+  const t=__adminTokenState.get();
   ws=new WebSocket("ws://localhost:3456"+(t?"?token="+encodeURIComponent(t):""));
   ws.onmessage=function(e){
     try{
@@ -2787,9 +2806,15 @@ function connectWS(){
       }
     }catch(e){}
   };
-  ws.onclose=function(){
+  ws.onclose=function(e){
     wsFailed=true;
     if(pollTimer)clearInterval(pollTimer);
+    if(e&&e.code===4001){
+      __adminTokenState.clear();
+      if(wsReconnectTimer){clearTimeout(wsReconnectTimer);wsReconnectTimer=null;}
+      requireAdminToken().then(ok=>{if(ok)connectWS()});
+      return;
+    }
     pollTimer=setInterval(httpLoad,5000);
     httpLoad();
     wsReconnectTimer=setTimeout(connectWS,5000);

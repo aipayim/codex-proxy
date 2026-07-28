@@ -66,6 +66,15 @@ function copyTree(sourceDir, destinationDir) {
   }
 }
 
+function testDashboardAdminTokenMemory(html) {
+  assert.match(html, /const __adminTokenState=\(\(\)=>\{/);
+  assert.match(html, /sessionStorage\.removeItem\("adminToken"\)/);
+  assert.doesNotMatch(html, /sessionStorage\.(?:getItem|setItem)\("adminToken"\)/);
+  assert.match(html, /window\.fetch=function\(u,o\)\{[\s\S]*?const t=__adminTokenState\.get\(\);/);
+  assert.match(html, /function connectWS\(\)\{[\s\S]*?const t=__adminTokenState\.get\(\);/);
+  assert.match(html, /e&&e\.code===4001[\s\S]*?__adminTokenState\.clear\(\)/);
+}
+
 function testReleaseArtifact(releaseDir) {
   const buildInfo = JSON.parse(fs.readFileSync(path.join(releaseDir, "build-info.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(path.join(releaseDir, "release-manifest.json"), "utf8"));
@@ -92,6 +101,7 @@ function testReleaseArtifact(releaseDir) {
   assert.strictEqual(status.updateAvailable, true);
   const html = harness.getDashboardHTML();
   for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new Function(match[1]);
+  testDashboardAdminTokenMemory(html);
   const sourceRoot = __dirname.replace(/\\/g, "/");
   assert.ok(!html.includes(sourceRoot));
 

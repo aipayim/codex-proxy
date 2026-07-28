@@ -478,7 +478,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 ## API 接口
 
-> 所有 `/__*` 管理接口及 `/metrics` 在设置了管理 Token 后需 `Authorization: Bearer <token>` 认证（constant-time 比较，空 token 拒绝）。WebSocket 连接需在 URL 中携带 `?token=<token>` 参数。Dashboard 首次打开时弹出 Token 输入框，输入后保存到 sessionStorage（同浏览器会话内免重复输入，关闭浏览器后需重新输入）。无 Token 时 Dashboard 正常使用。
+> 所有 `/__*` 管理接口及 `/metrics` 在设置了管理 Token 后需 `Authorization: Bearer <token>` 认证（constant-time 比较，空 token 拒绝）。WebSocket 连接需在 URL 中携带 `?token=<token>` 参数。Dashboard 首次打开时弹出 Token 输入框；Token 仅保存在当前页面内存，刷新或关闭页面后需重新输入。升级后的首次加载会清除旧版浏览器会话存储中的 Token。无 Token 时 Dashboard 正常使用。
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
@@ -1229,11 +1229,23 @@ A: 点击 📋 按钮 → 粘贴每行一个 `sk-xxx url 周期 备注` → 确�
 **Q: 配置弹窗的「重启代理」按钮点不了？**
 A: 新版会在点击后显示重启进度，并在新实例就绪后自动刷新。若当前运行的是更新前的 `proxy.js`，需先在维护窗口手工重启一次，加载新版后该交互才会生效。
 
+**Q: 为什么刷新 Dashboard 后需要重新输入管理 Token？**
+A: 管理 Token 仅保存在当前页面内存，不写入浏览器持久化或会话存储。刷新、关闭页面或 WebSocket 认证失效后需要重新认证。
+
 **Q: 为什么没有出现更新标识，或「一键升级」被禁用？**
 A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正式 Release 时会显示标识。开发分支、本地修改或来源未知的副本默认不显示标识，只展示 Release；这时可保持空白，或在确有把握时填写「定制构建基线 Tag（高级）」。可在系统配置中点击「检查更新」复查。为避免覆盖本地修改，面板只提供 Release 信息和安全升级步骤，不会自动替换源码。
 
+## 贡献者致谢
+
+本节归集经审查后被采纳的公开贡献、问题报告和设计建议；后续贡献者将按其实际贡献持续补充。
+
+| 贡献者 | 贡献 |
+|---|---|
+| [@anupamme](https://github.com/anupamme) | 提出管理 Token 不应保存于浏览器会话存储的安全改进思路（PR [#1](https://github.com/aipayim/codex-proxy/pull/1)）。当前版本在最新代码上完成了内存态适配，并补齐 WebSocket 认证路径。 |
+
 ## 更新日志
 
+- **2026-07-28 管理 Token 内存态**：Dashboard 管理 Token 改为仅存于当前页面内存；启动时清除旧版会话存储残留，HTTP 与 WebSocket 共用同一认证状态，WebSocket 返回 `4001` 时重新认证。感谢 @anupamme 提供安全改进思路。
 - **2026-07-28 发布来源识别**：新增 `npm run build:release`，生成不含运行敏感文件的 Release 资产、`build-info.json` 和 SHA-256 清单。未修改的官方发布资产及干净官方 Git Release Tag 自动比较版本；开发/定制副本 fail-closed。watchdog 改为从自身目录定位代理，移除固定机器路径。
 - **2026-07-28 版本基线修正**：移除固定本地版本和具体本机目录说明。`updateBaselineTag` 保留为定制构建的高级手动基线；来源未知时只展示 Release，不误报更新。覆盖式一键升级继续禁用。
 - **2026-07-28 重启计时与版本检查**：重启遮罩新增独立 1 秒计时和状态请求超时，不再因旧进程连接切换而停在 `0 秒`。Dashboard 新增 GitHub Release 缓存检查、更新闪烁标识、版本/Release Notes 弹窗及系统配置版本链接；覆盖式一键升级保持禁用。
