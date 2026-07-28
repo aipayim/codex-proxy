@@ -36,6 +36,7 @@ codex-proxy/
 ├── package.json          # npm 依赖（仅 ws）
 ├── build-release.js      # 生成带来源及完整性元数据的发布资产
 ├── test-release-provenance.js # 发布来源判定回归测试
+├── test-stream-lifecycle.js # Responses 流终态回归测试
 ├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
@@ -458,17 +459,17 @@ codex
 ### 日志查看器
 顶部统计卡片展示全局指标：总请求数、成功率（按百分比着色：≥95% 绿、≥80% 黄、<80% 红）、平均耗时、P95、P99、4xx 数、5xx 数、超时数。
 统计卡片下方为 **30 分钟请求量 sparkline 图**（蓝色柱=成功请求，红色柱=含错误的分钟，悬停显示具体数字）和 **模型分布行**（Top 8 模型：请求数、错误数、平均耗时，点击 Key 号可查看该 Key 的独立统计弹窗）。
-可折叠 **错误分布区**：按错误码聚类显示次数（超时/4xx/5xx），点击展开详情。
+可折叠 **错误分布区**：按错误码和流中断聚类显示次数（超时/4xx/5xx/流中断），点击展开详情。
 表格列：序 / 时间（可排序） / Key 序号（可排序，点击弹出该 Key 独立统计卡片） / 上游 URL / HTTP 方法 / 模型（可排序） / 路径 / 状态码（可排序） / 上行流量 / 下行流量 / 耗时（可排序） / 首字节耗时。
-事件行（紫色/绿色/红色/橙色背景）：协议转换（带 `R→C`/`M→C`/`C→M` 方向标签）、自动恢复、自动锁死、废弃——以不同颜色区分。
-**点击行展开详情**：显示完整时间戳、模型、协议转换标志、URL、请求/响应字节数等详细信息。
+事件行（紫色/绿色/红色/橙色背景）：协议转换（带 `R→C`/`M→C`/`C→M` 方向标签）、自动恢复、自动锁死、废弃、流终态——以不同颜色区分。
+**点击行展开详情**：显示完整时间戳、模型、协议转换标志、URL、请求/响应字节数，以及流 ID、终态、终态原因和是否收到 `[DONE]`。
 实时推送：WebSocket 自动追加新日志到当前页末尾，同时更新 sparkline/模型分布/错误聚类。
 分页：每页 200 条，上一页/下一页按钮 + 页码显示。
 支持筛选：按 Key 序号、状态码（支持 `4xx` `5xx` 通配）、模型名子串、时间范围（5 分钟/15 分钟/1 小时/24 小时/7 天/30 天/自定义范围）。
 自定义范围使用 `<input type="datetime-local">` 选择起止时间，选中「自定义范围」后显示输入框。
 选择 24h/7d/30d 或自定义范围时，服务端自动读取 `logs/` 目录下的历史 JSONL 文件与内存日志合并去重，支持回溯已保存的日志文件。
 支持 CSV 导出当前筛选结果。
-服务端 `GET /__logs` 返回 `{ entries: [...], stats: { total, totalAll, successRate, p95, p99, avgDuration, error4xx, error5xx, errorTimeout } }` 结构（`totalAll` 为全量行数，用于分页计算）。
+服务端 `GET /__logs` 返回 `{ entries: [...], stats: { total, totalAll, successRate, p95, p99, avgDuration, error4xx, error5xx, errorTimeout, errorStream } }` 结构（`totalAll` 为全量行数，用于分页计算）。
 
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
@@ -525,6 +526,16 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 - 上游检测基于 `keys.json` 中的 `url` 字段：`api.openai.com`/`api.ofox.ai` = Responses 原生，`api.anthropic.com` = Messages 原生，其余 = Chat 通用
 - 所有上游模型（含 OpenAI、Kimi、DeepSeek、Grok、Qwen、Gemini 等）均支持三种下游客户端
 - 当前仅支持流式（`stream: true`）请求；非流式请求将按流式处理返回 SSE
+
+#### Responses 流终态与 Codex CLI 断开排查
+
+对于 `Responses → Chat → Responses` 转换，代理只会在上游 SSE 明确发送 `[DONE]` 后输出下游的 `response.completed` 和最终 `[DONE]`。即使上游把 `data: [DONE]` 放在连接末尾而没有换行，也会被识别为正常完成。
+
+若上游在 `[DONE]` 前 EOF、关闭连接、发生错误、空闲超时或达到响应流最大时长，代理会输出 `response.failed`，绝不会伪造 `response.completed`。这使 Codex CLI 能得到明确的失败终态，而不是把不完整响应误判为任务成功。
+
+每个转换请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone` 和 `streamId`，并额外写入一条 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_close`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`client_disconnect`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
+
+出现 Codex CLI 的 `stream disconnected before completion` 后，先检查工作区和日志，确认是否已有部分文件修改、命令执行或工具调用结果；不要盲目重放整个编码任务。此类改动在代理重启后生效，应等待所有在途 CLI 任务结束，再在维护窗口重启。
 
 #### 混合账号 fallback（Chat 客户端 → Anthropic）
 
@@ -1245,6 +1256,7 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-07-28 Responses 流终态修复**：转换流仅在收到上游 `[DONE]` 后发送 `response.completed`；修复末尾无换行的 `[DONE]` 被漏解析、活动流 socket 空闲超时被忽略的问题。异常 EOF/关闭/错误/超时明确发送 `response.failed`，日志新增可检索的 `stream_terminal` 诊断事件和流终态字段；新增独立流生命周期回归测试。
 - **2026-07-28 管理 Token 内存态**：Dashboard 管理 Token 改为仅存于当前页面内存；启动时清除旧版会话存储残留，HTTP 与 WebSocket 共用同一认证状态，WebSocket 返回 `4001` 时重新认证。感谢 @anupamme 提供安全改进思路。
 - **2026-07-28 发布来源识别**：新增 `npm run build:release`，生成不含运行敏感文件的 Release 资产、`build-info.json` 和 SHA-256 清单。未修改的官方发布资产及干净官方 Git Release Tag 自动比较版本；开发/定制副本 fail-closed。watchdog 改为从自身目录定位代理，移除固定机器路径。
 - **2026-07-28 版本基线修正**：移除固定本地版本和具体本机目录说明。`updateBaselineTag` 保留为定制构建的高级手动基线；来源未知时只展示 Release，不误报更新。覆盖式一键升级继续禁用。

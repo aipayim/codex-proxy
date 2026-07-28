@@ -22,6 +22,7 @@ const RELEASE_CONTENT_FILES = [
   "codex-proxy.service",
   "build-release.js",
   "test-release-provenance.js",
+  "test-stream-lifecycle.js",
 ];
 const RELEASE_INTEGRITY_FILES = [
   "proxy.js",

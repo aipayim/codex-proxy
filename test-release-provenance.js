@@ -86,6 +86,7 @@ function testReleaseArtifact(releaseDir) {
   assert.strictEqual(packageLock.packages[""].version, "1.2.3");
   assert.ok(fs.existsSync(path.join(releaseDir, "build-release.js")));
   assert.ok(fs.existsSync(path.join(releaseDir, "test-release-provenance.js")));
+  assert.ok(fs.existsSync(path.join(releaseDir, "test-stream-lifecycle.js")));
   assert.ok(!fs.existsSync(path.join(releaseDir, "scripts")));
   assert.ok(manifest.files["proxy.js"]);
   for (const privateFile of ["config.json", "keys.json", "state.json", "proxy.log", "proxy.pid"]) {

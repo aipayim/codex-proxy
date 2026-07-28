@@ -760,6 +760,47 @@ function addEventLog(eventType, idx, message, url) {
   broadcastLog(entry);
 }
 
+function addStreamTerminalLog(idx, lifecycle) {
+  const outcome = lifecycle.terminalKind || "unknown";
+  const reason = lifecycle.terminalReason || "unknown";
+  const sawDone = lifecycle.sawDone === true;
+  const entry = {
+    time: Date.now(),
+    type: "event",
+    eventType: "stream_terminal",
+    idx: idx + 1,
+    message: `stream ${outcome}: ${reason}; done=${sawDone ? "yes" : "no"}`,
+    streamId: lifecycle.responseId || "",
+    streamOutcome: outcome,
+    streamReason: reason,
+    streamSawDone: sawDone,
+  };
+  requestLog.push(entry);
+  if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  if (LOG_FILE_ENABLED) writeLogEntry(entry);
+  broadcastLog(entry);
+}
+
+function isRequestLogFailure(entry) {
+  return entry.status === 0 || entry.status >= 400 || entry.streamOutcome === "failed";
+}
+
+function requestLogDedupeKey(entry) {
+  return [
+    entry.time || 0,
+    entry.type || "request",
+    entry.eventType || "",
+    entry.idx || 0,
+    entry.path || "",
+    entry.status ?? "",
+    entry.streamId || "",
+    entry.streamOutcome || "",
+    entry.streamReason || "",
+    entry.duration || 0,
+    entry.message || "",
+  ].join("|");
+}
+
 function ensureLogStream() {
   const today = new Date().toISOString().slice(0, 10);
   if (logDate === today && logStream) return;
@@ -1526,6 +1567,8 @@ function activeDecr(idx) {
 function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel) {
   const lifecycle = extraTransform?._lifecycle || null;
   let streamAttached = false;
+  let clientCancelled = false;
+  let terminateAttachedStream = null;
   if (!Array.isArray(activeRequests[idx])) activeRequests[idx] = [];
   let reqModel = null;
   try { reqModel = JSON.parse(body.toString()).model || null; } catch(e) {}
@@ -1554,6 +1597,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   };
 
   const logEntry = { time: Date.now(), idx: idx + 1, method, path: pathname, url: acct.url };
+  if (lifecycle) logEntry.streamId = lifecycle.responseId;
   if (body && LOG_DETAIL !== "basic") {
     try { const p = JSON.parse(body.toString()); logEntry.reqModel = p.model || null; } catch(e) {}
   }
@@ -1596,21 +1640,6 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
 
     const inputBytes = body ? body.length : 0;
     const transform = makeUsageTransform(idx, inputBytes, reqStart, ttfb, resolvedModel);
-    let clientCancelled = false;
-    if (lifecycle) {
-      lifecycle._metricsCallback = (success) => {
-        const dur = Date.now() - reqStart;
-        const accBytes = transform.accBytes || 0;
-        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel);
-        if (!success && !clientCancelled) markFailure(idx, 0);
-      };
-    }
-    if (extraTransform) {
-      apiRes.pipe(transform).pipe(extraTransform).pipe(clientRes);
-    } else {
-      apiRes.pipe(transform).pipe(clientRes);
-    }
-
     let cleaned = false;
     let endedNormally = false;
     let streamTimer = null;
@@ -1623,6 +1652,14 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       const accBytes = transform.accBytes || 0;
       recordPath(pathname, method, inputBytes, accBytes, dur);
       Object.assign(logEntry, { status: apiRes.statusCode, inputBytes, outputBytes: accBytes, duration: dur, ttfb });
+      if (lifecycle) {
+        Object.assign(logEntry, {
+          streamId: lifecycle.responseId,
+          streamOutcome: lifecycle.terminalKind || "unknown",
+          streamReason: lifecycle.terminalReason || "unknown",
+          streamSawDone: lifecycle.sawDone === true,
+        });
+      }
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       if (!lifecycle) {
@@ -1630,43 +1667,85 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       }
       broadcastStatus();
     };
-    apiRes.on("end", () => { endedNormally = true; cleanup(); });
+
+    if (lifecycle) {
+      lifecycle._metricsCallback = (success) => {
+        const dur = Date.now() - reqStart;
+        const accBytes = transform.accBytes || 0;
+        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel);
+        if (!success && !clientCancelled) markFailure(idx, 0);
+      };
+      lifecycle._onTerminal = completedLifecycle => {
+        addStreamTerminalLog(idx, completedLifecycle);
+        cleanup();
+      };
+    }
+
+    terminateAttachedStream = reason => {
+      if (!lifecycle || clientCancelled || lifecycle.terminalKind) return false;
+      lifecycle.emitFailed(reason);
+      if (!apiRes.destroyed) apiRes.destroy();
+      return true;
+    };
+
+    if (lifecycle && extraTransform) {
+      extraTransform.once("finish", () => {
+        if (!lifecycle.terminalKind && !clientCancelled) lifecycle.emitFailed("upstream_eof_without_done");
+      });
+    }
+    apiRes.on("end", () => {
+      endedNormally = true;
+      if (!lifecycle) cleanup();
+    });
     apiRes.on("close", () => {
-      if (!cleaned) cleanup();
       if (!endedNormally && !clientCancelled) {
         if (lifecycle && streamAttached && !lifecycle.terminalKind) {
-          lifecycle.emitFailed();
+          lifecycle.emitFailed("upstream_close");
         } else if (!lifecycle) {
           markFailure(idx, 0);
         }
       }
+      cleanup();
     });
     apiRes.on("error", (err) => {
       console.error(`[proxy] #${idx+1} Stream error: ${err.message}`);
-      if (!cleaned && !clientCancelled && !lifecycle) markFailure(idx, 0);
-      if (streamAttached && lifecycle && !lifecycle.terminalKind && !clientCancelled) {
-        lifecycle.emitFailed();
+      if (!clientCancelled) {
+        if (streamAttached && lifecycle && !lifecycle.terminalKind) {
+          lifecycle.emitFailed("upstream_error");
+        } else if (!lifecycle) {
+          markFailure(idx, 0);
+        }
       }
       cleanup();
     });
     clientRes.on("close", () => {
-      if (!cleaned) {
-        clientCancelled = true;
-        if (!apiRes.destroyed) apiRes.destroy();
-        cleanup();
-      }
+      if (cleaned || clientCancelled || (lifecycle && lifecycle.terminalKind)) return;
+      clientCancelled = true;
+      if (lifecycle) lifecycle.noteClientCancelled("client_disconnect");
+      if (!apiRes.destroyed) apiRes.destroy();
+      cleanup();
     });
     streamTimer = setTimeout(() => {
-      if (!cleaned) {
-        console.error(`[proxy] #${idx+1} Stream lifetime timeout (${STREAM_LIFETIME/60000}min)`);
-        if (!apiRes.destroyed) apiRes.destroy();
-      }
+      if (cleaned || clientCancelled || (lifecycle && lifecycle.terminalKind)) return;
+      console.error(`[proxy] #${idx+1} Stream lifetime timeout (${STREAM_LIFETIME/60000}min)`);
+      if (terminateAttachedStream && terminateAttachedStream("stream_lifetime_timeout")) return;
+      if (!apiRes.destroyed) apiRes.destroy();
     }, STREAM_LIFETIME);
+    if (extraTransform) {
+      apiRes.pipe(transform).pipe(extraTransform).pipe(clientRes);
+    } else {
+      apiRes.pipe(transform).pipe(clientRes);
+    }
     onDone({ switched: false });
   });
   proxyReq.setTimeout(TIMEOUT);
 
   proxyReq.on("error", (err) => {
+    if (streamAttached && lifecycle && !clientCancelled && !lifecycle.terminalKind) {
+      console.error(`[proxy] #${idx + 1} Stream request error: ${err.message}`);
+      if (terminateAttachedStream) terminateAttachedStream("upstream_error");
+      return;
+    }
     if (onDone.done) return;
     onDone.done = true;
     const dur = Date.now() - reqStart;
@@ -1682,11 +1761,14 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   });
 
   proxyReq.on("timeout", () => {
+    if (streamAttached && lifecycle && !clientCancelled && !lifecycle.terminalKind) {
+      console.error(`[proxy] #${idx+1} Upstream stream idle timeout`);
+      if (terminateAttachedStream) terminateAttachedStream("upstream_idle_timeout");
+      proxyReq.destroy();
+      return;
+    }
     if (onDone.done) return;
     onDone.done = true;
-    if (lifecycle && !lifecycle.terminalKind && !clientCancelled && streamAttached) {
-      lifecycle.emitFailed();
-    }
     const dur = Date.now() - reqStart;
     activeDecr(idx);
     console.error(`[proxy] #${idx+1} Timeout`);
@@ -4107,6 +4189,10 @@ let logAllEntries = [];
 let logLastStats = null;
 const LOG_PAGE_SIZE = 200;
 
+function logRequestFailed(e){
+  return !!e && (e.status === 0 || e.status >= 400 || e.streamOutcome === "failed");
+}
+
 function closeLogs(){
   document.getElementById("logModal").classList.remove("on");
 }
@@ -4198,7 +4284,7 @@ function renderLogSparkline(){
     const end = now - i * 60000;
     const inMin = logAllEntries.filter(e => e.time >= start && e.time < end && e.type !== "event");
     const total = inMin.length;
-    const errs = inMin.filter(e => e.status >= 400 || e.status === 0).length;
+    const errs = inMin.filter(logRequestFailed).length;
     bars.push({ total, errs, start });
   }
   const maxVal = Math.max(1, ...bars.map(b => b.total));
@@ -4218,7 +4304,7 @@ function renderLogModelDist(){
     const m = e.overrideModel || e.reqModel || "(未知)";
     if (!map[m]) map[m] = { total: 0, fail: 0, dur: 0 };
     map[m].total++;
-    if (e.status >= 400 || e.status === 0) map[m].fail++;
+    if (logRequestFailed(e)) map[m].fail++;
     if (e.duration) map[m].dur += e.duration;
   }
   const sorted = Object.keys(map).sort((a,b) => map[b].total - map[a].total).slice(0,8);
@@ -4238,8 +4324,8 @@ function renderLogErrorCluster(){
   const reqs = logAllEntries.filter(e => e.type !== "event");
   for (const e of reqs) {
     const st = e.status || 0;
-    if (st === 0 || st >= 400) {
-      const key = st === 0 ? "超时" : String(st);
+    if (logRequestFailed(e)) {
+      const key = e.streamOutcome === "failed" ? "流中断" : (st === 0 ? "超时" : String(st));
       map[key] = (map[key] || 0) + 1;
     }
   }
@@ -4292,7 +4378,14 @@ function toggleLogDetail(tr, idx){
   if (!e) return;
   const content = document.getElementById("logDetailContent_"+idx);
   if (e.type === "event") {
-    content.textContent = "事件: "+(e.eventType||"")+" | 消息: "+(e.message||"")+" | URL: "+(e.url||"");
+    const lines = ["事件: "+(e.eventType||""), "消息: "+(e.message||""), "URL: "+(e.url||"")];
+    if (e.eventType === "stream_terminal") {
+      lines.push("流 ID: "+(e.streamId||""));
+      lines.push("结果: "+(e.streamOutcome||""));
+      lines.push("原因: "+(e.streamReason||""));
+      lines.push("收到 [DONE]: "+(e.streamSawDone === true ? "是" : "否"));
+    }
+    content.textContent = lines.join("\\n");
   } else {
     const lines = [
       "时间: "+new Date(e.time).toISOString(),
@@ -4308,6 +4401,10 @@ function toggleLogDetail(tr, idx){
       "耗时: "+fmtDur(e.duration||0),
       "首字节: "+(e.ttfb?fmtDur(e.ttfb):"-"),
       "协议转换: "+(e.conversion?"是":"否"),
+      "流 ID: "+(e.streamId||""),
+      "流结果: "+(e.streamOutcome||""),
+      "流终态原因: "+(e.streamReason||""),
+      "收到 [DONE]: "+(e.streamSawDone === true ? "是" : "否"),
     ];
     content.textContent = lines.join("\\n");
   }
@@ -4322,10 +4419,11 @@ async function openLogKeyPopup(idx, event){
   const reqs = entries.filter(e => e.type !== "event");
   const events = entries.filter(e => e.type === "event");
   const total = reqs.length;
-  const success = reqs.filter(e => e.status >= 200 && e.status < 300).length;
+  const success = reqs.filter(e => e.status >= 200 && e.status < 300 && !logRequestFailed(e)).length;
   const err4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
   const err5xx = reqs.filter(e => e.status >= 500).length;
   const timeout = reqs.filter(e => e.status === 0 || e.status == null).length;
+  const streamFailed = reqs.filter(e => e.streamOutcome === "failed").length;
   const durs = reqs.filter(e => e.duration != null).map(e => e.duration).sort((a,b)=>a-b);
   const avgDur = durs.length ? Math.round(durs.reduce((a,b)=>a+b,0)/durs.length) : 0;
   const p95 = durs.length ? durs[Math.floor(durs.length*0.95)]||durs[durs.length-1] : 0;
@@ -4341,6 +4439,7 @@ async function openLogKeyPopup(idx, event){
     + '<div class="stat-row"><span class="l">4xx</span><span class="r" style="color:'+(err4xx?'#f59e0b':'#94a3b8')+'">'+err4xx+'</span></div>'
     + '<div class="stat-row"><span class="l">5xx</span><span class="r" style="color:'+(err5xx?'#ef4444':'#94a3b8')+'">'+err5xx+'</span></div>'
     + '<div class="stat-row"><span class="l">超时</span><span class="r" style="color:'+(timeout?'#64748b':'#94a3b8')+'">'+timeout+'</span></div>'
+    + '<div class="stat-row"><span class="l">流失败</span><span class="r" style="color:'+(streamFailed?'#ef4444':'#94a3b8')+'">'+streamFailed+'</span></div>'
     + '<div class="stat-row"><span class="l">平均耗时</span><span class="r">'+fmtDur(avgDur)+'</span></div>'
     + '<div class="stat-row"><span class="l">P95</span><span class="r">'+fmtDur(p95)+'</span></div>'
     + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #334155;font-size:10px;color:#94a3b8">📊 模型: '+modelStr+'</div>'
@@ -4366,13 +4465,15 @@ function logRowClass(e){
     return "log-row-event";
   }
   const st = e.status || 0;
+  if (e.streamOutcome === "failed") return "log-row-" + (document.getElementById("logBody").children.length % 2 === 0 ? "even" : "odd");
   if (st >= 500) return "log-row-" + (document.getElementById("logBody").children.length % 2 === 0 ? "even" : "odd");
   return "";
 }
 function makeLogRow(e, seq){
   if (e.type === "event") return makeEventRow(e, seq);
   const s=e.status||0;
-  const sc="log-s"+(s>=500?"5xx":s);
+  const streamFailed=e.streamOutcome === "failed";
+  const sc="log-s"+(s>=500 || streamFailed?"5xx":s);
   const tm=new Date(e.time);
   const now=new Date();
   const isToday=tm.getFullYear()===now.getFullYear()&&tm.getMonth()===now.getMonth()&&tm.getDate()===now.getDate();
@@ -4381,6 +4482,7 @@ function makeLogRow(e, seq){
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
   let icon = "";
   if (e.conversion) icon = ' <span title="协议转换" style="color:#a78bfa">🔄</span>';
+  else if (streamFailed) icon = ' <span title="流式终态失败: '+esc(e.streamReason||"")+'" style="color:#ef4444">✕</span>';
   else if (s >= 500) icon = ' <span style="color:#ef4444">✕</span>';
   else if (s >= 400) icon = ' <span style="color:#f59e0b">⚠</span>';
   return '<td class="log-seq" style="text-align:center;color:#64748b;font-size:10px">'+(seq != null ? seq : "")+'</td><td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
@@ -4409,6 +4511,12 @@ function makeEventRow(e, seq){
     case "recover": label="✅ 自动恢复"; detail=e.message||""; break;
     case "lock": label="🔒 自动锁死"; detail=e.message||""; break;
     case "discard": label="🗑 废弃"; detail=e.message||""; break;
+    case "stream_terminal":
+      if (e.streamOutcome === "completed") label="✅ 流完成";
+      else if (e.streamOutcome === "cancelled") label="⏹ 客户端断开";
+      else label="⛔ 流失败";
+      detail=e.message||"";
+      break;
     default: label="📌 "+(e.eventType||"事件"); detail=e.message||"";
   }
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
@@ -4704,88 +4812,194 @@ function responsesToChatRequest(upstreamUrl, body) {
   if (body.metadata) chatBody.metadata = body.metadata;
   return chatBody;
 }
+const STREAM_TERMINAL_REASONS = new Set([
+  "upstream_done",
+  "upstream_eof_without_done",
+  "upstream_close",
+  "upstream_error",
+  "upstream_idle_timeout",
+  "stream_lifetime_timeout",
+  "client_disconnect",
+]);
+
+function normalizeStreamTerminalReason(reason, fallback) {
+  return STREAM_TERMINAL_REASONS.has(reason) ? reason : fallback;
+}
+
+function createResponsesLifecycle(model) {
+  return {
+    responseId: "resp_" + crypto.randomUUID(),
+    created: Math.floor(Date.now() / 1000),
+    model: model || "",
+    fullContent: "",
+    inputTokens: 0,
+    outputTokens: 0,
+    terminalKind: null,
+    terminalReason: null,
+    sawDone: false,
+    _started: false,
+    _transform: null,
+    _metricsCallback: null,
+    _onTerminal: null,
+    _terminalNotified: false,
+    _pushEvent(event, payload) {
+      if (!this._transform || this._transform.destroyed || this._transform.readableEnded) return;
+      this._transform.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    },
+    _endReadable() {
+      if (this._transform && !this._transform.destroyed && !this._transform.readableEnded) {
+        this._transform.push(null);
+      }
+    },
+    _recordMetrics(success) {
+      if (typeof this._metricsCallback === "function") this._metricsCallback(success);
+    },
+    _notifyTerminal() {
+      if (this._terminalNotified) return;
+      this._terminalNotified = true;
+      if (typeof this._onTerminal === "function") this._onTerminal(this);
+    },
+    emitStart() {
+      if (this._started) return;
+      this._started = true;
+      const response = { id: this.responseId, object: "response", created_at: this.created, model: this.model, status: "in_progress", output: [] };
+      this._pushEvent("response.created", { type: "response.created", response });
+      this._pushEvent("response.in_progress", { type: "response.in_progress", response });
+    },
+    emitCompleted(reason) {
+      if (this.terminalKind) return false;
+      if (!this._started) this.emitStart();
+      this.terminalKind = "completed";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "upstream_done");
+      this._pushEvent("response.output_text.done", { type: "response.output_text.done", delta: "" });
+      this._pushEvent("response.completed", {
+        type: "response.completed",
+        response: {
+          id: this.responseId,
+          object: "response",
+          created_at: this.created,
+          model: this.model,
+          status: "completed",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: this.fullContent }] }],
+          usage: { input_tokens: this.inputTokens, output_tokens: this.outputTokens, total_tokens: this.inputTokens + this.outputTokens },
+        },
+      });
+      if (this._transform && !this._transform.destroyed && !this._transform.readableEnded) {
+        this._transform.push("data: [DONE]\n\n");
+      }
+      this._endReadable();
+      this._recordMetrics(true);
+      this._notifyTerminal();
+      return true;
+    },
+    emitFailed(reason) {
+      if (this.terminalKind) return false;
+      if (!this._started) this.emitStart();
+      this.terminalKind = "failed";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "upstream_error");
+      this._pushEvent("response.failed", {
+        type: "response.failed",
+        response: { id: this.responseId, object: "response", created_at: this.created, model: this.model, status: "failed" },
+      });
+      this._endReadable();
+      this._recordMetrics(false);
+      this._notifyTerminal();
+      return true;
+    },
+    noteClientCancelled(reason) {
+      if (this.terminalKind) return false;
+      this.terminalKind = "cancelled";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "client_disconnect");
+      this._notifyTerminal();
+      return true;
+    },
+  };
+}
+
 function createChatToResponsesStream(lifecycle) {
   const Transform = require("stream").Transform;
   let buffer = "";
   const seenToolCalls = new Set();
   const toolCallArgs = {};
   const toolCallIds = {};
+
+  const finishToolCalls = output => {
+    for (const callIdx of seenToolCalls) {
+      const callId = toolCallIds[callIdx];
+      if (callId && toolCallArgs[callIdx] !== undefined) {
+        output.push(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({type:"response.function_call_arguments.done",arguments:toolCallArgs[callIdx],item_id:callId,output_index:callIdx})}\n\n`);
+        output.push(`event: response.output_item.done\ndata: ${JSON.stringify({type:"response.output_item.done",output_index:callIdx,item:{type:"function_call",id:callId,name:"",arguments:toolCallArgs[callIdx],status:"completed"}})}\n\n`);
+        delete toolCallArgs[callIdx];
+      }
+    }
+  };
+
+  const processLine = (line, output) => {
+    if (lifecycle.terminalKind || lifecycle.sawDone || !line.startsWith("data:")) return false;
+    const data = line.slice(5).trim();
+    if (!data) return false;
+    if (data === "[DONE]") {
+      lifecycle.sawDone = true;
+      return true;
+    }
+    let parsed;
+    try { parsed = JSON.parse(data); } catch(e) { return false; }
+    if (parsed.object !== "chat.completion.chunk") return false;
+
+    lifecycle.model = parsed.model || lifecycle.model;
+    if (!lifecycle._started) lifecycle.emitStart();
+    const delta = parsed.choices?.[0]?.delta;
+    if (delta?.reasoning_content) {
+      lifecycle.fullContent += delta.reasoning_content;
+      output.push(`event: response.output_text.delta\ndata: ${JSON.stringify({type:"response.output_text.delta",delta:delta.reasoning_content})}\n\n`);
+    }
+    if (delta?.content) {
+      lifecycle.fullContent += delta.content;
+      output.push(`event: response.output_text.delta\ndata: ${JSON.stringify({type:"response.output_text.delta",delta:delta.content})}\n\n`);
+    }
+    if (delta?.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const callIdx = tc.index || 0;
+        if (!seenToolCalls.has(callIdx)) {
+          seenToolCalls.add(callIdx);
+          toolCallArgs[callIdx] = "";
+          toolCallIds[callIdx] = tc.id || ("call_" + callIdx + "_" + Date.now().toString(36));
+          const fnName = tc.function?.name || "";
+          output.push(`event: response.output_item.added\ndata: ${JSON.stringify({type:"response.output_item.added",output_index:callIdx,item:{type:"function_call",id:toolCallIds[callIdx],name:fnName,arguments:"",status:"in_progress"}})}\n\n`);
+          output.push(`event: response.function_call_arguments.starting\ndata: ${JSON.stringify({type:"response.function_call_arguments.starting",item_id:toolCallIds[callIdx],output_index:callIdx})}\n\n`);
+        }
+        const args = tc.function?.arguments || "";
+        toolCallArgs[callIdx] += args;
+        output.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({type:"response.function_call_arguments.delta",delta:args,item_id:toolCallIds[callIdx],output_index:callIdx})}\n\n`);
+      }
+    }
+    if (parsed.choices?.[0]?.finish_reason === "tool_calls") finishToolCalls(output);
+    if (parsed.usage) {
+      lifecycle.inputTokens = parsed.usage.prompt_tokens || 0;
+      lifecycle.outputTokens = parsed.usage.completion_tokens || 0;
+    }
+    return false;
+  };
+
   return new Transform({
     readableObjectMode: false, writableObjectMode: false,
     transform(chunk, encoding, cb) {
-      if (lifecycle.terminalKind) { cb(); return; }
+      if (lifecycle.terminalKind || lifecycle.sawDone) { cb(); return; }
       buffer += chunk.toString();
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
       for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") {
-          if (!lifecycle.sawDone) lifecycle.sawDone = true;
-          return cb();
-        }
-        let parsed;
-        try { parsed = JSON.parse(data); } catch(e) { continue; }
-        if (parsed.object === "chat.completion.chunk") {
-          lifecycle.model = parsed.model || lifecycle.model;
-          if (!lifecycle._started) lifecycle.emitStart();
-          const delta = parsed.choices?.[0]?.delta;
-          if (delta?.reasoning_content) {
-            lifecycle.fullContent += delta.reasoning_content;
-            this.push(`event: response.output_text.delta\ndata: ${JSON.stringify({type:"response.output_text.delta",delta:delta.reasoning_content})}\n\n`);
-          }
-          if (delta?.content) {
-            lifecycle.fullContent += delta.content;
-            this.push(`event: response.output_text.delta\ndata: ${JSON.stringify({type:"response.output_text.delta",delta:delta.content})}\n\n`);
-          }
-          if (delta?.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const callIdx = tc.index || 0;
-              if (!seenToolCalls.has(callIdx)) {
-                seenToolCalls.add(callIdx);
-                toolCallArgs[callIdx] = "";
-                toolCallIds[callIdx] = tc.id || ("call_" + callIdx + "_" + Date.now().toString(36));
-                const fnName = tc.function?.name || "";
-                this.push(`event: response.output_item.added\ndata: ${JSON.stringify({type:"response.output_item.added",output_index:callIdx,item:{type:"function_call",id:toolCallIds[callIdx],name:fnName,arguments:"",status:"in_progress"}})}\n\n`);
-                this.push(`event: response.function_call_arguments.starting\ndata: ${JSON.stringify({type:"response.function_call_arguments.starting",item_id:toolCallIds[callIdx],output_index:callIdx})}\n\n`);
-              }
-              const args = tc.function?.arguments || "";
-              toolCallArgs[callIdx] += args;
-              this.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({type:"response.function_call_arguments.delta",delta:args,item_id:toolCallIds[callIdx],output_index:callIdx})}\n\n`);
-            }
-          }
-          if (parsed.choices?.[0]?.finish_reason === "tool_calls") {
-            for (const callIdx of seenToolCalls) {
-              const callId = toolCallIds[callIdx];
-              if (callId && toolCallArgs[callIdx] !== undefined) {
-                this.push(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({type:"response.function_call_arguments.done",arguments:toolCallArgs[callIdx],item_id:callId,output_index:callIdx})}\n\n`);
-                this.push(`event: response.output_item.done\ndata: ${JSON.stringify({type:"response.output_item.done",output_index:callIdx,item:{type:"function_call",id:callId,name:"",arguments:toolCallArgs[callIdx],status:"completed"}})}\n\n`);
-                delete toolCallArgs[callIdx];
-              }
-            }
-          }
-          if (parsed.usage) {
-            lifecycle.inputTokens = parsed.usage.prompt_tokens || 0;
-            lifecycle.outputTokens = parsed.usage.completion_tokens || 0;
-          }
-        }
+        if (processLine(line, this)) break;
       }
       cb();
     },
     flush(cb) {
-      for (const callIdx of seenToolCalls) {
-        const callId = toolCallIds[callIdx];
-        if (callId && toolCallArgs[callIdx] !== undefined) {
-          this.push(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({type:"response.function_call_arguments.done",arguments:toolCallArgs[callIdx],item_id:callId,output_index:callIdx})}\n\n`);
-          this.push(`event: response.output_item.done\ndata: ${JSON.stringify({type:"response.output_item.done",output_index:callIdx,item:{type:"function_call",id:callId,name:"",arguments:toolCallArgs[callIdx],status:"completed"}})}\n\n`);
-        }
-      }
+      if (!lifecycle.terminalKind && buffer) processLine(buffer, this);
+      buffer = "";
       if (!lifecycle.terminalKind) {
-        if (lifecycle.sawDone) {
-          lifecycle.emitCompleted();
-        } else {
-          lifecycle.emitFailed();
-        }
+        finishToolCalls(this);
+        if (lifecycle.sawDone) lifecycle.emitCompleted("upstream_done");
+        else lifecycle.emitFailed("upstream_eof_without_done");
       }
       cb();
     }
@@ -5678,12 +5892,12 @@ function createGroupServer(groupName, port) {
         const seen = new Set();
         const merged = [];
         for (const e of fileEntries) {
-          const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+          const k = requestLogDedupeKey(e);
           if (!seen.has(k)) { seen.add(k); merged.push(e); }
         }
         for (const e of requestLog) {
           if (e.time >= sTime && e.time <= uTime) {
-            const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+            const k = requestLogDedupeKey(e);
             if (!seen.has(k)) { seen.add(k); merged.push(e); }
           }
         }
@@ -5729,11 +5943,11 @@ function createGroupServer(groupName, port) {
         const seen = new Set();
         const merged = [];
         for (const e of fileEntries) {
-          const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+          const k = requestLogDedupeKey(e);
           if (!seen.has(k)) { seen.add(k); merged.push(e); }
         }
         for (const e of requestLog) {
-          const k = e.time + "|" + e.idx + "|" + (e.path || "") + "|" + (e.status || 0);
+          const k = requestLogDedupeKey(e);
           if (!seen.has(k)) { seen.add(k); merged.push(e); }
         }
         entries = merged;
@@ -5744,10 +5958,10 @@ function createGroupServer(groupName, port) {
       if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length) entries = entries.filter(e => keys.includes(e.idx)); }
       if (status) { entries = entries.filter(e => { const s = e.status || 0; if (status.endsWith("xx")) { const prefix = parseInt(status, 10); return !isNaN(prefix) && Math.floor(s / 100) === prefix; } return String(s) === status; }); }
       if (model) { const ml = model.toLowerCase(); entries = entries.filter(e => (e.reqModel||"").toLowerCase().includes(ml) || (e.overrideModel||"").toLowerCase().includes(ml)); }
-      if (q) { const ql = q.toLowerCase(); entries = entries.filter(e => (e.message||"").toLowerCase().includes(ql) || (e.url||"").toLowerCase().includes(ql) || (e.reqModel||"").toLowerCase().includes(ql) || (e.overrideModel||"").toLowerCase().includes(ql) || (e.method||"").toLowerCase().includes(ql) || (e.path||"").toLowerCase().includes(ql) || (e.eventType||"").toLowerCase().includes(ql)); }
+      if (q) { const ql = q.toLowerCase(); entries = entries.filter(e => (e.message||"").toLowerCase().includes(ql) || (e.url||"").toLowerCase().includes(ql) || (e.reqModel||"").toLowerCase().includes(ql) || (e.overrideModel||"").toLowerCase().includes(ql) || (e.method||"").toLowerCase().includes(ql) || (e.path||"").toLowerCase().includes(ql) || (e.eventType||"").toLowerCase().includes(ql) || (e.streamId||"").toLowerCase().includes(ql) || (e.streamOutcome||"").toLowerCase().includes(ql) || (e.streamReason||"").toLowerCase().includes(ql)); }
       if (since || until || q) entries.sort((a, b) => b.time - a.time);
       // Compute statistics from all matching entries BEFORE pagination slice
-      const stats = { total: 0, successRate: 0, p95: 0, p99: 0, avgDuration: 0, error4xx: 0, error5xx: 0, errorTimeout: 0 };
+      const stats = { total: 0, successRate: 0, p95: 0, p99: 0, avgDuration: 0, error4xx: 0, error5xx: 0, errorTimeout: 0, errorStream: 0 };
       stats.total = entries.length;
       stats.totalAll = countAllEntries(since, until);
       const durs = entries.filter(e => e.duration != null && e.type !== "event").map(e => e.duration).sort((a, b) => a - b);
@@ -5757,16 +5971,17 @@ function createGroupServer(groupName, port) {
         stats.p99 = durs[Math.floor(durs.length * 0.99)] || durs[durs.length - 1];
       }
       const reqs = entries.filter(e => e.type !== "event");
-      const success = reqs.filter(e => e.status >= 200 && e.status < 300).length;
+      const success = reqs.filter(e => e.status >= 200 && e.status < 300 && !isRequestLogFailure(e)).length;
       stats.successRate = reqs.length ? Math.round(success / reqs.length * 10000) / 100 : 0;
       stats.error4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
       stats.error5xx = reqs.filter(e => e.status >= 500 && e.status < 600).length;
       stats.errorTimeout = reqs.filter(e => e.status === 0 || e.status == null).length;
+      stats.errorStream = reqs.filter(e => e.streamOutcome === "failed").length;
       entries = entries.slice(offset, offset + limit);
       if (format === "csv") {
-        const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,url,type,eventType,message";
+        const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,url,type,eventType,message,streamId,streamOutcome,streamReason,streamSawDone";
         const esc = v => `"${String(v).replace(/"/g, '""')}"`;
-        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", esc(e.reqModel||""), esc(e.overrideModel||""), esc(e.url||""), e.type||"request", e.eventType||"", esc(e.message||"")].join(","));
+        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", esc(e.reqModel||""), esc(e.overrideModel||""), esc(e.url||""), e.type||"request", e.eventType||"", esc(e.message||""), esc(e.streamId||""), e.streamOutcome||"", e.streamReason||"", e.streamSawDone === true ? "true" : "false"].join(","));
         res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
         res.end(header + "\n" + rows.join("\n"));
         return;
@@ -5814,8 +6029,9 @@ function createGroupServer(groupName, port) {
         res.end(entries.map(e => JSON.stringify(e)).join("\n"));
         return;
       }
-      const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel";
-      const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", e.reqModel||"", e.overrideModel||""].join(","));
+      const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,streamId,streamOutcome,streamReason,streamSawDone";
+      const esc = v => `"${String(v).replace(/"/g, '""')}"`;
+      const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", esc(e.reqModel||""), esc(e.overrideModel||""), esc(e.streamId||""), e.streamOutcome||"", e.streamReason||"", e.streamSawDone === true ? "true" : "false"].join(","));
       res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
       res.end(header + "\n" + rows.join("\n"));
       return;
@@ -6144,43 +6360,7 @@ function createGroupServer(groupName, port) {
         const chatBody = responsesToChatRequest("", reqBody);
         chatBody.stream = true;
         addEventLog("conversion", 0, `Responses→Chat 转换: ${reqBody.model || "?"} → ${chatBody.model}`, "");
-        const lifecycle = {
-          responseId: "resp_" + crypto.randomUUID(),
-          created: Math.floor(Date.now() / 1000),
-          model: chatBody.model || "",
-          fullContent: "",
-          inputTokens: 0,
-          outputTokens: 0,
-          terminalKind: null,
-          sawDone: false,
-          _started: false,
-          _transform: null,
-          _metricsCallback: null,
-          emitStart() {
-            if (this._started) return;
-            this._started = true;
-            this._transform.push(`event: response.created\ndata: ${JSON.stringify({type:"response.created",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"in_progress",output:[]}})}\n\n`);
-            this._transform.push(`event: response.in_progress\ndata: ${JSON.stringify({type:"response.in_progress",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"in_progress",output:[]}})}\n\n`);
-          },
-          emitCompleted() {
-            if (this.terminalKind) return;
-            if (!this._started) this.emitStart();
-            this.terminalKind = "completed";
-            this._transform.push(`event: response.output_text.done\ndata: ${JSON.stringify({type:"response.output_text.done",delta:""})}\n\n`);
-            this._transform.push(`event: response.completed\ndata: ${JSON.stringify({type:"response.completed",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:this.fullContent}]}],usage:{input_tokens:this.inputTokens,output_tokens:this.outputTokens,total_tokens:this.inputTokens+this.outputTokens}}})}\n\n`);
-            this._transform.push("data: [DONE]\n\n");
-            this._transform.push(null);
-            if (this._metricsCallback) this._metricsCallback(true);
-          },
-          emitFailed() {
-            if (this.terminalKind) return;
-            if (!this._started) this.emitStart();
-            this.terminalKind = "failed";
-            this._transform.push(`event: response.failed\ndata: ${JSON.stringify({type:"response.failed",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"failed"}})}\n\n`);
-            this._transform.push(null);
-            if (this._metricsCallback) this._metricsCallback(false);
-          }
-        };
+        const lifecycle = createResponsesLifecycle(chatBody.model || "");
         const transform = createChatToResponsesStream(lifecycle);
         lifecycle._transform = transform;
         transform._lifecycle = lifecycle;
