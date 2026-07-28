@@ -1,5 +1,7 @@
 # OpenAPI Multi-Key Proxy
 
+> 官网：[OpenAPI.im](https://openapi.im) | 作者推特：[@C_2049s](https://twitter.com/C_2049s)
+
 ## 核心能力
 
 **三向协议转换**：本代理自动在 OpenAI Responses API、Anthropic Messages API、OpenAI Chat Completions API 三者之间双向转换。下游任意客户端（Codex CLI、Claude Code CLI、Chat 应用）可连接任意上游模型（OpenAI、Anthropic、DeepSeek、Kimi、Qwen、Gemini、Grok 等），零配置自动检测。
@@ -1074,10 +1076,10 @@ bash start-proxy.sh
 # 查看状态
 curl http://localhost:3456/__status
 
-# 停止代理（watchdog 会在 10 秒内重新拉起）
-pkill -f 'node.*proxy\.js'
+# 停止代理（仅在维护窗口使用，watchdog 会在 10 秒内重新拉起）
+kill $(cat proxy.pid)
 
-# 完全停止 watchdog + 代理
+# 完全停止 watchdog + 代理（仅在维护窗口使用）
 pkill -f watchdog.sh
 ```
 
@@ -1085,7 +1087,7 @@ pkill -f watchdog.sh
 
 | 组件 | 作用 |
 |---|---|
-| `watchdog.sh` | 每 10 秒检查 `proxy.pid` 中的 PID 是否存活。进程消失则自动 `nohup node proxy.js &` 拉起并写入日志 |
+| `watchdog.sh` | 每 10 秒检测代理存活：flock 单实例锁 → 检查 `proxy.pid` + 端口绑定 + 命令行验证。进程消失则自动拉起；非 proxy 进程占用端口只报警不杀。proxy.js 在 A 端口成功监听后自行写入 PID 文件 |
 | `start-proxy.sh` | 前台启动 watchdog（手动用）。`bash start-proxy.sh --boot` 后台启动（WSL 开机用） |
 | `proxy.pid` | `proxy.js` 启动时自动写入 `process.pid`，退出时自动清理 |
 | `/etc/wsl.conf` | 已配置 `[boot] command = /usr/local/bin/codex-watchdog.sh`，Windows 启动 WSL 时自动加载 watchdog |
@@ -1184,3 +1186,7 @@ A: 该功能在更新 proxy.js 后需重启代理才能生效。首次使用需�
 ## License
 
 MIT
+
+---
+
+官网：[OpenAPI.im](https://openapi.im) | 作者推特：[@C_2049s](https://twitter.com/C_2049s)

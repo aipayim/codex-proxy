@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
@@ -11,7 +12,7 @@ const servers = {};
 const KEYS_FILE = path.join(__dirname, "keys.json");
 const STATE_FILE = path.join(__dirname, "state.json");
 const CONFIG_FILE = path.join(__dirname, "config.json");
-const TIMEOUT = 300000;
+const TIMEOUT = 1500000;
 const PRIORITY = { daily: 0, weekly: 1, never: 2, hourly: 0 };
 const HTTP_MOD = { "http:": http, "https:": https };
 const TZ = "Asia/Shanghai";
@@ -1101,8 +1102,6 @@ function makeUsageTransform(idx, inputBytes, reqStart, ttfb, model) {
       cb();
     },
     flush(cb) {
-      const duration = Date.now() - reqStart;
-      recordRequest(idx, true, inputBytes, outputBytes, duration, ttfb, model);
       cb();
     }
   });
@@ -1118,6 +1117,8 @@ function activeDecr(idx) {
 }
 
 function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel) {
+  const lifecycle = extraTransform?._lifecycle || null;
+  let streamAttached = false;
   if (!Array.isArray(activeRequests[idx])) activeRequests[idx] = [];
   let reqModel = null;
   try { reqModel = JSON.parse(body.toString()).model || null; } catch(e) {}
@@ -1188,15 +1189,27 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
 
     if (clientRes.headersSent) { apiRes.destroy(); activeDecr(idx); onDone({ switched: false }); return; }
     clientRes.writeHead(apiRes.statusCode, safeHeaders);
+    streamAttached = true;
 
     const inputBytes = body ? body.length : 0;
     const transform = makeUsageTransform(idx, inputBytes, reqStart, ttfb, resolvedModel);
+    if (lifecycle) {
+      lifecycle._metricsCallback = (success) => {
+        const dur = Date.now() - reqStart;
+        const accBytes = transform.accBytes || 0;
+        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel);
+        if (!success && !clientCancelled) markFailure(idx, 0);
+      };
+    }
     if (extraTransform) {
       apiRes.pipe(transform).pipe(extraTransform).pipe(clientRes);
     } else {
       apiRes.pipe(transform).pipe(clientRes);
     }
+
     let cleaned = false;
+    let endedNormally = false;
+    let clientCancelled = false;
     let streamTimer = null;
     const cleanup = () => {
       if (cleaned) return;
@@ -1209,21 +1222,29 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       Object.assign(logEntry, { status: apiRes.statusCode, inputBytes, outputBytes: accBytes, duration: dur, ttfb });
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
+      if (!lifecycle) {
+        recordRequest(idx, true, inputBytes, accBytes, dur, ttfb, resolvedModel);
+      }
       broadcastStatus();
     };
-    apiRes.on("end", cleanup);
-    apiRes.on("close", cleanup);
+    apiRes.on("end", () => { endedNormally = true; cleanup(); });
+    apiRes.on("close", () => {
+      if (!cleaned) cleanup();
+      if (lifecycle && streamAttached && !lifecycle.terminalKind && !endedNormally && !clientCancelled) {
+        lifecycle.emitFailed();
+      }
+    });
     apiRes.on("error", (err) => {
       console.error(`[proxy] #${idx+1} Stream error: ${err.message}`);
-      if (!cleaned) markFailure(idx, 0);
-      cleanup();
-      if (!clientRes.destroyed) {
-        try { clientRes.write('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_'+idx+'","status":"completed"}}\n\n'); } catch(e) {}
-        clientRes.end();
+      if (!cleaned && !clientCancelled) markFailure(idx, 0);
+      if (streamAttached && lifecycle && !lifecycle.terminalKind && !clientCancelled) {
+        lifecycle.emitFailed();
       }
+      cleanup();
     });
     clientRes.on("close", () => {
       if (!cleaned) {
+        clientCancelled = true;
         if (!apiRes.destroyed) apiRes.destroy();
         cleanup();
       }
@@ -1256,16 +1277,17 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   proxyReq.on("timeout", () => {
     if (onDone.done) return;
     onDone.done = true;
+    if (streamAttached && lifecycle && !lifecycle.terminalKind && !clientCancelled) {
+      lifecycle.emitFailed();
+    }
     const dur = Date.now() - reqStart;
     activeDecr(idx);
     console.error(`[proxy] #${idx+1} Timeout`);
-    if (!clientRes.destroyed) {
-      try { clientRes.write('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_'+idx+'","status":"completed"}}\n\n'); } catch(e) {}
-      try { clientRes.end(); } catch(e) {}
-    }
     proxyReq.destroy();
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
+    if (!lifecycle) {
+      recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
+    }
     recordPath(pathname, method, 0, 0, dur);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
     addLog(logEntry);
@@ -3878,18 +3900,13 @@ function responsesToChatRequest(upstreamUrl, body) {
   if (body.metadata) chatBody.metadata = body.metadata;
   return chatBody;
 }
-function createChatToResponsesStream(upstreamUrl) {
+function createChatToResponsesStream(lifecycle) {
   const Transform = require("stream").Transform;
   let buffer = "";
-  let responseId = "resp_" + Date.now();
-  let created = Math.floor(Date.now() / 1000);
-  let model = "";
-  let fullContent = "";
-  let inputTokens = 0, outputTokens = 0;
-  let completed = false;
   return new Transform({
     readableObjectMode: false, writableObjectMode: false,
     transform(chunk, encoding, cb) {
+      if (lifecycle.terminalKind) { cb(); return; }
       buffer += chunk.toString();
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -3897,46 +3914,43 @@ function createChatToResponsesStream(upstreamUrl) {
         if (!line.startsWith("data: ")) continue;
         const data = line.slice(6).trim();
         if (data === "[DONE]") {
-          if (!completed) {
-            completed = true;
-            this.push(`event: response.output_text.done\ndata: {"type":"response.output_text.done","delta":""}\n\n`);
-            this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"total_tokens":${inputTokens + outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
-            this.push("data: [DONE]\n\n");
-          }
+          if (!lifecycle.sawDone) lifecycle.sawDone = true;
           return cb();
         }
         let parsed;
         try { parsed = JSON.parse(data); } catch(e) { continue; }
         if (parsed.object === "chat.completion.chunk") {
-          model = parsed.model || model;
+          lifecycle.model = parsed.model || lifecycle.model;
+          if (!lifecycle._started) lifecycle.emitStart();
           const delta = parsed.choices?.[0]?.delta;
           if (delta?.reasoning_content) {
-            fullContent += delta.reasoning_content;
-            this.push(`event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":${JSON.stringify(delta.reasoning_content)}}\n\n`);
+            lifecycle.fullContent += delta.reasoning_content;
+            this.push(`event: response.output_text.delta\ndata: ${JSON.stringify({type:"response.output_text.delta",delta:delta.reasoning_content})}\n\n`);
           }
           if (delta?.content) {
-            fullContent += delta.content;
-            this.push(`event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":${JSON.stringify(delta.content)}}\n\n`);
+            lifecycle.fullContent += delta.content;
+            this.push(`event: response.output_text.delta\ndata: ${JSON.stringify({type:"response.output_text.delta",delta:delta.content})}\n\n`);
           }
           if (delta?.tool_calls) {
             for (const tc of delta.tool_calls) {
-              this.push(`event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","delta":${JSON.stringify(tc.function?.arguments || "")},"item_id":"call_${tc.index || 0}"}\n\n`);
+              this.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({type:"response.function_call_arguments.delta",delta:tc.function?.arguments||"",item_id:"call_"+(tc.index||0)})}\n\n`);
             }
           }
           if (parsed.usage) {
-            inputTokens = parsed.usage.prompt_tokens || 0;
-            outputTokens = parsed.usage.completion_tokens || 0;
+            lifecycle.inputTokens = parsed.usage.prompt_tokens || 0;
+            lifecycle.outputTokens = parsed.usage.completion_tokens || 0;
           }
         }
       }
       cb();
     },
     flush(cb) {
-      if (!completed) {
-        completed = true;
-        this.push(`event: response.output_text.done\ndata: {"type":"response.output_text.done","delta":""}\n\n`);
-        this.push(`event: response.completed\ndata: {"type":"response.completed","response":{"id":"${responseId}","object":"response","created_at":${created},"model":"${model}","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(fullContent)}}]}],"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"total_tokens":${inputTokens + outputTokens},"output_characters":${fullContent.length},"input_characters":0}}}\n\n`);
-        this.push("data: [DONE]\n\n");
+      if (!lifecycle.terminalKind) {
+        if (lifecycle.sawDone) {
+          lifecycle.emitCompleted();
+        } else {
+          lifecycle.emitFailed();
+        }
       }
       cb();
     }
@@ -5233,7 +5247,47 @@ function createGroupServer(groupName, port) {
         const chatBody = responsesToChatRequest("", reqBody);
         chatBody.stream = true;
         addEventLog("conversion", 0, `Responses→Chat 转换: ${reqBody.model || "?"} → ${chatBody.model}`, "");
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToResponsesStream(), groupName);
+        const lifecycle = {
+          responseId: "resp_" + crypto.randomUUID(),
+          created: Math.floor(Date.now() / 1000),
+          model: chatBody.model || "",
+          fullContent: "",
+          inputTokens: 0,
+          outputTokens: 0,
+          terminalKind: null,
+          sawDone: false,
+          _started: false,
+          _transform: null,
+          _metricsCallback: null,
+          emitStart() {
+            if (this._started) return;
+            this._started = true;
+            this._transform.push(`event: response.created\ndata: ${JSON.stringify({type:"response.created",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"in_progress",output:[]}})}\n\n`);
+            this._transform.push(`event: response.in_progress\ndata: ${JSON.stringify({type:"response.in_progress",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"in_progress",output:[]}})}\n\n`);
+          },
+          emitCompleted() {
+            if (this.terminalKind) return;
+            if (!this._started) this.emitStart();
+            this.terminalKind = "completed";
+            this._transform.push(`event: response.output_text.done\ndata: ${JSON.stringify({type:"response.output_text.done",delta:""})}\n\n`);
+            this._transform.push(`event: response.completed\ndata: ${JSON.stringify({type:"response.completed",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:this.fullContent}]}],usage:{input_tokens:this.inputTokens,output_tokens:this.outputTokens,total_tokens:this.inputTokens+this.outputTokens}}})}\n\n`);
+            this._transform.push("data: [DONE]\n\n");
+            this._transform.push(null);
+            if (this._metricsCallback) this._metricsCallback(true);
+          },
+          emitFailed() {
+            if (this.terminalKind) return;
+            if (!this._started) this.emitStart();
+            this.terminalKind = "failed";
+            this._transform.push(`event: response.failed\ndata: ${JSON.stringify({type:"response.failed",response:{id:this.responseId,object:"response",created_at:this.created,model:this.model,status:"failed"}})}\n\n`);
+            this._transform.push(null);
+            if (this._metricsCallback) this._metricsCallback(false);
+          }
+        };
+        const transform = createChatToResponsesStream(lifecycle);
+        lifecycle._transform = transform;
+        transform._lifecycle = lifecycle;
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", transform, groupName);
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -5349,7 +5403,10 @@ function initServers() {
   const promises = [];
   for (const [name, port] of Object.entries(groups)) {
     if (name === "A") {
-      promises.push(startGroup(name, port || 3456).catch(e => console.error(`[proxy] Failed to start group ${name}: ${e.message}`)));
+      promises.push(startGroup(name, port || 3456).catch(e => {
+        console.error(`[proxy] Fatal: Failed to start group A: ${e.message}`);
+        process.exit(1);
+      }));
     } else if (config.groupEnabled === undefined || config.groupEnabled[name] !== false) {
       promises.push(startGroup(name, port).catch(e => console.error(`[proxy] Failed to start group ${name}: ${e.message}`)));
     }
