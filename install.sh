@@ -66,6 +66,7 @@ if [ ! -f "config.json" ]; then
   "logFile": true,
   "logRetentionDays": 7,
   "logDetail": "full",
+  "updateBaselineTag": "",
   "weeklySortBy": "priority",
   "autoResume": false,
   "autoResumeIdleMinutes": 10,
@@ -202,7 +203,7 @@ if [ -z "$CODEX_BIN" ]; then
     /usr/lib/node_modules/@openai/codex/bin/codex.js \
     /usr/local/bin/codex \
     /opt/codex/bin/codex \
-    /mnt/e/codex/bin/codex \
+    /mnt/*/codex/bin/codex \
     /mnt/c/Users/*/codex/bin/codex \
     "$HOME/codex/bin/codex"; do
     if [ -f "$candidate" ] && [ -x "$candidate" ]; then

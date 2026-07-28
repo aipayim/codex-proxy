@@ -1,5 +1,5 @@
 #!/bin/bash
-PROXY_DIR="/mnt/e/codex-proxy"
+PROXY_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$PROXY_DIR/proxy.pid"
 LOG="$PROXY_DIR/proxy.log"
 LOCK_FILE="$PROXY_DIR/.watchdog.lock"

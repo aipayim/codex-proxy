@@ -34,6 +34,8 @@ codex-proxy/
 ├── install.sh            # 一键安装脚本（自动读取自身路径，替换 {{PROXY_DIR}}）
 ├── edit-keys.sh          # 命令行快速编辑 keys.json 的辅助脚本
 ├── package.json          # npm 依赖（仅 ws）
+├── build-release.js      # 生成带来源及完整性元数据的发布资产
+├── test-release-provenance.js # 发布来源判定回归测试
 ├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
@@ -50,11 +52,13 @@ codex-proxy/
 
 | 文件 | 说明 | 安装方式 |
 |------|------|----------|
+| `build-release.js` | 发布资产生成工具 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-release-provenance.js` | 发布来源回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `proxy.js` | 核心代理（含内嵌面板） | 复制到目标目录即可 |
 | `dashboard.html` | 独立面板备用 | 同目录放置 |
 | `package.json` | npm 依赖声明 | 复制后 `npm install` |
-| `watchdog.sh` | 进程守护（WSL2） | 复制 + `install.sh` 替换路径 |
-| `start-proxy.sh` | watchdog 启动器 | 复制 + `install.sh` 替换路径 |
+| `watchdog.sh` | 进程守护（WSL2） | 复制到同目录；脚本自动以自身位置作为代理目录 |
+| `start-proxy.sh` | watchdog 启动器 | 复制到同目录；脚本自动以自身位置作为代理目录 |
 | `resume-codex.sh` | autoResume 辅助 | 复制到同目录 |
 
 ### 系统级文件（install.sh 自动生成）
@@ -470,7 +474,7 @@ codex
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、watchdog 拉起和新实例就绪进度，完成后自动刷新面板）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -490,7 +494,9 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
 | `/__patch-key` | POST | 修改 Key 配置（`{"idx":1,"tz":"+8","timeWindow":{"start":22,"end":8}}`），`timeWindow:null` 清除时段 |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":"random","idxs":[1,3,5]}`（随机轮询）或 `{"mode":""}`（取消） |
-| `/__restart` | POST | 优雅关闭所有监听端口，等待在途请求排空后退出（watchdog 自动拉起新进程） |
+| `/__restart` | POST | 返回 `202` 后进入重启排空：拒绝排队请求、暂停新的 API 请求，等待在途请求结束后退出，由 watchdog 拉起新进程 |
+| `/__restart-status` | GET | 重启进度：返回实例 ID、启动时间、阶段（`ready` / `draining` / `stopping`）、在途与排队请求数；供 Dashboard 轮询，不含敏感信息 |
+| `/__update-status` | GET | 查询 `aipayim/codex-proxy` 的最新正式 GitHub Release；服务端缓存 6 小时、支持 `?refresh=1` 手工复查（至少间隔 60 秒）。官方发布包或干净官方 Git Tag 自动比较；定制构建仅在配置了有效手动基线 Tag 时比较；不下载或执行远端代码 |
 | `/__auth_check` | GET | 检查管理 Token 是否已配置，返回 `{configured: true/false}`（不暴露实际 Token） |
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
 | `/__test_port?port=3457` | GET | 检测分组端口是否运行（查询内存中 `servers` 注册表） |
@@ -633,8 +639,43 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 1. **面板操作**：配置弹窗 → 🔄 重启代理 → 确认（推荐）
 2. **命令行**：`kill $(cat proxy.pid)`（仅在维护窗口使用，watchdog 会在 10 秒内拉起新进程）
 
-`POST /__restart` 先调用 `server.close()` 释放端口，等待在途请求排空后退出。watchdog 检测到端口空闲且原进程已退出后才拉起新进程，避免并发状态冲突。
-确保重启期间正在处理的请求由 codex 自动重试。
+面板确认后会立即显示全屏进度：提交重启请求、排空在途请求、等待旧实例退出与 watchdog 拉起、检测新实例就绪。新实例的 ID 变化且状态为 `ready` 后，Dashboard 自动重新载入，不会再出现无反馈的空白等待。
+
+`POST /__restart` 返回 `202` 后，旧实例进入 `draining`：已排队请求会收到 `503`，新的 API 请求暂时收到带 `Retry-After: 5` 的 `503`，在途请求继续完成。旧实例保留仅用于进度轮询的 `GET /__restart-status`，排空后退出；watchdog 检测到端口空闲且原进程已退出后再拉起新进程，避免并发状态冲突。请让客户端按自身重试策略处理这段短暂不可用时间。
+
+## 版本检查与升级
+
+Dashboard 打开后会检查一次 [官方 GitHub Release](https://github.com/aipayim/codex-proxy/releases)，前端每 30 分钟复查；服务端使用 ETag 和 6 小时缓存。Release 元数据始终可以查看，但只有确定了本地构建基线后才会比较版本并在顶部「配置」右侧显示闪烁的 ⬆ 标识。
+
+代理识别的是**构建来源**，不会根据目录名、磁盘、主机名、Windows/WSL 环境猜测“开发机”，也不会在源码中写死本机路径或 Release 版本。启动时只执行一次本地判定，不在代理请求热路径运行：
+
+| 优先级 | 本地状态 | 比较行为 |
+|---|---|---|
+| 1 | 系统配置填写了 `updateBaselineTag` | 作为定制构建的显式基线 |
+| 2 | 官方发布资产中的 `build-info.json` 与 `release-manifest.json` 校验通过 | 自动使用发布 Tag |
+| 3 | 官方 GitHub 远程、工作树干净且 `HEAD` 恰好位于稳定 Release Tag | 自动使用该 Git Tag |
+| 4 | 开发分支、本地修改、未知远程、缺少 Git/发布元数据或清单校验失败 | 基线未知，只展示 Release，不提示更新 |
+
+`updateBaselineTag` 是高级定制选项，格式为 `vX.Y.Z` 或 `X.Y.Z`，例如 `v1.2.3`。普通用户不需要填写它：未修改的官方发布资产会自动识别；定制构建留空是正确默认值。若 GitHub 的最新正式 Release 高于已确定基线，才显示更新标识。
+
+### 生成官方发布资产
+
+不要把 GitHub 的源码快照直接当作可自动识别的发布包。发布维护者应在待发布源码中先执行测试，再生成独立资产目录：
+
+```bash
+npm test
+npm run build:release -- --tag v1.2.3 --out ./dist
+```
+
+构建器会生成 `dist/codex-proxy-v1.2.3/`，其中包含：
+
+- `build-info.json`：由构建过程写入的 Release Tag、提交标识和清单摘要；
+- `release-manifest.json`：代理代码、启动脚本和包元数据的 SHA-256 清单；
+- 运行所需的白名单文件。
+
+发布器会将输出资产的 `package.json` 版本同步为 Release Tag，但不会修改开发源码。它不会复制 `config.json`、Key、状态、日志、PID 或本机路径。应将该目录归档后作为 GitHub Release 资产提供给普通用户。安装后的用户配置不在清单内；但代理代码或受保护脚本被修改时，清单校验会失败并自动退回“来源未知”，避免误报更新。
+
+清单用于本地完整性和版本来源判定，不执行远端代码，也不启用覆盖式升级。无论来源状态如何，“一键升级”都保持禁用，避免覆盖本地代码、配置或运行状态。安全升级流程是：备份当前代理目录及配置/状态，审核 Release，手动合并需要的改动，执行 `node -c proxy.js`，再在维护窗口重启代理。
 
 ## config.json 系统配置
 
@@ -673,6 +714,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
   "logFile": true,
   "logRetentionDays": 7,
   "logDetail": "full",
+  "updateBaselineTag": "",
   "groups": {
     "A": 3456,
     "B": 3457,
@@ -718,6 +760,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 | `logFile` | 是否启用文件日志（true/false，默认 true）。关闭后仅内存缓存 2000 条，不写磁盘 |
 | `logRetentionDays` | 日志文件保留天数（默认 7）。设为 0 关闭自动清理 |
 | `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
+| `updateBaselineTag` | 高级可选项。定制构建的已人工确认上游稳定 Release Tag，格式 `vX.Y.Z` 或 `X.Y.Z`。官方发布资产和干净官方 Git Tag 自动识别，无需填写；来源未知的定制构建留空时只显示 Release 信息，不比较更新 |
 | `groups` | 端口分组映射，如 `{"A": 3456, "B": 3457}`。A 组始终运行且不可删除，B/C/D 等通过面板动态管理 |
 | `groupEnabled` | 分组开关状态，如 `{"B": true, "C": false}`。关闭的分组重启后不启动端口。默认全部启用 |
 
@@ -976,8 +1019,8 @@ model = "o3#87"
   "autoResumeIdleMinutes": 10,
   "autoResumeDebounceMinutes": 3,
   "autoResumeProjects": [
-    {"name": "project-a", "path": "/mnt/e/project-a", "cmd": "codex chat"},
-    {"name": "project-b", "path": "/mnt/e/project-b", "cmd": "./run.sh"}
+    {"name": "project-a", "path": "/mnt/d/projects/project-a", "cmd": "codex chat"},
+    {"name": "project-b", "path": "/mnt/d/projects/project-b", "cmd": "./run.sh"}
   ],
   "cmdPath": "/mnt/c/Windows/System32/cmd.exe"
 }
@@ -1000,8 +1043,8 @@ model = "o3#87"
 ### 路径自检
 
 `path` 字段支持以下格式，保存配置时自动标准化：
-- WSL Linux 路径：`/mnt/e/codex-proxy` → 不变
-- Windows 路径：`E:\codex-proxy` → `/mnt/e/codex-proxy`
+- WSL Linux 路径：`/mnt/<drive>/path/to/project` → 不变
+- Windows 路径：`D:\path\to\project` → `/mnt/d/path/to/project`
 - 混合路径：自动转换为 WSL 绝对路径
 
 ### 依赖脚本
@@ -1090,7 +1133,7 @@ pkill -f watchdog.sh
 
 | 组件 | 作用 |
 |---|---|
-| `watchdog.sh` | 每 10 秒检测代理存活：flock 单实例锁 → 检查 `proxy.pid` + 端口绑定 + 命令行验证。进程消失则自动拉起；非 proxy 进程占用端口只报警不杀。proxy.js 在 A 端口成功监听后自行写入 PID 文件 |
+| `watchdog.sh` | 每 10 秒检测代理存活：flock 单实例锁 → 检查 `proxy.pid` + 端口绑定 + 命令行验证。脚本以自身目录定位代理，不含固定机器路径。进程消失则自动拉起；非 proxy 进程占用端口只报警不杀。proxy.js 在 A 端口成功监听后自行写入 PID 文件 |
 | `start-proxy.sh` | 前台启动 watchdog（手动用）。`bash start-proxy.sh --boot` 后台启动（WSL 开机用） |
 | `proxy.pid` | `proxy.js` 启动时自动写入 `process.pid`，退出时自动清理 |
 | `/etc/wsl.conf` | 已配置 `[boot] command = /usr/local/bin/codex-watchdog.sh`，Windows 启动 WSL 时自动加载 watchdog |
@@ -1184,10 +1227,17 @@ A: 勾选卡片左上角 checkbox → 顶部操作栏出现 → 点击批量重�
 A: 点击 📋 按钮 → 粘贴每行一个 `sk-xxx url 周期 备注` → 确定。
 
 **Q: 配置弹窗的「重启代理」按钮点不了？**
-A: 该功能在更新 proxy.js 后需重启代理才能生效。首次使用需命令行重启一次。
+A: 新版会在点击后显示重启进度，并在新实例就绪后自动刷新。若当前运行的是更新前的 `proxy.js`，需先在维护窗口手工重启一次，加载新版后该交互才会生效。
+
+**Q: 为什么没有出现更新标识，或「一键升级」被禁用？**
+A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正式 Release 时会显示标识。开发分支、本地修改或来源未知的副本默认不显示标识，只展示 Release；这时可保持空白，或在确有把握时填写「定制构建基线 Tag（高级）」。可在系统配置中点击「检查更新」复查。为避免覆盖本地修改，面板只提供 Release 信息和安全升级步骤，不会自动替换源码。
 
 ## 更新日志
 
+- **2026-07-28 发布来源识别**：新增 `npm run build:release`，生成不含运行敏感文件的 Release 资产、`build-info.json` 和 SHA-256 清单。未修改的官方发布资产及干净官方 Git Release Tag 自动比较版本；开发/定制副本 fail-closed。watchdog 改为从自身目录定位代理，移除固定机器路径。
+- **2026-07-28 版本基线修正**：移除固定本地版本和具体本机目录说明。`updateBaselineTag` 保留为定制构建的高级手动基线；来源未知时只展示 Release，不误报更新。覆盖式一键升级继续禁用。
+- **2026-07-28 重启计时与版本检查**：重启遮罩新增独立 1 秒计时和状态请求超时，不再因旧进程连接切换而停在 `0 秒`。Dashboard 新增 GitHub Release 缓存检查、更新闪烁标识、版本/Release Notes 弹窗及系统配置版本链接；覆盖式一键升级保持禁用。
+- **2026-07-28 Dashboard 重启进度**：系统配置的「重启代理」新增全屏动态进度，展示排空与 watchdog 恢复状态；通过实例 ID 确认新进程就绪后自动刷新面板。新增 `GET /__restart-status`，重启期间 API 请求明确返回短暂不可用状态。
 - **2026-07-28 Dashboard 周重置日筛选**：主面板选择「每周重置」后显示周重置日下拉，可筛选全部、周一至周日或自动重置的 Key；筛选结果继续支持既有卡片勾选和批量操作。
 - **2026-07-28 close15 安全加固**：fetch 包装器改用 `new URL()` origin 判断（不再用字符串包含）；WebSocket 连接需 token 认证；`/metrics` 纳入管理 Token 认证范围；watchdog drain 超时 30s 后自动 kill 孤儿进程（不再无限等待）
 - **2026-07-28 close14 安全加固**：timeout 重试修复（首包前超时不再浪费可用 Key）；watchdog drain 冲突修复（端口空闲但旧进程未退时不抢先启动新进程）；`/__admin_token` → `/__auth_check`（不再暴露实际 Token）；fetch 包装器仅对同源请求附加 Authorization
