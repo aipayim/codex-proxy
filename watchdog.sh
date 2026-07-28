@@ -41,15 +41,6 @@ stop_our_proxy() {
   sleep 1
 }
 
-kill_all_our_proxies() {
-  local my_pid=$1
-  for p in $(pgrep -f "$PROXY_ABS" 2>/dev/null); do
-    if [ "$p" != "$my_pid" ] && is_our_proxy "$p"; then
-      stop_our_proxy "$p"
-    fi
-  done
-}
-
 # On startup: verify existing PID_FILE
 if [ -f "$PID_FILE" ]; then
   EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null)
@@ -76,17 +67,10 @@ while true; do
       echo "[watchdog] $(date) WARNING: port :3456 used by PID $BOUND_PID (not our proxy.js), not killing" >> "$LOG"
     fi
   else
-    if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null && [ "$START_TIME" -gt 0 ]; then
-      ELAPSED=$(( $(date +%s) - START_TIME ))
-      if [ "$ELAPSED" -ge "$STARTUP_GRACE" ]; then
-        echo "[watchdog] $(date) PID $CHILD_PID still not listening after ${ELAPSED}s, stopping" >> "$LOG"
-        stop_our_proxy "$CHILD_PID"
-        kill_all_our_proxies "$$"
-        CHILD_PID=""
-        NEED_START=true
-      fi
+    if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
+      # Old process is alive but port is free — likely draining, don't start new one
+      :
     else
-      kill_all_our_proxies "$$"
       CHILD_PID=""
       NEED_START=true
     fi

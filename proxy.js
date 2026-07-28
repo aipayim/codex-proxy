@@ -237,7 +237,12 @@ function normalizePath(p) {
 function checkAdminAuth(req) {
   if (!config.adminToken) return true;
   const auth = req.headers.authorization || "";
-  return auth === "Bearer " + config.adminToken;
+  if (!auth || auth.length !== config.adminToken.length + 7) return false;
+  let diff = 0;
+  for (let i = 0; i < config.adminToken.length; i++) {
+    diff |= auth.charCodeAt(i + 7) ^ config.adminToken.charCodeAt(i);
+  }
+  return diff === 0 && auth.startsWith("Bearer ");
 }
 function checkAutoResume() {
   if (!config.autoResume || !config.autoResumeProjects || config.autoResumeProjects.length === 0) return;
@@ -1292,14 +1297,14 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   proxyReq.on("timeout", () => {
     if (onDone.done) return;
     onDone.done = true;
-    if (streamAttached && lifecycle && !lifecycle.terminalKind && !clientCancelled) {
+    if (lifecycle && !lifecycle.terminalKind && !clientCancelled && streamAttached) {
       lifecycle.emitFailed();
     }
     const dur = Date.now() - reqStart;
     activeDecr(idx);
     console.error(`[proxy] #${idx+1} Timeout`);
     proxyReq.destroy();
-    if (!lifecycle) markFailure(idx, 0);
+    markFailure(idx, 0);
     if (!lifecycle) {
       recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
     }
@@ -1774,6 +1779,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
    <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
   <label>重置</label>
   <select id="resetFilter"><option value="all">全部</option><option value="daily">每日重置</option><option value="weekly">每周重置</option><option value="hourly">每N小时重置</option><option value="never">永不过期</option></select>
+  <span id="weeklyResetDayFilterWrap" style="display:none;align-items:center;gap:4px"><label>周重置日</label><select id="weeklyResetDayFilter"><option value="all">全部</option><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option><option value="auto">自动</option></select></span>
   <label>分组</label>
   <select id="groupFilter"><option value="all">全部</option></select>
   <label>趋势</label>
@@ -2123,6 +2129,48 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 </div>
 
 <script>
+const __origFetch=window.fetch;
+window.fetch=function(u,o){
+  o=o||{};
+  const t=sessionStorage.getItem("adminToken");
+  if(t){
+    const isLocal=typeof u==="string"&&(u.startsWith("/__")||u.indexOf("localhost:3456")>=0||u.indexOf("127.0.0.1:3456")>=0);
+    if(isLocal){
+      const h=o.headers instanceof Headers?o.headers:new Headers(o.headers||{});
+      h.set("Authorization","Bearer "+t);
+      o.headers=h;
+    }
+  }
+  return __origFetch(u,o);
+};
+function requireAdminToken(){
+  return new Promise((resolve)=>{
+    __origFetch("/__auth_check").then(r=>r.json()).then(j=>{
+      if(!j.configured){resolve(true);return;}
+      const saved=sessionStorage.getItem("adminToken");
+      if(saved){__origFetch("/__status",{headers:{"Authorization":"Bearer "+saved}}).then(r=>{resolve(r.ok);if(!r.ok)sessionStorage.removeItem("adminToken");}).catch(()=>resolve(false));return;}
+      const d=document.createElement("div");
+      d.id="tokenDialog";
+      d.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999";
+      d.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:360px;text-align:center"><div style="color:#e2e8f0;font-size:16px;margin-bottom:12px">🔐 管理员认证</div><div style="color:#94a3b8;font-size:13px;margin-bottom:16px">请输入管理 Token 以访问 Dashboard</div><input id="tokenInput" type="password" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:4px;margin-bottom:12px" placeholder="管理 Token"><div id="tokenErr" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div><button id="tokenConfirmBtn" type="button" style="background:#3b82f6;color:#fff;border:none;padding:8px 24px;border-radius:4px;cursor:pointer">确认</button></div>';
+      document.body.appendChild(d);
+      const tokenInput=document.getElementById("tokenInput");
+      const tokenErr=document.getElementById("tokenErr");
+      const submitToken=()=>{
+        const v=tokenInput.value.trim();
+        if(!v){tokenErr.textContent="请输入 Token";tokenErr.style.display="block";return;}
+        sessionStorage.setItem("adminToken",v);
+        __origFetch("/__status",{headers:{"Authorization":"Bearer "+v}}).then(r=>{
+          if(r.ok){d.remove();resolve(true);}
+          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";sessionStorage.removeItem("adminToken");}
+        }).catch(()=>{tokenErr.textContent="连接失败";tokenErr.style.display="block";});
+      };
+      document.getElementById("tokenConfirmBtn").addEventListener("click",submitToken);
+      tokenInput.focus();
+      tokenInput.addEventListener("keydown",e=>{if(e.key==="Enter")submitToken();});
+    }).catch(()=>resolve(true));
+  });
+}
 const L={"daily":"每日","weekly":"每周","never":"永久","hourly":"每N小时"};
 const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never","hourly":"bd-hourly"};
 const DAY_CN={"1":"周一","2":"周二","3":"周三","4":"周四","5":"周五","6":"周六","7":"周日"};
@@ -2622,6 +2670,18 @@ function render(){
   if(modelSQ){const q=modelSQ.toLowerCase();filtered=filtered.filter(x=>(x.models||[]).some(m=>m.toLowerCase().includes(q)))}
   const resetType=document.getElementById("resetFilter").value;
   if(resetType!=="all")filtered=filtered.filter(x=>x.reset===resetType);
+  const weeklyResetDayFilter=document.getElementById("weeklyResetDayFilter");
+  const weeklyResetDayFilterWrap=document.getElementById("weeklyResetDayFilterWrap");
+  const showWeeklyResetDayFilter=resetType==="weekly";
+  weeklyResetDayFilterWrap.style.display=showWeeklyResetDayFilter?"inline-flex":"none";
+  if(!showWeeklyResetDayFilter)weeklyResetDayFilter.value="all";
+  if(showWeeklyResetDayFilter&&weeklyResetDayFilter.value!=="all"){
+    const selectedResetDay=weeklyResetDayFilter.value;
+    filtered=filtered.filter(x=>{
+      const resetDay=x.resetDay==null||x.resetDay===""?"auto":String(x.resetDay);
+      return resetDay===selectedResetDay;
+    });
+  }
   groupFilter=document.getElementById("groupFilter").value;
   if(groupFilter!=="all")filtered=filtered.filter(x=>x.group===groupFilter);
   document.getElementById("filterCount").textContent="显示 "+filtered.length+" / "+data.length+" 个";
@@ -2854,12 +2914,13 @@ function boostKey(idx){
   fetch("http://localhost:3456/__boost-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx})})
     .then(r=>r.json()).catch(()=>{});
 }
-loadKeys();connectWS();if(Notification.permission==="default")Notification.requestPermission();
+requireAdminToken().then(ok=>{if(ok){loadKeys();connectWS();if(Notification.permission==="default")Notification.requestPermission();}});
 setTimeout(function(){if(!data.length)httpLoad()},3000);
 
 document.getElementById("sortBy").addEventListener("change",function(){sortBy=this.value;render()});
 document.getElementById("filterBy").addEventListener("change",function(){filterBy=this.value;render()});
-document.getElementById("resetFilter").addEventListener("change",function(){render()});
+document.getElementById("resetFilter").addEventListener("change",function(){if(this.value!=="weekly")document.getElementById("weeklyResetDayFilter").value="all";render()});
+document.getElementById("weeklyResetDayFilter").addEventListener("change",function(){render()});
 document.getElementById("trendRange").addEventListener("change",function(){trendRange=this.value;render()});
 document.getElementById("searchBox").addEventListener("input",function(){searchQ=this.value;render()});
 document.getElementById("statusCodeBox").addEventListener("input",function(){statusCodeQ=this.value.trim();render()});
@@ -3944,6 +4005,7 @@ function createChatToResponsesStream(lifecycle) {
   let buffer = "";
   const seenToolCalls = new Set();
   const toolCallArgs = {};
+  const toolCallIds = {};
   return new Transform({
     readableObjectMode: false, writableObjectMode: false,
     transform(chunk, encoding, cb) {
@@ -3975,22 +4037,23 @@ function createChatToResponsesStream(lifecycle) {
           if (delta?.tool_calls) {
             for (const tc of delta.tool_calls) {
               const callIdx = tc.index || 0;
-              const callId = "call_" + callIdx;
               if (!seenToolCalls.has(callIdx)) {
                 seenToolCalls.add(callIdx);
                 toolCallArgs[callIdx] = "";
+                toolCallIds[callIdx] = tc.id || ("call_" + callIdx + "_" + Date.now().toString(36));
                 const fnName = tc.function?.name || "";
-                this.push(`event: response.output_item.added\ndata: ${JSON.stringify({type:"response.output_item.added",output_index:callIdx,item:{type:"function_call",id:callId,name:fnName,arguments:"",status:"in_progress"}})}\n\n`);
-                this.push(`event: response.function_call_arguments.starting\ndata: ${JSON.stringify({type:"response.function_call_arguments.starting",item_id:callId,output_index:callIdx})}\n\n`);
+                this.push(`event: response.output_item.added\ndata: ${JSON.stringify({type:"response.output_item.added",output_index:callIdx,item:{type:"function_call",id:toolCallIds[callIdx],name:fnName,arguments:"",status:"in_progress"}})}\n\n`);
+                this.push(`event: response.function_call_arguments.starting\ndata: ${JSON.stringify({type:"response.function_call_arguments.starting",item_id:toolCallIds[callIdx],output_index:callIdx})}\n\n`);
               }
               const args = tc.function?.arguments || "";
               toolCallArgs[callIdx] += args;
-              this.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({type:"response.function_call_arguments.delta",delta:args,item_id:callId,output_index:callIdx})}\n\n`);
+              this.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({type:"response.function_call_arguments.delta",delta:args,item_id:toolCallIds[callIdx],output_index:callIdx})}\n\n`);
             }
           }
           if (parsed.choices?.[0]?.finish_reason === "tool_calls") {
-            for (const [callIdx, callId] of [...seenToolCalls].map(i => [i, "call_" + i])) {
-              if (toolCallArgs[callIdx] !== undefined) {
+            for (const callIdx of seenToolCalls) {
+              const callId = toolCallIds[callIdx];
+              if (callId && toolCallArgs[callIdx] !== undefined) {
                 this.push(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({type:"response.function_call_arguments.done",arguments:toolCallArgs[callIdx],item_id:callId,output_index:callIdx})}\n\n`);
                 this.push(`event: response.output_item.done\ndata: ${JSON.stringify({type:"response.output_item.done",output_index:callIdx,item:{type:"function_call",id:callId,name:"",arguments:toolCallArgs[callIdx],status:"completed"}})}\n\n`);
                 delete toolCallArgs[callIdx];
@@ -4006,6 +4069,13 @@ function createChatToResponsesStream(lifecycle) {
       cb();
     },
     flush(cb) {
+      for (const callIdx of seenToolCalls) {
+        const callId = toolCallIds[callIdx];
+        if (callId && toolCallArgs[callIdx] !== undefined) {
+          this.push(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({type:"response.function_call_arguments.done",arguments:toolCallArgs[callIdx],item_id:callId,output_index:callIdx})}\n\n`);
+          this.push(`event: response.output_item.done\ndata: ${JSON.stringify({type:"response.output_item.done",output_index:callIdx,item:{type:"function_call",id:callId,name:"",arguments:toolCallArgs[callIdx],status:"completed"}})}\n\n`);
+        }
+      }
       if (!lifecycle.terminalKind) {
         if (lifecycle.sawDone) {
           lifecycle.emitCompleted();
@@ -4392,9 +4462,9 @@ function createGroupServer(groupName, port) {
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
-      "access-control-allow-origin": "*",
+      "access-control-allow-origin": "null",
       "access-control-allow-methods": "GET, PUT, POST, OPTIONS",
-      "access-control-allow-headers": "content-type",
+      "access-control-allow-headers": "content-type, authorization",
       "access-control-max-age": "86400",
     });
     res.end();
@@ -4402,37 +4472,33 @@ function createGroupServer(groupName, port) {
   }
 
   if (req.method === "GET" && pathname === "/favicon.ico") {
-    res.writeHead(204, { "access-control-allow-origin": "*" }); res.end();
+    res.writeHead(204); res.end();
     return;
   }
   if (req.method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    let html = getDashboardHTML();
-    const token = config.adminToken || "";
-    const authHeader = token ? `{"Authorization":"Bearer ${token}"}` : "{}";
-    html = html.replace("<script>", `<script>window.__ADMIN_TOKEN=${JSON.stringify(token)};const __origFetch=fetch;fetch=function(u,o){o=o||{};o.headers=Object.assign(${authHeader},o.headers||{});return __origFetch(u,o);}`);
-    res.end(html);
-    return;
-  }
-
-  if (req.method === "GET" && pathname === "/__status") {
-    res.writeHead(200, { "content-type": "application/json" });
-    const data = buildStatusData();
-    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime }, null, 2));
+    res.end(getDashboardHTML());
     return;
   }
 
   const cors = { "content-type": "application/json; charset=utf-8" };
 
-  if (pathname.startsWith("/__") && !checkAdminAuth(req)) {
+  if (pathname.startsWith("/__") && pathname !== "/__auth_check" && !checkAdminAuth(req)) {
     res.writeHead(401, cors);
     res.end(JSON.stringify({ error: "unauthorized" }));
     return;
   }
 
-  if (req.method === "GET" && pathname === "/__admin_token") {
+  if (req.method === "GET" && pathname === "/__auth_check") {
     res.writeHead(200, cors);
-    res.end(JSON.stringify({ token: config.adminToken || "" }));
+    res.end(JSON.stringify({ configured: !!(config.adminToken) }));
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/__status") {
+    res.writeHead(200, cors);
+    const data = buildStatusData();
+    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime }, null, 2));
     return;
   }
 
@@ -5263,16 +5329,18 @@ function createGroupServer(groupName, port) {
       if (global._restarting) return;
       global._restarting = true;
       const drainStart = Date.now();
-      const maxDrainMs = 30000;
+      const warnDrainMs = 30000;
+      let warned = false;
       const drainCheck = () => {
         const total = Object.values(activeRequests).reduce((s, a) => s + (Array.isArray(a) ? a.length : 0), 0);
-        if (total === 0 || Date.now() - drainStart >= maxDrainMs) {
-          console.log(`[proxy] drain complete (${total} active, ${Date.now()-drainStart}ms), exiting for watchdog restart...`);
+        if (total === 0) {
+          console.log(`[proxy] drain complete (${Date.now()-drainStart}ms), exiting for watchdog restart...`);
           process.exit(0);
-        } else {
-          console.log(`[proxy] draining... ${total} active requests remain`);
-          setTimeout(drainCheck, 1000);
+        } else if (!warned && Date.now() - drainStart >= warnDrainMs) {
+          warned = true;
+          console.log(`[proxy] WARNING: ${total} active requests still draining after ${warnDrainMs/1000}s. Will keep waiting.`);
         }
+        setTimeout(drainCheck, 1000);
       };
       setImmediate(() => {
         for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }

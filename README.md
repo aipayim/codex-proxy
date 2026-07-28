@@ -426,7 +426,7 @@ codex
 ### 排序/筛选/搜索/批量操作
 - 排序：默认 / 按到期日（最近→最远）/ 首次启用（早→晚）/ 使用时长（长→短）/ 健康评分 / 平均延迟 / 5 分钟成功率 / 按分组
 - 筛选：全部 / 可用 / 冷却中 / 废弃 / 🔒 锁死 / 屏蔽 / 启用时长 / 周重置日（与状态码筛选可组合使用）
-- 重置筛选：每日重置 / 每周重置 / 永不过期（可与状态筛选组合）
+- 重置筛选：每日重置 / 每周重置 / 每 N 小时重置 / 永不过期（可与状态筛选组合）；选择「每周重置」后可继续按周重置日筛选：全部 / 周一至周日 / 自动（未设置 `resetDay`）
 - 状态码筛选：输入 `401` 等过滤指定失败码或最后响应状态码的 Key
 - 搜索：ID / 备注 / 地址
 - 实时显示筛选后数量：`显示 X / Y 个`
@@ -470,11 +470,11 @@ codex
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮
 
 ## API 接口
 
-> 所有 `/__*` 管理接口在设置了管理 Token 后需 `Authorization: Bearer <token>` 认证。Dashboard 页面加载时自动注入 Token，所有管理操作自动携带认证头，无需手动输入。
+> 所有 `/__*` 管理接口在设置了管理 Token 后需 `Authorization: Bearer <token>` 认证（constant-time 比较，空 token 拒绝）。Dashboard 首次打开时弹出 Token 输入框，输入后保存到 sessionStorage（同浏览器会话内免重复输入，关闭浏览器后需重新输入）。无 Token 时 Dashboard 正常使用。
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
@@ -491,6 +491,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__patch-key` | POST | 修改 Key 配置（`{"idx":1,"tz":"+8","timeWindow":{"start":22,"end":8}}`），`timeWindow:null` 清除时段 |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":"random","idxs":[1,3,5]}`（随机轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 优雅关闭所有监听端口，等待在途请求排空后退出（watchdog 自动拉起新进程） |
+| `/__auth_check` | GET | 检查管理 Token 是否已配置，返回 `{configured: true/false}`（不暴露实际 Token） |
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
 | `/__test_port?port=3457` | GET | 检测分组端口是否运行（查询内存中 `servers` 注册表） |
 | `/__keys` `_batchGroup` | PUT | 批量迁移分组：`{"_batchGroup":"B", …完整 keys 数组…}` |
@@ -632,7 +633,7 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 1. **面板操作**：配置弹窗 → 🔄 重启代理 → 确认（推荐）
 2. **命令行**：`kill $(cat proxy.pid)`（仅在维护窗口使用，watchdog 会在 10 秒内拉起新进程）
 
-`POST /__restart` 先调用 `server.close()` 释放端口，等待在途请求排空后退出。watchdog 检测到端口空闲后自动拉起新进程。
+`POST /__restart` 先调用 `server.close()` 释放端口，等待在途请求排空后退出。watchdog 检测到端口空闲且原进程已退出后才拉起新进程，避免并发状态冲突。
 确保重启期间正在处理的请求由 codex 自动重试。
 
 ## config.json 系统配置
@@ -1184,6 +1185,11 @@ A: 点击 📋 按钮 → 粘贴每行一个 `sk-xxx url 周期 备注` → 确�
 
 **Q: 配置弹窗的「重启代理」按钮点不了？**
 A: 该功能在更新 proxy.js 后需重启代理才能生效。首次使用需命令行重启一次。
+
+## 更新日志
+
+- **2026-07-28 Dashboard 周重置日筛选**：主面板选择「每周重置」后显示周重置日下拉，可筛选全部、周一至周日或自动重置的 Key；筛选结果继续支持既有卡片勾选和批量操作。
+- **2026-07-28 close14 安全加固**：timeout 重试修复（首包前超时不再浪费可用 Key）；watchdog drain 冲突修复（端口空闲但旧进程未退时不抢先启动新进程）；`/__admin_token` → `/__auth_check`（不再暴露实际 Token）；fetch 包装器仅对同源请求附加 Authorization
 
 ## License
 
