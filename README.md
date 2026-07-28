@@ -470,7 +470,7 @@ codex
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮
 
 ## API 接口
 
@@ -488,7 +488,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__patch-key-status` | POST | 修改 Key 状态（`{"idx":1,"status":"shielded"}`） |
 | `/__patch-key` | POST | 修改 Key 配置（`{"idx":1,"tz":"+8","timeWindow":{"start":22,"end":8}}`），`timeWindow:null` 清除时段 |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":"random","idxs":[1,3,5]}`（随机轮询）或 `{"mode":""}`（取消） |
-| `/__restart` | POST | 热重启代理进程（新进程启动后旧进程退出） |
+| `/__restart` | POST | 优雅关闭所有监听端口，等待在途请求排空后退出（watchdog 自动拉起新进程） |
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
 | `/__test_port?port=3457` | GET | 检测分组端口是否运行（查询内存中 `servers` 注册表） |
 | `/__keys` `_batchGroup` | PUT | 批量迁移分组：`{"_batchGroup":"B", …完整 keys 数组…}` |
@@ -627,10 +627,10 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 
 两种方式：
 
-1. **面板操作**：配置弹窗 → 🔄 重启代理 → 确认
-2. **命令行**：`pkill -f "node.*proxy\.js" && nohup node proxy.js &`
+1. **面板操作**：配置弹窗 → 🔄 重启代理 → 确认（推荐）
+2. **命令行**：`kill $(cat proxy.pid)`（仅在维护窗口使用，watchdog 会在 10 秒内拉起新进程）
 
-`POST /__restart` 先调用 `server.close()` 释放端口，再 `spawn(..., {detached: true})` 启动新进程，最后退出当前进程，避免多进程端口冲突。
+`POST /__restart` 先调用 `server.close()` 释放端口，等待在途请求排空后退出。watchdog 检测到端口空闲后自动拉起新进程。
 确保重启期间正在处理的请求由 codex 自动重试。
 
 ## config.json 系统配置

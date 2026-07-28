@@ -18,7 +18,7 @@ const HTTP_MOD = { "http:": http, "https:": https };
 const TZ = "Asia/Shanghai";
 const MAX_LOG = 2000;
 const QUEUE_TIMEOUT = 30000;
-const STREAM_LIFETIME = 1800000;
+let STREAM_LIFETIME = 1800000;
 const LOG_DIR = path.join(__dirname, "logs");
 const PID_FILE = path.join(__dirname, "proxy.pid");
 let LOG_RETENTION_DAYS = 7;
@@ -86,11 +86,18 @@ let _boostBatchPoolIdx = 0;
 
 process.on("uncaughtException", err => {
   console.error("[proxy] UNCAUGHT EXCEPTION:", err.stack || err.message);
+  process.exit(1);
 });
 process.on("unhandledRejection", (reason) => {
   console.error("[proxy] UNHANDLED REJECTION:", reason instanceof Error ? reason.stack : reason);
+  process.exit(1);
 });
-process.on("exit", () => { try { fs.unlinkSync(PID_FILE); } catch {} });
+process.on("exit", () => {
+  try {
+    const pid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
+    if (pid === process.pid) fs.unlinkSync(PID_FILE);
+  } catch {}
+});
 
 // CLI --groups override: --groups "A=3456,B=3457"
 let cliGroups = null;
@@ -161,6 +168,8 @@ function loadConfig() {
     config.logFile = LOG_FILE_ENABLED;
     config.logRetentionDays = LOG_RETENTION_DAYS;
     config.logDetail = LOG_DETAIL;
+    STREAM_LIFETIME = Math.max(60000, parseInt(c.streamLifetime) || 1800000);
+    config.streamLifetime = STREAM_LIFETIME;
     config.rateLimit = c.rateLimit !== false;
     config.maxRequestsPerMin = Math.max(1, parseInt(c.maxRequestsPerMin) || 10);
     config.maxTokensPerMin = Math.max(0, parseInt(c.maxTokensPerMin) || 0);
@@ -1178,14 +1187,10 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     markSuccess(idx);
 
     const a = accounts[idx];
-    const m = a.key.match(/^(sk-[^-\s]+)/);
-    const preview = m ? m[1] : a.key.slice(0, 12);
 
     const safeHeaders = { ...apiRes.headers };
     delete safeHeaders["transfer-encoding"];
     safeHeaders["x-proxy-account"] = `${idx + 1}/${accounts.length}`;
-    safeHeaders["x-proxy-key"] = `${preview}...`;
-    safeHeaders["x-proxy-url"] = a.url;
 
     if (clientRes.headersSent) { apiRes.destroy(); activeDecr(idx); onDone({ switched: false }); return; }
     clientRes.writeHead(apiRes.statusCode, safeHeaders);
@@ -1230,8 +1235,12 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     apiRes.on("end", () => { endedNormally = true; cleanup(); });
     apiRes.on("close", () => {
       if (!cleaned) cleanup();
-      if (lifecycle && streamAttached && !lifecycle.terminalKind && !endedNormally && !clientCancelled) {
-        lifecycle.emitFailed();
+      if (!endedNormally && !clientCancelled) {
+        if (lifecycle && streamAttached && !lifecycle.terminalKind) {
+          lifecycle.emitFailed();
+        } else if (!lifecycle) {
+          markFailure(idx, 0);
+        }
       }
     });
     apiRes.on("error", (err) => {
@@ -2012,6 +2021,9 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
   <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 流超时</div>
+  <div style="color:#94a3b8;padding:4px 0">响应流最大时长 (ms)</div>
+  <div><input id="cfgStreamLifetime" type="number" min="60000" max="7200000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="1800000" title="响应流绝对超时，防止僵尸连接。默认30分钟"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
 </div>
@@ -2219,6 +2231,7 @@ async function loadConfigUI(){
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
+    document.getElementById("cfgStreamLifetime").value=c.streamLifetime||1800000;
     try{
       const sr=await fetch("/__status");
       const sd=await sr.json();
@@ -3787,6 +3800,7 @@ async function saveConfig(){
     enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
     maxRequestsPerMin:parseInt(document.getElementById("cfgMaxReqPerMin").value)||10,
     maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0,
+    streamLifetime:parseInt(document.getElementById("cfgStreamLifetime").value)||1800000,
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
     logFile:document.getElementById("cfgLogFile").checked,
@@ -3903,6 +3917,8 @@ function responsesToChatRequest(upstreamUrl, body) {
 function createChatToResponsesStream(lifecycle) {
   const Transform = require("stream").Transform;
   let buffer = "";
+  const seenToolCalls = new Set();
+  const toolCallArgs = {};
   return new Transform({
     readableObjectMode: false, writableObjectMode: false,
     transform(chunk, encoding, cb) {
@@ -3933,7 +3949,27 @@ function createChatToResponsesStream(lifecycle) {
           }
           if (delta?.tool_calls) {
             for (const tc of delta.tool_calls) {
-              this.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({type:"response.function_call_arguments.delta",delta:tc.function?.arguments||"",item_id:"call_"+(tc.index||0)})}\n\n`);
+              const callIdx = tc.index || 0;
+              const callId = "call_" + callIdx;
+              if (!seenToolCalls.has(callIdx)) {
+                seenToolCalls.add(callIdx);
+                toolCallArgs[callIdx] = "";
+                const fnName = tc.function?.name || "";
+                this.push(`event: response.output_item.added\ndata: ${JSON.stringify({type:"response.output_item.added",output_index:callIdx,item:{type:"function_call",id:callId,name:fnName,arguments:"",status:"in_progress"}})}\n\n`);
+                this.push(`event: response.function_call_arguments.starting\ndata: ${JSON.stringify({type:"response.function_call_arguments.starting",item_id:callId,output_index:callIdx})}\n\n`);
+              }
+              const args = tc.function?.arguments || "";
+              toolCallArgs[callIdx] += args;
+              this.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({type:"response.function_call_arguments.delta",delta:args,item_id:callId,output_index:callIdx})}\n\n`);
+            }
+          }
+          if (parsed.choices?.[0]?.finish_reason === "tool_calls") {
+            for (const [callIdx, callId] of [...seenToolCalls].map(i => [i, "call_" + i])) {
+              if (toolCallArgs[callIdx] !== undefined) {
+                this.push(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({type:"response.function_call_arguments.done",arguments:toolCallArgs[callIdx],item_id:callId,output_index:callIdx})}\n\n`);
+                this.push(`event: response.output_item.done\ndata: ${JSON.stringify({type:"response.output_item.done",output_index:callIdx,item:{type:"function_call",id:callId,name:"",arguments:toolCallArgs[callIdx],status:"completed"}})}\n\n`);
+                delete toolCallArgs[callIdx];
+              }
             }
           }
           if (parsed.usage) {
@@ -5182,15 +5218,13 @@ function createGroupServer(groupName, port) {
   if (pathname === "/__restart") {
     if (req.method === "POST") {
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ ok: true, message: "restarting" }));
+      res.end(JSON.stringify({ ok: true, message: "draining and exiting, watchdog will restart" }));
       if (global._restarting) return;
       global._restarting = true;
       setImmediate(() => {
         for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
         setTimeout(() => {
-          console.log("[proxy] restarting...");
-          const child = require("child_process").spawn(process.argv[0], process.argv.slice(1), { detached: true, stdio: "inherit" });
-          child.unref();
+          console.log("[proxy] draining complete, exiting for watchdog restart...");
           process.exit(0);
         }, 1000);
       });
