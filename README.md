@@ -37,6 +37,7 @@ codex-proxy/
 ├── build-release.js      # 生成带来源及完整性元数据的发布资产
 ├── test-release-provenance.js # 发布来源判定回归测试
 ├── test-stream-lifecycle.js # Responses 流终态回归测试
+├── test-restart-lifecycle.js # 重启排空、取消与强制重启回归测试
 ├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
@@ -55,6 +56,7 @@ codex-proxy/
 |------|------|----------|
 | `build-release.js` | 发布资产生成工具 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-release-provenance.js` | 发布来源回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-restart-lifecycle.js` | 重启生命周期回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `proxy.js` | 核心代理（含内嵌面板） | 复制到目标目录即可 |
 | `dashboard.html` | 独立面板备用 | 同目录放置 |
 | `package.json` | npm 依赖声明 | 复制后 `npm install` |
@@ -475,7 +477,7 @@ codex
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、watchdog 拉起和新实例就绪进度，完成后自动刷新面板）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -496,7 +498,9 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__patch-key` | POST | 修改 Key 配置（`{"idx":1,"tz":"+8","timeWindow":{"start":22,"end":8}}`），`timeWindow:null` 清除时段 |
 | `/__boost-batch` | POST | 批量优先：`{"mode":"use","idxs":[1,3,5]}`（逐个使用）或 `{"mode":"roundrobin","idxs":[1,3,5]}`（轮询）或 `{"mode":"random","idxs":[1,3,5]}`（随机轮询）或 `{"mode":""}`（取消） |
 | `/__restart` | POST | 返回 `202` 后进入重启排空：拒绝排队请求、暂停新的 API 请求，等待在途请求结束后退出，由 watchdog 拉起新进程 |
-| `/__restart-status` | GET | 重启进度：返回实例 ID、启动时间、阶段（`ready` / `draining` / `stopping`）、在途与排队请求数；供 Dashboard 轮询，不含敏感信息 |
+| `/__restart-status` | GET | 重启进度：返回实例 ID、启动时间、阶段（`ready` / `draining` / `stopping`）、在途与排队请求数，以及 `restartId`、`canCancel`、`canForce`、`forceAvailableInMs`；供 Dashboard 轮询，不含敏感信息 |
+| `/__restart/cancel` | POST | 仅在 `draining` 时可取消本次安全重启并恢复新请求接入；已返回 `503` 的排队请求不会重新入队；成功返回 `200`，其他阶段返回 `409` |
+| `/__restart/force` | POST | 仅在 `draining` 已持续至少 30 秒后可强制退出；会中断活跃流和在途请求，成功返回 `202`，其他阶段或等待时间未到返回 `409` |
 | `/__update-status` | GET | 查询 `aipayim/codex-proxy` 的最新正式 GitHub Release；服务端缓存 6 小时、支持 `?refresh=1` 手工复查（至少间隔 60 秒）。官方发布包或干净官方 Git Tag 自动比较；定制构建仅在配置了有效手动基线 Tag 时比较；不下载或执行远端代码 |
 | `/__auth_check` | GET | 检查管理 Token 是否已配置，返回 `{configured: true/false}`（不暴露实际 Token） |
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
@@ -650,9 +654,13 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 1. **面板操作**：配置弹窗 → 🔄 重启代理 → 确认（推荐）
 2. **命令行**：`kill $(cat proxy.pid)`（仅在维护窗口使用，watchdog 会在 10 秒内拉起新进程）
 
-面板确认后会立即显示全屏进度：提交重启请求、排空在途请求、等待旧实例退出与 watchdog 拉起、检测新实例就绪。新实例的 ID 变化且状态为 `ready` 后，Dashboard 自动重新载入，不会再出现无反馈的空白等待。
+面板确认后会立即显示全屏进度：提交重启请求、排空在途请求、等待旧实例退出与 watchdog 拉起、检测新实例就绪。新实例的 ID 变化且状态为 `ready` 后，Dashboard 自动重新载入，不会再出现无反馈的空白等待。嵌入式 Dashboard 和独立备用面板在 `draining` 阶段都可选择「取消重启」。
 
-`POST /__restart` 返回 `202` 后，旧实例进入 `draining`：已排队请求会收到 `503`，新的 API 请求暂时收到带 `Retry-After: 5` 的 `503`，在途请求继续完成。旧实例保留仅用于进度轮询的 `GET /__restart-status`，排空后退出；watchdog 检测到端口空闲且原进程已退出后再拉起新进程，避免并发状态冲突。请让客户端按自身重试策略处理这段短暂不可用时间。
+`POST /__restart` 返回 `202` 后，旧实例进入 `draining`：已排队请求会收到 `503`，新的 API 请求暂时收到带 `Retry-After: 5` 的 `503`，在途请求继续完成。旧实例保留重启控制和进度轮询接口，排空后退出；watchdog 检测到端口空闲且原进程已退出后再拉起新进程，避免并发状态冲突。请让客户端按自身重试策略处理这段短暂不可用时间。
+
+若发现重启是在仍有任务运行时误触，可在旧实例仍为 `draining` 时调用 `POST /__restart/cancel` 或点击「取消重启」。代理会立即恢复接入新请求，但此前已被拒绝的排队请求不能恢复，客户端应自行重试。
+
+排空超过 30 秒后，面板才会显示「强制重启」，且还要求第二次确认。`POST /__restart/force` 会使旧实例立即退出，因此会断开 SSE/流式响应和其他在途连接；Codex CLI 任务可能部分执行或报出 `stream disconnected before completion`。该操作绝不会自动执行，只应在确认可以中断当前工作后使用。
 
 ## 版本检查与升级
 
@@ -1256,6 +1264,7 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-07-28 可取消与强制重启控制**：安全重启排空阶段新增取消控制，恢复新请求接入但不虚假恢复已拒绝的排队请求；排空满 30 秒后才允许二次确认强制重启。强制重启明确记录和提示会中断活跃流，新增重启生命周期回归测试，并同步独立备用面板。
 - **2026-07-28 Responses 流终态修复**：转换流仅在收到上游 `[DONE]` 后发送 `response.completed`；修复末尾无换行的 `[DONE]` 被漏解析、活动流 socket 空闲超时被忽略的问题。异常 EOF/关闭/错误/超时明确发送 `response.failed`，日志新增可检索的 `stream_terminal` 诊断事件和流终态字段；新增独立流生命周期回归测试。
 - **2026-07-28 管理 Token 内存态**：Dashboard 管理 Token 改为仅存于当前页面内存；启动时清除旧版会话存储残留，HTTP 与 WebSocket 共用同一认证状态，WebSocket 返回 `4001` 时重新认证。感谢 @anupamme 提供安全改进思路。
 - **2026-07-28 发布来源识别**：新增 `npm run build:release`，生成不含运行敏感文件的 Release 资产、`build-info.json` 和 SHA-256 清单。未修改的官方发布资产及干净官方 Git Release Tag 自动比较版本；开发/定制副本 fail-closed。watchdog 改为从自身目录定位代理，移除固定机器路径。

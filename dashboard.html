@@ -106,6 +106,15 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .log-dur{color:#94a3b8}
 .file-banner{display:none;background:#1e3a5f;border:1px solid #3b82f6;border-radius:8px;padding:clamp(8px,1.5vw,10px) clamp(10px,2vw,14px);margin-bottom:clamp(8px,2vw,12px);font-size:clamp(12px,1.8vw,13px);color:#93c5fd;align-items:center;gap:10px}
 .file-banner.on{display:flex}
+.restart-overlay{display:none;position:fixed;inset:0;z-index:10000;padding:20px;background:rgba(2,6,23,.88);align-items:center;justify-content:center}
+.restart-overlay.on{display:flex}
+.restart-panel{width:min(420px,100%);background:#1e293b;border:1px solid #3b82f6;border-radius:8px;padding:24px;text-align:center;box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.restart-spinner{width:34px;height:34px;margin:0 auto 14px;border:3px solid #475569;border-top-color:#60a5fa;border-radius:50%;animation:restart-spin .8s linear infinite}
+.restart-overlay.error .restart-spinner,.restart-overlay.complete .restart-spinner{display:none}
+.restart-title{color:#f1f5f9;font-size:16px;font-weight:700;margin-bottom:8px}
+.restart-detail{color:#94a3b8;font-size:13px;line-height:1.55;min-height:40px}
+.restart-elapsed{color:#60a5fa;font-size:12px;margin-top:10px;min-height:18px}
+@keyframes restart-spin{to{transform:rotate(360deg)}}
 @media(max-width:600px){
   .controls{flex-direction:column;align-items:stretch}
   .controls select,.controls input{width:100%}
@@ -234,7 +243,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
-<div class="mfoot"><button class="btn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
+<div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
 <div class="modal" id="logModal">
@@ -245,6 +254,20 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <th>时间</th><th>#</th><th>方法</th><th>路径</th><th>状态</th><th>↑B</th><th>↓B</th><th>耗时</th><th>首字节</th>
 </tr></thead><tbody id="logBody"></tbody></table></div>
 </div></div>
+
+<div class="restart-overlay" id="restartOverlay" role="status" aria-live="polite">
+  <div class="restart-panel">
+    <div class="restart-spinner" aria-hidden="true"></div>
+    <div class="restart-title" id="restartOverlayTitle">正在重启代理</div>
+    <div class="restart-detail" id="restartOverlayDetail"></div>
+    <div class="restart-elapsed" id="restartOverlayElapsed"></div>
+    <div id="restartOverlayActions" style="display:none;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:14px">
+      <button class="btn" id="restartCancelBtn" type="button" onclick="cancelPendingRestart()">取消重启</button>
+      <button class="btn" id="restartForceBtn" type="button" onclick="forcePendingRestart()" style="display:none;color:#fecaca;border-color:#ef4444">强制重启</button>
+    </div>
+    <button class="btn" id="restartOverlayDismiss" type="button" onclick="dismissRestartOverlay()" style="display:none;margin-top:14px">返回 Dashboard</button>
+  </div>
+</div>
 
 <script>
 if(location.protocol==="file:"){document.getElementById("fileBanner").classList.add("on")}
@@ -941,11 +964,190 @@ async function saveConfig(){
     if(j.ok){closeConfig()}else{document.getElementById("configStatus").textContent="保存失败"};
   }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
 }
-function restartProxy(){
-  if(!confirm("确定要重启代理进程？\n正在进行的请求可能中断，但 codex 会自动重试。"))return;
-  fetch("http://localhost:3456/__restart",{method:"POST"})
-    .then(r=>r.json()).then(j=>{if(j.ok)setTimeout(function(){location.reload()},1500)})
-    .catch(()=>{});
+let restartPollTimer=null,restartElapsedTimer=null,restartPollingActive=false,restartOldInstanceId="",restartStartedAt=0,restartLastStatus=null,restartActionInFlight=false;
+function restartElapsedText(){
+  const seconds=Math.max(0,Math.floor((Date.now()-restartStartedAt)/1000));
+  return seconds<60?seconds+" 秒":Math.floor(seconds/60)+" 分 "+(seconds%60)+" 秒";
+}
+function restartWaitText(ms){
+  const seconds=Math.max(1,Math.ceil((Number(ms)||0)/1000));
+  return seconds<60?seconds+" 秒":Math.floor(seconds/60)+" 分 "+(seconds%60)+" 秒";
+}
+function refreshRestartElapsed(){
+  const elapsed=document.getElementById("restartOverlayElapsed");
+  if(elapsed)elapsed.textContent=restartStartedAt?"已等待 "+restartElapsedText():"";
+}
+function startRestartElapsedTimer(){
+  if(restartElapsedTimer)clearInterval(restartElapsedTimer);
+  refreshRestartElapsed();
+  restartElapsedTimer=setInterval(refreshRestartElapsed,1000);
+}
+function stopRestartElapsedTimer(){
+  if(restartElapsedTimer){clearInterval(restartElapsedTimer);restartElapsedTimer=null;}
+}
+function setRestartOverlayActions(status){
+  const actions=document.getElementById("restartOverlayActions");
+  const cancel=document.getElementById("restartCancelBtn");
+  const force=document.getElementById("restartForceBtn");
+  const canCancel=!!(restartPollingActive&&status&&status.canCancel);
+  const canForce=!!(canCancel&&status.canForce);
+  actions.style.display=canCancel?"flex":"none";
+  cancel.style.display=canCancel?"inline-block":"none";
+  cancel.disabled=!canCancel||restartActionInFlight;
+  force.style.display=canForce?"inline-block":"none";
+  force.disabled=!canForce||restartActionInFlight;
+}
+function restartDrainDetail(status){
+  let detail="仍有 "+(status.activeRequests||0)+" 个请求正在完成。";
+  if((status.cancelledQueuedRequests||0)>0)detail+=" 本次已拒绝 "+status.cancelledQueuedRequests+" 个排队请求。";
+  if(status.canForce)detail+=" 已等待至少 30 秒，现在可以强制重启。";
+  else if(status.forceAvailableInMs>0)detail+=" "+restartWaitText(status.forceAvailableInMs)+"后可选择强制重启。";
+  return detail;
+}
+function updateRestartOverlay(title,detail,isError,isComplete){
+  const overlay=document.getElementById("restartOverlay");
+  overlay.classList.add("on");
+  overlay.classList.toggle("error",!!isError);
+  overlay.classList.toggle("complete",!!isComplete);
+  document.getElementById("restartOverlayTitle").textContent=title;
+  document.getElementById("restartOverlayDetail").textContent=detail;
+  document.getElementById("restartOverlayDismiss").style.display=(isError||isComplete)?"inline-block":"none";
+  refreshRestartElapsed();
+}
+function dismissRestartOverlay(){
+  restartPollingActive=false;
+  if(restartPollTimer){clearTimeout(restartPollTimer);restartPollTimer=null;}
+  stopRestartElapsedTimer();
+  restartStartedAt=0;restartLastStatus=null;restartActionInFlight=false;
+  setRestartOverlayActions(null);
+  document.getElementById("restartOverlay").classList.remove("on","error","complete");
+  const btn=document.getElementById("restartProxyBtn");
+  if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+}
+function scheduleRestartStatusPoll(delay){
+  if(!restartPollingActive)return;
+  if(restartPollTimer)clearTimeout(restartPollTimer);
+  restartPollTimer=setTimeout(pollRestartStatus,delay);
+}
+async function fetchRestartStatus(){
+  return fetch("http://localhost:3456/__restart-status",{cache:"no-store"});
+}
+async function pollRestartStatus(){
+  if(!restartPollingActive)return;
+  let title="正在等待新的代理实例",detail="旧代理已停止，正在等待 watchdog 启动新实例。";
+  try{
+    const r=await fetchRestartStatus();
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const status=await r.json();
+    if(!restartPollingActive)return;
+    restartLastStatus=status;
+    if(Number.isFinite(status.restartStartedAt)&&status.restartStartedAt>0)restartStartedAt=status.restartStartedAt;
+    if(restartOldInstanceId&&status.instanceId!==restartOldInstanceId&&status.phase==="ready"){
+      restartPollingActive=false;stopRestartElapsedTimer();setRestartOverlayActions(null);
+      updateRestartOverlay("新代理实例已就绪","正在重新载入 Dashboard…",false);
+      setTimeout(function(){location.reload();},350);
+      return;
+    }
+    if(restartOldInstanceId&&status.instanceId===restartOldInstanceId&&status.phase==="ready"){
+      restartPollingActive=false;stopRestartElapsedTimer();restartStartedAt=0;setRestartOverlayActions(null);
+      updateRestartOverlay("重启已取消","代理继续运行，新的请求已恢复接入。",false,true);
+      const btn=document.getElementById("restartProxyBtn");
+      if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+      return;
+    }
+    setRestartOverlayActions(status);
+    if(status.phase==="draining"){title="正在排空进行中的请求";detail=restartDrainDetail(status);}
+    else {title="正在等待旧代理退出";detail="重启请求已提交，正在准备切换到新实例。";}
+  }catch(e){
+    setRestartOverlayActions(null);
+    detail="暂时无法读取重启状态，仍会继续重试。";
+  }
+  if(!restartPollingActive)return;
+  updateRestartOverlay(title,detail,false);
+  scheduleRestartStatusPoll(1000);
+}
+async function cancelPendingRestart(){
+  if(!restartPollingActive||restartActionInFlight)return;
+  if(!confirm("取消这次安全重启？\n代理会立刻恢复接受新请求；已经被拒绝的排队请求不会恢复。"))return;
+  restartActionInFlight=true;setRestartOverlayActions(restartLastStatus);
+  try{
+    const r=await fetch("http://localhost:3456/__restart/cancel",{method:"POST",cache:"no-store"});
+    const result=await r.json();
+    restartActionInFlight=false;restartLastStatus=result;
+    if(!r.ok||!result.ok)throw new Error(result.error||"取消请求被拒绝（HTTP "+r.status+"）");
+    restartPollingActive=false;if(restartPollTimer){clearTimeout(restartPollTimer);restartPollTimer=null;}
+    stopRestartElapsedTimer();restartStartedAt=0;setRestartOverlayActions(null);
+    const cancelled=result.cancelledQueuedRequests||0;
+    updateRestartOverlay("重启已取消","代理继续运行，新的请求已恢复接入。"+(cancelled?" 已拒绝的 "+cancelled+" 个排队请求不会恢复。":""),false,true);
+    const btn=document.getElementById("restartProxyBtn");
+    if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+  }catch(e){
+    restartActionInFlight=false;setRestartOverlayActions(null);
+    updateRestartOverlay("未能取消重启",(e&&e.message)||"仍会继续监控重启状态。",true);
+    scheduleRestartStatusPoll(700);
+  }
+}
+async function forcePendingRestart(){
+  if(!restartPollingActive||restartActionInFlight)return;
+  let status;
+  try{
+    const statusRes=await fetchRestartStatus();
+    if(!statusRes.ok)throw new Error("无法读取重启状态（HTTP "+statusRes.status+"）");
+    status=await statusRes.json();
+  }catch(e){updateRestartOverlay("无法确认强制重启条件",(e&&e.message)||"请稍后重试。",true);return;}
+  restartLastStatus=status;
+  if(status.phase!=="draining"||!status.canForce){
+    setRestartOverlayActions(status);
+    updateRestartOverlay("仍在安全排空",status.phase==="draining"?restartWaitText(status.forceAvailableInMs)+"后才能强制重启。":"代理已不处于可强制重启的排空阶段。",false);
+    scheduleRestartStatusPoll(700);
+    return;
+  }
+  const active=status.activeRequests||0;
+  if(!confirm("强制重启会立即断开仍在执行的 "+active+" 个请求。\nCodex CLI 任务可能部分执行或报错，未完成工作需要人工确认。\n\n确定强制重启？"))return;
+  restartActionInFlight=true;setRestartOverlayActions(status);
+  try{
+    const r=await fetch("http://localhost:3456/__restart/force",{method:"POST",cache:"no-store"});
+    const result=await r.json();
+    restartActionInFlight=false;restartLastStatus=result;
+    if(!r.ok||!result.ok)throw new Error(result.error||"强制重启请求被拒绝（HTTP "+r.status+"）");
+    setRestartOverlayActions(null);
+    updateRestartOverlay("正在强制重启","已确认中断 "+(result.interruptedActiveRequests||0)+" 个在途请求，正在等待新实例就绪。",false);
+    scheduleRestartStatusPoll(500);
+  }catch(e){
+    restartActionInFlight=false;setRestartOverlayActions(null);
+    updateRestartOverlay("正在确认强制重启状态","请求连接在切换期间中断，正在等待新实例恢复。",false);
+    scheduleRestartStatusPoll(700);
+  }
+}
+async function restartProxy(){
+  if(!confirm("确定要重启代理进程？\n新的 API 请求会暂时暂停，进行中的请求会先排空。"))return;
+  const btn=document.getElementById("restartProxyBtn");
+  if(btn){btn.disabled=true;btn.textContent="正在重启…";}
+  restartPollingActive=true;restartStartedAt=Date.now();restartOldInstanceId="";restartLastStatus=null;restartActionInFlight=false;
+  startRestartElapsedTimer();setRestartOverlayActions(null);
+  updateRestartOverlay("正在确认代理状态","正在提交安全重启请求…",false);
+  try{
+    const beforeRes=await fetchRestartStatus();
+    if(!beforeRes.ok)throw new Error("无法读取当前代理状态（HTTP "+beforeRes.status+"）");
+    const before=await beforeRes.json();
+    restartOldInstanceId=before.instanceId||"";
+    if(before.phase!=="ready"){
+      restartLastStatus=before;setRestartOverlayActions(before);
+      updateRestartOverlay("正在监控已有重启",before.phase==="draining"?restartDrainDetail(before):"旧代理正在退出，等待 watchdog 拉起新实例。",false);
+      scheduleRestartStatusPoll(700);return;
+    }
+    const r=await fetch("http://localhost:3456/__restart",{method:"POST",cache:"no-store"});
+    const result=await r.json();
+    if(!r.ok||!result.ok)throw new Error(result.error||"重启请求被拒绝（HTTP "+r.status+"）");
+    restartOldInstanceId=result.instanceId||restartOldInstanceId;restartLastStatus=result;
+    if(Number.isFinite(result.restartStartedAt)&&result.restartStartedAt>0)restartStartedAt=result.restartStartedAt;
+    updateRestartOverlay("重启请求已提交",restartDrainDetail(result),false);
+    setRestartOverlayActions(result);scheduleRestartStatusPoll(750);
+  }catch(e){
+    restartPollingActive=false;stopRestartElapsedTimer();setRestartOverlayActions(null);
+    updateRestartOverlay("未能提交重启请求",(e&&e.message)||"请检查代理状态后重试。",true);
+    if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+  }
 }
 function selectAllCards(sel){
   document.querySelectorAll("#grid .card-cb").forEach(c=>c.checked=sel);

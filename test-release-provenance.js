@@ -80,13 +80,16 @@ function testReleaseArtifact(releaseDir) {
   const manifest = JSON.parse(fs.readFileSync(path.join(releaseDir, "release-manifest.json"), "utf8"));
   assert.strictEqual(buildInfo.releaseTag, "v1.2.3");
   assert.strictEqual(buildInfo.channel, "official-release");
-  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(releaseDir, "package.json"), "utf8")).version, "1.2.3");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(releaseDir, "package.json"), "utf8"));
+  assert.strictEqual(packageJson.version, "1.2.3");
+  assert.match(packageJson.scripts.test, /test-restart-lifecycle\.js/);
   const packageLock = JSON.parse(fs.readFileSync(path.join(releaseDir, "package-lock.json"), "utf8"));
   assert.strictEqual(packageLock.version, "1.2.3");
   assert.strictEqual(packageLock.packages[""].version, "1.2.3");
   assert.ok(fs.existsSync(path.join(releaseDir, "build-release.js")));
   assert.ok(fs.existsSync(path.join(releaseDir, "test-release-provenance.js")));
   assert.ok(fs.existsSync(path.join(releaseDir, "test-stream-lifecycle.js")));
+  assert.ok(fs.existsSync(path.join(releaseDir, "test-restart-lifecycle.js")));
   assert.ok(!fs.existsSync(path.join(releaseDir, "scripts")));
   assert.ok(manifest.files["proxy.js"]);
   for (const privateFile of ["config.json", "keys.json", "state.json", "proxy.log", "proxy.pid"]) {
@@ -103,6 +106,10 @@ function testReleaseArtifact(releaseDir) {
   const html = harness.getDashboardHTML();
   for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new Function(match[1]);
   testDashboardAdminTokenMemory(html);
+  const fallbackHtml = fs.readFileSync(path.join(releaseDir, "dashboard.html"), "utf8");
+  assert.match(fallbackHtml, /restartCancelBtn/);
+  assert.match(fallbackHtml, /restartForceBtn/);
+  for (const match of fallbackHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)) new Function(match[1]);
   const sourceRoot = __dirname.replace(/\\/g, "/");
   assert.ok(!html.includes(sourceRoot));
 

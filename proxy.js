@@ -19,6 +19,7 @@ const HTTP_MOD = { "http:": http, "https:": https };
 const TZ = "Asia/Shanghai";
 const MAX_LOG = 2000;
 const QUEUE_TIMEOUT = 30000;
+const RESTART_FORCE_MIN_WAIT_MS = 30000;
 let STREAM_LIFETIME = 1800000;
 const LOG_DIR = path.join(__dirname, "logs");
 const PID_FILE = path.join(__dirname, "proxy.pid");
@@ -90,7 +91,8 @@ let requestQueue = [];
 let queueProcessing = false;
 const INSTANCE_ID = crypto.randomUUID();
 const INSTANCE_STARTED_AT = Date.now();
-let restartState = { phase: "ready", startedAt: null };
+let restartState = { phase: "ready", startedAt: null, id: "", cancelledQueuedRequests: 0, warned: false };
+let restartDrainTimer = null;
 const updateCheckState = {
   checkedAt: 0,
   lastNetworkCheckAt: 0,
@@ -128,15 +130,30 @@ function getActiveRequestCount() {
   return Object.values(activeRequests).reduce((sum, requests) => sum + (Array.isArray(requests) ? requests.length : 0), 0);
 }
 
-function buildRestartStatus() {
+function buildRestartStatus(now = Date.now()) {
+  const draining = restartState.phase === "draining";
+  const restartStartedAt = Number.isFinite(restartState.startedAt) ? restartState.startedAt : null;
+  const elapsed = draining && restartStartedAt !== null ? Math.max(0, now - restartStartedAt) : 0;
   return {
     instanceId: INSTANCE_ID,
     startedAt: INSTANCE_STARTED_AT,
     phase: restartState.phase,
     restartStartedAt: restartState.startedAt,
+    restartId: restartState.id || "",
     activeRequests: getActiveRequestCount(),
     queuedRequests: requestQueue.length,
+    cancelledQueuedRequests: restartState.cancelledQueuedRequests || 0,
+    canCancel: draining,
+    canForce: draining && elapsed >= RESTART_FORCE_MIN_WAIT_MS,
+    forceAvailableInMs: draining ? Math.max(0, RESTART_FORCE_MIN_WAIT_MS - elapsed) : 0,
   };
+}
+
+function clearRestartDrainTimer() {
+  if (restartDrainTimer !== null) {
+    clearTimeout(restartDrainTimer);
+    restartDrainTimer = null;
+  }
 }
 
 function rejectQueuedRequestsForRestart() {
@@ -149,6 +166,101 @@ function rejectQueuedRequestsForRestart() {
     }
   }
   return queued.length;
+}
+
+function scheduleRestartDrainCheck(restartId, delay) {
+  clearRestartDrainTimer();
+  restartDrainTimer = setTimeout(() => {
+    restartDrainTimer = null;
+    if (restartState.phase !== "draining" || restartState.id !== restartId) return;
+
+    const total = getActiveRequestCount();
+    if (total === 0) {
+      restartState = { ...restartState, phase: "stopping" };
+      addEventLog("restart_stopping", 0, "排空完成，正在退出以便 watchdog 重启", "");
+      broadcastStatus();
+      console.log(`[proxy] drain complete (${Date.now()-restartState.startedAt}ms), exiting for watchdog restart...`);
+      process.exit(0);
+      return;
+    }
+
+    if (!restartState.warned && Date.now() - restartState.startedAt >= RESTART_FORCE_MIN_WAIT_MS) {
+      restartState = { ...restartState, warned: true };
+      console.log(`[proxy] WARNING: ${total} active requests still draining after ${RESTART_FORCE_MIN_WAIT_MS/1000}s. Waiting for completion or an explicit force restart.`);
+    }
+    scheduleRestartDrainCheck(restartId, 1000);
+  }, delay);
+}
+
+function beginRestartDrain(now = Date.now()) {
+  if (globalThis._restarting || restartState.phase !== "ready") {
+    return { ok: false, error: "restart already in progress", ...buildRestartStatus(now) };
+  }
+  globalThis._restarting = true;
+  restartState = {
+    phase: "draining",
+    startedAt: now,
+    id: "restart_" + crypto.randomUUID(),
+    cancelledQueuedRequests: 0,
+    warned: false,
+  };
+  const cancelledQueuedRequests = rejectQueuedRequestsForRestart();
+  restartState = { ...restartState, cancelledQueuedRequests };
+  addEventLog("restart_requested", 0, `安全重启排空已开始，在途请求: ${getActiveRequestCount()}，已取消排队请求: ${cancelledQueuedRequests}`, "");
+  broadcastStatus();
+  scheduleRestartDrainCheck(restartState.id, 250);
+  return { ok: true, message: "draining active requests before restart", ...buildRestartStatus(now) };
+}
+
+function cancelRestartDrain(now = Date.now()) {
+  if (restartState.phase !== "draining") {
+    return { ok: false, error: "restart is no longer cancellable", ...buildRestartStatus(now) };
+  }
+  const cancelledQueuedRequests = restartState.cancelledQueuedRequests || 0;
+  const activeRequestsAtCancel = getActiveRequestCount();
+  clearRestartDrainTimer();
+  restartState = { phase: "ready", startedAt: null, id: "", cancelledQueuedRequests: 0, warned: false };
+  globalThis._restarting = false;
+  addEventLog("restart_cancelled", 0, `安全重启已取消，继续等待 ${activeRequestsAtCancel} 个在途请求；已拒绝的 ${cancelledQueuedRequests} 个排队请求不会恢复`, "");
+  processQueue();
+  broadcastStatus();
+  return { ok: true, message: "restart cancelled; new requests are accepted", ...buildRestartStatus(now), cancelledQueuedRequests, activeRequestsAtCancel };
+}
+
+function requestForcedRestart(now = Date.now()) {
+  if (restartState.phase !== "draining") {
+    return { ok: false, error: "restart is not draining", ...buildRestartStatus(now) };
+  }
+  const elapsed = Math.max(0, now - restartState.startedAt);
+  if (elapsed < RESTART_FORCE_MIN_WAIT_MS) {
+    return {
+      ok: false,
+      error: "force restart is not available yet",
+      retryAfterMs: RESTART_FORCE_MIN_WAIT_MS - elapsed,
+      ...buildRestartStatus(now),
+    };
+  }
+  const interruptedActiveRequests = getActiveRequestCount();
+  clearRestartDrainTimer();
+  restartState = { ...restartState, phase: "stopping" };
+  addEventLog("restart_forced", 0, `强制重启已确认，将中断 ${interruptedActiveRequests} 个在途请求`, "");
+  broadcastStatus();
+  return { ok: true, message: "force restart accepted", interruptedActiveRequests, ...buildRestartStatus(now) };
+}
+
+function exitForForcedRestartAfterResponse(res) {
+  let scheduled = false;
+  const scheduleExit = () => {
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(() => {
+      if (restartState.phase !== "stopping") return;
+      console.log("[proxy] force restart requested, exiting immediately for watchdog restart...");
+      process.exit(0);
+    }, 25);
+  };
+  if (res && typeof res.once === "function") res.once("finish", scheduleExit);
+  setTimeout(scheduleExit, 250);
 }
 
 function parseReleaseVersion(value) {
@@ -1410,7 +1522,7 @@ function pickKey(model, group) {
 
 // --- Request Queue ---
 function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform) {
-  if (restartState.phase === "draining") {
+  if (restartState.phase !== "ready") {
     if (!clientRes.destroyed && !clientRes.headersSent) {
       clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
       clientRes.end(JSON.stringify({ error: "proxy is restarting" }));
@@ -1427,7 +1539,7 @@ function enqueueRequest(method, headers, body, clientRes, pathname, group, extra
 }
 
 function processQueue() {
-  if (restartState.phase === "draining") {
+  if (restartState.phase !== "ready") {
     rejectQueuedRequestsForRestart();
     return;
   }
@@ -1437,7 +1549,7 @@ function processQueue() {
   const batch = [...requestQueue];
   requestQueue = [];
   for (const r of batch) {
-    if (restartState.phase === "draining") {
+    if (restartState.phase !== "ready") {
       if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
         r.clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
         r.clientRes.end(JSON.stringify({ error: "proxy is restarting" }));
@@ -2221,6 +2333,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .restart-panel{width:min(420px,100%);background:#1e293b;border:1px solid #3b82f6;border-radius:8px;padding:24px;text-align:center;box-shadow:0 12px 32px rgba(0,0,0,.45)}
 .restart-spinner{width:34px;height:34px;margin:0 auto 14px;border:3px solid #475569;border-top-color:#60a5fa;border-radius:50%;animation:restart-spin .8s linear infinite}
 .restart-overlay.error .restart-spinner{display:none}
+.restart-overlay.complete .restart-spinner{display:none}
 .restart-title{color:#f1f5f9;font-size:16px;font-weight:700;margin-bottom:8px}
 .restart-detail{color:#94a3b8;font-size:13px;line-height:1.55;min-height:40px}
 .restart-elapsed{color:#60a5fa;font-size:12px;margin-top:10px;min-height:18px}
@@ -2651,6 +2764,10 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
     <div class="restart-title" id="restartOverlayTitle">正在重启代理</div>
     <div class="restart-detail" id="restartOverlayDetail"></div>
     <div class="restart-elapsed" id="restartOverlayElapsed"></div>
+    <div id="restartOverlayActions" style="display:none;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:14px">
+      <button class="btn" id="restartCancelBtn" type="button" onclick="cancelPendingRestart()">取消重启</button>
+      <button class="btn" id="restartForceBtn" type="button" onclick="forcePendingRestart()" style="display:none;color:#fecaca;border-color:#ef4444">强制重启</button>
+    </div>
     <button class="btn" id="restartOverlayDismiss" type="button" style="display:none;margin-top:14px">返回 Dashboard</button>
   </div>
 </div>
@@ -4578,9 +4695,13 @@ async function saveConfig(){
     if(j.ok){closeConfig();checkForUpdates(false)}else{document.getElementById("configStatus").textContent="保存失败: "+(j.error||"未知错误")};
   }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
 }
-let restartPollTimer=null,restartElapsedTimer=null,restartPollingActive=false,restartOldInstanceId="",restartStartedAt=0;
+let restartPollTimer=null,restartElapsedTimer=null,restartPollingActive=false,restartOldInstanceId="",restartStartedAt=0,restartLastStatus=null,restartActionInFlight=false;
 function restartElapsedText(){
   const seconds=Math.max(0,Math.floor((Date.now()-restartStartedAt)/1000));
+  return seconds<60?seconds+" 秒":Math.floor(seconds/60)+" 分 "+(seconds%60)+" 秒";
+}
+function restartWaitText(ms){
+  const seconds=Math.max(1,Math.ceil((Number(ms)||0)/1000));
   return seconds<60?seconds+" 秒":Math.floor(seconds/60)+" 分 "+(seconds%60)+" 秒";
 }
 function refreshRestartElapsed(){
@@ -4602,21 +4723,45 @@ async function fetchRestartStatus(){
   try{return await fetch("/__restart-status",{cache:"no-store",signal:controller.signal});}
   finally{clearTimeout(timeout);}
 }
-function updateRestartOverlay(title,detail,isError){
+function setRestartOverlayActions(status){
+  const actions=document.getElementById("restartOverlayActions");
+  const cancel=document.getElementById("restartCancelBtn");
+  const force=document.getElementById("restartForceBtn");
+  if(!actions||!cancel||!force)return;
+  const canCancel=!!(restartPollingActive&&status&&status.canCancel);
+  const canForce=!!(canCancel&&status.canForce);
+  actions.style.display=canCancel?"flex":"none";
+  cancel.style.display=canCancel?"inline-block":"none";
+  cancel.disabled=!canCancel||restartActionInFlight;
+  force.style.display=canForce?"inline-block":"none";
+  force.disabled=!canForce||restartActionInFlight;
+}
+function restartDrainDetail(status){
+  let detail="仍有 "+(status.activeRequests||0)+" 个请求正在完成"+((status.queuedRequests||0)>0?"，另有 "+(status.queuedRequests||0)+" 个排队请求。":"。");
+  if((status.cancelledQueuedRequests||0)>0)detail+=" 本次已拒绝 "+status.cancelledQueuedRequests+" 个排队请求。";
+  if(status.canForce)detail+=" 已等待至少 30 秒，现在可以强制重启。";
+  else if(status.forceAvailableInMs>0)detail+=" "+restartWaitText(status.forceAvailableInMs)+"后可选择强制重启。";
+  return detail;
+}
+function updateRestartOverlay(title,detail,isError,isComplete){
   const overlay=document.getElementById("restartOverlay");
   overlay.classList.add("on");
   overlay.classList.toggle("error",!!isError);
+  overlay.classList.toggle("complete",!!isComplete);
   document.getElementById("restartOverlayTitle").textContent=title;
   document.getElementById("restartOverlayDetail").textContent=detail;
   refreshRestartElapsed();
-  document.getElementById("restartOverlayDismiss").style.display=isError?"inline-block":"none";
+  document.getElementById("restartOverlayDismiss").style.display=(isError||isComplete)?"inline-block":"none";
 }
 function dismissRestartOverlay(){
   restartPollingActive=false;
   if(restartPollTimer){clearTimeout(restartPollTimer);restartPollTimer=null;}
   stopRestartElapsedTimer();
   restartStartedAt=0;
-  document.getElementById("restartOverlay").classList.remove("on","error");
+  restartLastStatus=null;
+  restartActionInFlight=false;
+  setRestartOverlayActions(null);
+  document.getElementById("restartOverlay").classList.remove("on","error","complete");
   const btn=document.getElementById("restartProxyBtn");
   if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
 }
@@ -4635,17 +4780,32 @@ async function pollRestartStatus(){
     if(!r.ok)throw new Error("HTTP "+r.status);
     const status=await r.json();
     if(!restartPollingActive)return;
+    restartLastStatus=status;
+    if(Number.isFinite(status.restartStartedAt)&&status.restartStartedAt>0)restartStartedAt=status.restartStartedAt;
     if(restartOldInstanceId&&status.instanceId!==restartOldInstanceId&&status.phase==="ready"){
       restartPollTimer=null;
       restartPollingActive=false;
       stopRestartElapsedTimer();
+      setRestartOverlayActions(null);
       updateRestartOverlay("新代理实例已就绪","正在重新载入 Dashboard…",false);
       setTimeout(function(){location.reload();},350);
       return;
     }
+    if(restartOldInstanceId&&status.instanceId===restartOldInstanceId&&status.phase==="ready"){
+      restartPollTimer=null;
+      restartPollingActive=false;
+      stopRestartElapsedTimer();
+      restartStartedAt=0;
+      setRestartOverlayActions(null);
+      updateRestartOverlay("重启已取消","代理继续运行，新的请求已恢复接入。",false,true);
+      const btn=document.getElementById("restartProxyBtn");
+      if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+      return;
+    }
+    setRestartOverlayActions(status);
     if(status.phase==="draining"){
       title="正在排空进行中的请求";
-      detail="仍有 "+(status.activeRequests||0)+" 个请求正在完成"+((status.queuedRequests||0)>0?"，另有 "+(status.queuedRequests||0)+" 个排队请求。":"。");
+      detail=restartDrainDetail(status);
     }else{
       title="正在等待旧代理退出";
       detail="重启请求已提交，正在准备切换到新实例。";
@@ -4655,6 +4815,7 @@ async function pollRestartStatus(){
     if(e.message.indexOf("管理认证失效")>=0){
       restartPollingActive=false;
       stopRestartElapsedTimer();
+      setRestartOverlayActions(null);
       updateRestartOverlay("无法确认重启状态",e.message,true);
       return;
     }
@@ -4664,12 +4825,107 @@ async function pollRestartStatus(){
   updateRestartOverlay(title,detail,false);
   scheduleRestartStatusPoll(1000);
 }
+async function cancelPendingRestart(){
+  if(!restartPollingActive||restartActionInFlight)return;
+  if(!confirm("取消这次安全重启？\\n代理会立刻恢复接受新请求；已经被拒绝的排队请求不会恢复。"))return;
+  restartActionInFlight=true;
+  setRestartOverlayActions(restartLastStatus);
+  updateRestartOverlay("正在取消重启","正在恢复代理的正常接入…",false);
+  try{
+    const r=await fetch("/__restart/cancel",{method:"POST",cache:"no-store"});
+    let result={};
+    try{result=await r.json();}catch(e){}
+    restartLastStatus=result;
+    restartActionInFlight=false;
+    if(!r.ok||!result.ok){
+      setRestartOverlayActions(result);
+      updateRestartOverlay("未能取消重启",(result.error||"取消请求被拒绝（HTTP "+r.status+"）")+"；仍会继续监控重启状态。",true);
+      scheduleRestartStatusPoll(700);
+      return;
+    }
+    restartPollingActive=false;
+    if(restartPollTimer){clearTimeout(restartPollTimer);restartPollTimer=null;}
+    stopRestartElapsedTimer();
+    restartStartedAt=0;
+    setRestartOverlayActions(null);
+    const cancelled=result.cancelledQueuedRequests||0;
+    updateRestartOverlay("重启已取消","代理继续运行，新的请求已恢复接入。"+(cancelled?" 已拒绝的 "+cancelled+" 个排队请求不会恢复。":""),false,true);
+    const btn=document.getElementById("restartProxyBtn");
+    if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+  }catch(e){
+    restartActionInFlight=false;
+    setRestartOverlayActions(null);
+    updateRestartOverlay("未能取消重启",(e&&e.message)||"取消请求连接失败；仍会继续监控重启状态。",true);
+    scheduleRestartStatusPoll(700);
+  }
+}
+async function forcePendingRestart(){
+  if(!restartPollingActive||restartActionInFlight)return;
+  let status;
+  try{
+    const statusRes=await fetchRestartStatus();
+    if(!statusRes.ok)throw new Error("无法读取重启状态（HTTP "+statusRes.status+"）");
+    status=await statusRes.json();
+  }catch(e){
+    updateRestartOverlay("无法确认强制重启条件",(e&&e.message)||"请稍后重试。",true);
+    scheduleRestartStatusPoll(700);
+    return;
+  }
+  restartLastStatus=status;
+  if(status.phase!=="draining"){
+    setRestartOverlayActions(status);
+    updateRestartOverlay("已无法强制重启","代理已不处于可强制重启的排空阶段。",true);
+    scheduleRestartStatusPoll(700);
+    return;
+  }
+  if(!status.canForce){
+    setRestartOverlayActions(status);
+    updateRestartOverlay("仍在安全排空",restartWaitText(status.forceAvailableInMs)+"后才能强制重启。",false);
+    scheduleRestartStatusPoll(700);
+    return;
+  }
+  const active=status.activeRequests||0;
+  if(!confirm("强制重启会立即断开仍在执行的 "+active+" 个请求。\\nCodex CLI 任务可能部分执行或报错，未完成工作需要人工确认。\\n\\n确定强制重启？"))return;
+  restartActionInFlight=true;
+  setRestartOverlayActions(status);
+  updateRestartOverlay("正在强制重启","将中断 "+active+" 个仍在执行的请求，并等待 watchdog 拉起新实例。",false);
+  let forceRequestAttempted=false;
+  try{
+    forceRequestAttempted=true;
+    const r=await fetch("/__restart/force",{method:"POST",cache:"no-store"});
+    let result={};
+    try{result=await r.json();}catch(e){}
+    restartLastStatus=result;
+    restartActionInFlight=false;
+    if(!r.ok||!result.ok){
+      setRestartOverlayActions(result);
+      const retry=result.retryAfterMs?" 还需等待 "+restartWaitText(result.retryAfterMs)+"。":"";
+      updateRestartOverlay("强制重启尚未执行",(result.error||"强制重启请求被拒绝（HTTP "+r.status+"）")+retry,false);
+      scheduleRestartStatusPoll(700);
+      return;
+    }
+    setRestartOverlayActions(null);
+    updateRestartOverlay("正在强制重启","已确认中断 "+(result.interruptedActiveRequests||0)+" 个在途请求，正在等待新实例就绪。",false);
+    scheduleRestartStatusPoll(500);
+  }catch(e){
+    restartActionInFlight=false;
+    setRestartOverlayActions(null);
+    if(forceRequestAttempted&&restartOldInstanceId){
+      updateRestartOverlay("正在确认强制重启状态","请求连接在切换期间中断，正在等待新实例恢复。",false);
+      scheduleRestartStatusPoll(700);
+      return;
+    }
+    updateRestartOverlay("未能提交强制重启",(e&&e.message)||"请检查代理状态后重试。",true);
+    scheduleRestartStatusPoll(700);
+  }
+}
 async function restartProxy(){
   if(!confirm("确定要重启代理进程？\\n新的 API 请求会暂时暂停，进行中的请求会先排空。"))return;
   const btn=document.getElementById("restartProxyBtn");
   if(btn){btn.disabled=true;btn.textContent="正在重启…";}
-  restartPollingActive=true;restartStartedAt=Date.now();restartOldInstanceId="";
+  restartPollingActive=true;restartStartedAt=Date.now();restartOldInstanceId="";restartLastStatus=null;restartActionInFlight=false;
   startRestartElapsedTimer();
+  setRestartOverlayActions(null);
   updateRestartOverlay("正在确认代理状态","正在提交安全重启请求…",false);
   let restartRequestAttempted=false,restartRequestRejected=false;
   try{
@@ -4677,11 +4933,26 @@ async function restartProxy(){
     if(!beforeRes.ok)throw new Error("无法读取当前代理状态（HTTP "+beforeRes.status+"）");
     const before=await beforeRes.json();
     restartOldInstanceId=before.instanceId||"";
+    if(Number.isFinite(before.restartStartedAt)&&before.restartStartedAt>0)restartStartedAt=before.restartStartedAt;
+    if(before.phase!=="ready"){
+      restartLastStatus=before;
+      setRestartOverlayActions(before);
+      updateRestartOverlay("正在监控已有重启",before.phase==="draining"?restartDrainDetail(before):"旧代理正在退出，等待 watchdog 拉起新实例。",false);
+      scheduleRestartStatusPoll(700);
+      return;
+    }
     restartRequestAttempted=true;
     const r=await fetch("/__restart",{method:"POST",cache:"no-store"});
     if(!r.ok){
       let result={};
       try{result=await r.json();}catch(e){}
+      if(result.phase==="draining"){
+        restartLastStatus=result;
+        setRestartOverlayActions(result);
+        updateRestartOverlay("正在监控已有重启",restartDrainDetail(result),false);
+        scheduleRestartStatusPoll(700);
+        return;
+      }
       restartRequestRejected=true;
       throw new Error(result.error||"重启请求被拒绝（HTTP "+r.status+"）");
     }
@@ -4691,10 +4962,13 @@ async function restartProxy(){
       throw new Error(result.error||"重启请求被拒绝（HTTP "+r.status+"）");
     }
     restartOldInstanceId=result.instanceId||restartOldInstanceId;
+    restartLastStatus=result;
+    if(Number.isFinite(result.restartStartedAt)&&result.restartStartedAt>0)restartStartedAt=result.restartStartedAt;
     const active=result.activeRequests||0;
     const queued=result.cancelledQueuedRequests||0;
     updateRestartOverlay("重启请求已提交",active?"正在等待 "+active+" 个进行中的请求完成。":"没有进行中的请求，正在停止旧代理实例。",false);
     if(queued>0)document.getElementById("restartOverlayDetail").textContent+=" 已取消 "+queued+" 个排队请求。";
+    setRestartOverlayActions(result);
     scheduleRestartStatusPoll(750);
   }catch(e){
     if(restartRequestAttempted&&!restartRequestRejected&&restartOldInstanceId){
@@ -4704,6 +4978,7 @@ async function restartProxy(){
     }
     restartPollingActive=false;
     stopRestartElapsedTimer();
+    setRestartOverlayActions(null);
     updateRestartOverlay("未能提交重启请求",e.message||"请检查代理状态后重试。",true);
     if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
   }
@@ -5434,7 +5709,7 @@ function createGroupServer(groupName, port) {
     return;
   }
 
-  if (restartState.phase === "draining" && pathname !== "/__restart") {
+  if (restartState.phase !== "ready" && !["/__restart", "/__restart/cancel", "/__restart/force"].includes(pathname)) {
     res.writeHead(503, { ...cors, "retry-after": "5" });
     res.end(JSON.stringify({ error: "proxy is restarting", ...buildRestartStatus() }));
     return;
@@ -6277,36 +6552,41 @@ function createGroupServer(groupName, port) {
     return;
   }
 
-  if (pathname === "/__restart") {
+  if (pathname === "/__restart/cancel") {
     if (req.method === "POST") {
-      if (global._restarting || restartState.phase === "draining") {
+      const result = cancelRestartDrain();
+      res.writeHead(result.ok ? 200 : 409, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify(result));
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__restart/force") {
+    if (req.method === "POST") {
+      const result = requestForcedRestart();
+      if (!result.ok) {
         res.writeHead(409, { ...cors, "cache-control": "no-store" });
-        res.end(JSON.stringify({ ok: false, error: "restart already in progress", ...buildRestartStatus() }));
+        res.end(JSON.stringify(result));
         return;
       }
-      global._restarting = true;
-      restartState = { phase: "draining", startedAt: Date.now() };
-      const cancelledQueuedRequests = rejectQueuedRequestsForRestart();
-      const initialStatus = buildRestartStatus();
       res.writeHead(202, { ...cors, "cache-control": "no-store" });
-      res.end(JSON.stringify({ ok: true, message: "draining active requests before restart", cancelledQueuedRequests, ...initialStatus }));
-      const drainStart = restartState.startedAt;
-      const warnDrainMs = 30000;
-      let warned = false;
-      const drainCheck = () => {
-        const total = getActiveRequestCount();
-        if (total === 0) {
-          restartState.phase = "stopping";
-          console.log(`[proxy] drain complete (${Date.now()-drainStart}ms), exiting for watchdog restart...`);
-          process.exit(0);
-        } else if (!warned && Date.now() - drainStart >= warnDrainMs) {
-          warned = true;
-          console.log(`[proxy] WARNING: ${total} active requests still draining after ${warnDrainMs/1000}s. Will keep waiting.`);
-        }
-        setTimeout(drainCheck, 1000);
-      };
-      // Keep the listener available for authenticated restart-status polling while in-flight requests drain.
-      setTimeout(drainCheck, 250);
+      exitForForcedRestartAfterResponse(res);
+      res.end(JSON.stringify(result));
+      return;
+    }
+    res.writeHead(405, cors);
+    res.end(JSON.stringify({ error: "method not allowed" }));
+    return;
+  }
+
+  if (pathname === "/__restart") {
+    if (req.method === "POST") {
+      const result = beginRestartDrain();
+      res.writeHead(result.ok ? 202 : 409, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify(result));
       return;
     }
     res.writeHead(405, cors);

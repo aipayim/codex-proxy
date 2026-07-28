@@ -23,6 +23,7 @@ const RELEASE_CONTENT_FILES = [
   "build-release.js",
   "test-release-provenance.js",
   "test-stream-lifecycle.js",
+  "test-restart-lifecycle.js",
 ];
 const RELEASE_INTEGRITY_FILES = [
   "proxy.js",
