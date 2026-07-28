@@ -474,7 +474,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 ## API 接口
 
-> 所有 `/__*` 管理接口在设置了管理 Token 后需 `Authorization: Bearer <token>` 认证（constant-time 比较，空 token 拒绝）。Dashboard 首次打开时弹出 Token 输入框，输入后保存到 sessionStorage（同浏览器会话内免重复输入，关闭浏览器后需重新输入）。无 Token 时 Dashboard 正常使用。
+> 所有 `/__*` 管理接口及 `/metrics` 在设置了管理 Token 后需 `Authorization: Bearer <token>` 认证（constant-time 比较，空 token 拒绝）。WebSocket 连接需在 URL 中携带 `?token=<token>` 参数。Dashboard 首次打开时弹出 Token 输入框，输入后保存到 sessionStorage（同浏览器会话内免重复输入，关闭浏览器后需重新输入）。无 Token 时 Dashboard 正常使用。
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
@@ -503,7 +503,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/v1/responses` | POST | **协议转换**：接收 Codex CLI 的 Responses API 请求，自动转换为 Chat Completions 格式转发给上游（非 OpenAI / ofox），并将响应流式转换回 Responses 格式 |
 | `/v1/messages` | POST | **协议转换**：接收 Claude Code CLI 的 Messages API 请求，自动转换为 Chat Completions 格式转发给上游（非 Anthropic），并将响应流式转换回 Messages 格式 |
 | `/v1/chat/completions` | POST | **协议转换**：接收 Chat Completions 请求，如上游为 Anthropic 则自动转换为 Messages 格式转发，并将响应流式转换回 Chat 格式；非 Anthropic 上游直接透传 |
-| `ws://localhost:3456/` | WS | WebSocket 实时推送 |
+| `ws://localhost:3456/?token=<token>` | WS | WebSocket 实时推送（设置了管理 Token 时需在 URL 中携带 token 参数） |
 
 ### 协议转换说明
 
@@ -1189,6 +1189,7 @@ A: 该功能在更新 proxy.js 后需重启代理才能生效。首次使用需�
 ## 更新日志
 
 - **2026-07-28 Dashboard 周重置日筛选**：主面板选择「每周重置」后显示周重置日下拉，可筛选全部、周一至周日或自动重置的 Key；筛选结果继续支持既有卡片勾选和批量操作。
+- **2026-07-28 close15 安全加固**：fetch 包装器改用 `new URL()` origin 判断（不再用字符串包含）；WebSocket 连接需 token 认证；`/metrics` 纳入管理 Token 认证范围；watchdog drain 超时 30s 后自动 kill 孤儿进程（不再无限等待）
 - **2026-07-28 close14 安全加固**：timeout 重试修复（首包前超时不再浪费可用 Key）；watchdog drain 冲突修复（端口空闲但旧进程未退时不抢先启动新进程）；`/__admin_token` → `/__auth_check`（不再暴露实际 Token）；fetch 包装器仅对同源请求附加 Authorization
 
 ## License

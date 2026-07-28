@@ -1438,7 +1438,13 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
 // --- WebSocket ---
 function setupWebSocket(server) {
   wss = new WebSocketServer({ server });
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    const url = new URL(req.url, "http://localhost");
+    const token = url.searchParams.get("token");
+    if (config.adminToken && token !== config.adminToken) {
+      ws.close(4001, "unauthorized");
+      return;
+    }
     wsClients.add(ws);
     const data = buildStatusData();
     const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode });
@@ -2134,7 +2140,11 @@ window.fetch=function(u,o){
   o=o||{};
   const t=sessionStorage.getItem("adminToken");
   if(t){
-    const isLocal=typeof u==="string"&&(u.startsWith("/__")||u.indexOf("localhost:3456")>=0||u.indexOf("127.0.0.1:3456")>=0);
+    let isLocal=false;
+    if(typeof u==="string"){
+      if(u.startsWith("/__")){isLocal=true;}
+      else{try{const url=new URL(u,location.href);if(url.origin===location.origin&&url.pathname.startsWith("/__"))isLocal=true;}catch(e){}}
+    }
     if(isLocal){
       const h=o.headers instanceof Headers?o.headers:new Headers(o.headers||{});
       h.set("Authorization","Bearer "+t);
@@ -2202,7 +2212,8 @@ async function httpLoad(){
 
 function connectWS(){
   wsFailed=false;
-  ws=new WebSocket("ws://localhost:3456");
+  const t=sessionStorage.getItem("adminToken");
+  ws=new WebSocket("ws://localhost:3456"+(t?"?token="+encodeURIComponent(t):""));
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
@@ -4483,7 +4494,7 @@ function createGroupServer(groupName, port) {
 
   const cors = { "content-type": "application/json; charset=utf-8" };
 
-  if (pathname.startsWith("/__") && pathname !== "/__auth_check" && !checkAdminAuth(req)) {
+  if ((pathname.startsWith("/__") || pathname === "/metrics") && pathname !== "/__auth_check" && !checkAdminAuth(req)) {
     res.writeHead(401, cors);
     res.end(JSON.stringify({ error: "unauthorized" }));
     return;

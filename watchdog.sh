@@ -9,7 +9,7 @@ exec 200>"$LOCK_FILE"
 flock -n 200 || exit 0
 
 CHILD_PID=""
-START_TIME=0
+START_TIME=$(date +%s)
 PROXY_ABS="$PROXY_DIR/proxy.js"
 
 is_our_proxy() {
@@ -62,14 +62,21 @@ while true; do
   if [ -n "$BOUND_PID" ]; then
     if is_our_proxy "$BOUND_PID"; then
       CHILD_PID="$BOUND_PID"
-      START_TIME=0
     else
       echo "[watchdog] $(date) WARNING: port :3456 used by PID $BOUND_PID (not our proxy.js), not killing" >> "$LOG"
     fi
   else
     if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
-      # Old process is alive but port is free — likely draining, don't start new one
-      :
+      # Old process is alive but port is free — likely draining
+      NOW=$(date +%s)
+      DRAIN_AGE=$((NOW - START_TIME))
+      if [ "$DRAIN_AGE" -ge 30 ]; then
+        echo "[watchdog] $(date) drain timeout ${DRAIN_AGE}s, killing orphan PID $CHILD_PID" >> "$LOG"
+        kill -9 "$CHILD_PID" 2>/dev/null
+        sleep 1
+        CHILD_PID=""
+        NEED_START=true
+      fi
     else
       CHILD_PID=""
       NEED_START=true
