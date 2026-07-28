@@ -1193,6 +1193,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
 
     const inputBytes = body ? body.length : 0;
     const transform = makeUsageTransform(idx, inputBytes, reqStart, ttfb, resolvedModel);
+    let clientCancelled = false;
     if (lifecycle) {
       lifecycle._metricsCallback = (success) => {
         const dur = Date.now() - reqStart;
@@ -1209,7 +1210,6 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
 
     let cleaned = false;
     let endedNormally = false;
-    let clientCancelled = false;
     let streamTimer = null;
     const cleanup = () => {
       if (cleaned) return;
@@ -1236,7 +1236,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     });
     apiRes.on("error", (err) => {
       console.error(`[proxy] #${idx+1} Stream error: ${err.message}`);
-      if (!cleaned && !clientCancelled) markFailure(idx, 0);
+      if (!cleaned && !clientCancelled && !lifecycle) markFailure(idx, 0);
       if (streamAttached && lifecycle && !lifecycle.terminalKind && !clientCancelled) {
         lifecycle.emitFailed();
       }
@@ -1284,7 +1284,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     activeDecr(idx);
     console.error(`[proxy] #${idx+1} Timeout`);
     proxyReq.destroy();
-    markFailure(idx, 0);
+    if (!lifecycle) markFailure(idx, 0);
     if (!lifecycle) {
       recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
     }
