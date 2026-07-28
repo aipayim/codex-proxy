@@ -25,17 +25,29 @@ get_port_pid() {
   ss -ltnp "sport = :3456" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
 }
 
-wait_pid_exit() {
+stop_our_proxy() {
   local pid=$1
-  local max_wait=10
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then return 0; fi
+  echo "[watchdog] $(date) stopping stale proxy PID $pid (SIGTERM)" >> "$LOG"
+  kill "$pid" 2>/dev/null
   local i=0
-  while [ $i -lt $max_wait ]; do
+  while [ $i -lt 10 ]; do
     kill -0 "$pid" 2>/dev/null || return 0
     sleep 1
     i=$((i + 1))
   done
+  echo "[watchdog] $(date) PID $pid did not exit, sending SIGKILL" >> "$LOG"
   kill -9 "$pid" 2>/dev/null
   sleep 1
+}
+
+kill_all_our_proxies() {
+  local my_pid=$1
+  for p in $(pgrep -f "$PROXY_ABS" 2>/dev/null); do
+    if [ "$p" != "$my_pid" ] && is_our_proxy "$p"; then
+      stop_our_proxy "$p"
+    fi
+  done
 }
 
 # On startup: verify existing PID_FILE
@@ -67,13 +79,14 @@ while true; do
     if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null && [ "$START_TIME" -gt 0 ]; then
       ELAPSED=$(( $(date +%s) - START_TIME ))
       if [ "$ELAPSED" -ge "$STARTUP_GRACE" ]; then
-        echo "[watchdog] $(date) PID $CHILD_PID still not listening after ${ELAPSED}s, sending SIGTERM" >> "$LOG"
-        kill "$CHILD_PID" 2>/dev/null
-        wait_pid_exit "$CHILD_PID"
+        echo "[watchdog] $(date) PID $CHILD_PID still not listening after ${ELAPSED}s, stopping" >> "$LOG"
+        stop_our_proxy "$CHILD_PID"
+        kill_all_our_proxies "$$"
         CHILD_PID=""
         NEED_START=true
       fi
     else
+      kill_all_our_proxies "$$"
       CHILD_PID=""
       NEED_START=true
     fi

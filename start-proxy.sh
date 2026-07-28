@@ -22,6 +22,6 @@ sleep 2
 echo "Status:"
 curl -sf http://localhost:3456/__status > /dev/null 2>&1 && echo "  Proxy is RUNNING" || echo "  Proxy starting..."
 echo ""
-echo "Stop proxy:   pkill -f 'node.*proxy\.js'"
+echo "Stop proxy:   kill \$(cat $PID_FILE)"
 echo "Stop watchdog: pkill -f watchdog.sh"
 echo "View log:     tail -f $LOG"

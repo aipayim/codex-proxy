@@ -168,8 +168,9 @@ function loadConfig() {
     config.logFile = LOG_FILE_ENABLED;
     config.logRetentionDays = LOG_RETENTION_DAYS;
     config.logDetail = LOG_DETAIL;
-    STREAM_LIFETIME = Math.max(60000, parseInt(c.streamLifetime) || 1800000);
+    STREAM_LIFETIME = Math.min(7200000, Math.max(60000, parseInt(c.streamLifetime) || 1800000));
     config.streamLifetime = STREAM_LIFETIME;
+    config.adminToken = c.adminToken || "";
     config.rateLimit = c.rateLimit !== false;
     config.maxRequestsPerMin = Math.max(1, parseInt(c.maxRequestsPerMin) || 10);
     config.maxTokensPerMin = Math.max(0, parseInt(c.maxTokensPerMin) || 0);
@@ -232,6 +233,11 @@ function normalizePath(p) {
   try { s = require('path').resolve(s); } catch(e) {}
   s = s.replace(/\/+$/, '');
   return s;
+}
+function checkAdminAuth(req) {
+  if (!config.adminToken) return true;
+  const auth = req.headers.authorization || "";
+  return auth === "Bearer " + config.adminToken;
 }
 function checkAutoResume() {
   if (!config.autoResume || !config.autoResumeProjects || config.autoResumeProjects.length === 0) return;
@@ -1228,7 +1234,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       if (!lifecycle) {
-        recordRequest(idx, true, inputBytes, accBytes, dur, ttfb, resolvedModel);
+        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel);
       }
       broadcastStatus();
     };
@@ -2024,6 +2030,9 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 流超时</div>
   <div style="color:#94a3b8;padding:4px 0">响应流最大时长 (ms)</div>
   <div><input id="cfgStreamLifetime" type="number" min="60000" max="7200000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="1800000" title="响应流绝对超时，防止僵尸连接。默认30分钟"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔐 管理认证</div>
+  <div style="color:#94a3b8;padding:4px 0">管理 Token（空=不校验）</div>
+  <div><input id="cfgAdminToken" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="留空=无认证" title="设置后所有管理接口需 Bearer token 认证"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
 </div>
@@ -2232,6 +2241,7 @@ async function loadConfigUI(){
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
     document.getElementById("cfgStreamLifetime").value=c.streamLifetime||1800000;
+    document.getElementById("cfgAdminToken").value=c.adminToken||"";
     try{
       const sr=await fetch("/__status");
       const sd=await sr.json();
@@ -3801,6 +3811,7 @@ async function saveConfig(){
     maxRequestsPerMin:parseInt(document.getElementById("cfgMaxReqPerMin").value)||10,
     maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0,
     streamLifetime:parseInt(document.getElementById("cfgStreamLifetime").value)||1800000,
+    adminToken:document.getElementById("cfgAdminToken").value.trim(),
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
     logFile:document.getElementById("cfgLogFile").checked,
@@ -3895,12 +3906,26 @@ function responsesToChatRequest(upstreamUrl, body) {
     chatBody.messages.push({ role: "user", content: body.input });
   } else if (Array.isArray(body.input)) {
     for (const m of body.input) {
-      const role = m.role === "developer" ? "system" : m.role || "user";
-      let content = "";
-      if (typeof m.content === "string") content = m.content;
-      else if (Array.isArray(m.content)) content = m.content.map(c => c.text || "").join("\n");
-      else if (typeof m.content === "object" && m.content) content = m.content.text || JSON.stringify(m.content);
-      chatBody.messages.push({ role, content });
+      if (m.type === "function_call") {
+        chatBody.messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: m.call_id, type: "function", function: { name: m.name, arguments: m.arguments || "" } }]
+        });
+      } else if (m.type === "function_call_output") {
+        chatBody.messages.push({
+          role: "tool",
+          tool_call_id: m.call_id,
+          content: typeof m.output === "string" ? m.output : JSON.stringify(m.output || "")
+        });
+      } else {
+        const role = m.role === "developer" ? "system" : m.role || "user";
+        let content = "";
+        if (typeof m.content === "string") content = m.content;
+        else if (Array.isArray(m.content)) content = m.content.map(c => c.text || "").join("\n");
+        else if (typeof m.content === "object" && m.content) content = m.content.text || JSON.stringify(m.content);
+        chatBody.messages.push({ role, content });
+      }
     }
   }
   if (body.tools) chatBody.tools = body.tools.map(t => {
@@ -4382,18 +4407,34 @@ function createGroupServer(groupName, port) {
   }
   if (req.method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(getDashboardHTML());
+    let html = getDashboardHTML();
+    const token = config.adminToken || "";
+    const authHeader = token ? `{"Authorization":"Bearer ${token}"}` : "{}";
+    html = html.replace("<script>", `<script>window.__ADMIN_TOKEN=${JSON.stringify(token)};const __origFetch=fetch;fetch=function(u,o){o=o||{};o.headers=Object.assign(${authHeader},o.headers||{});return __origFetch(u,o);}`);
+    res.end(html);
     return;
   }
 
   if (req.method === "GET" && pathname === "/__status") {
-    res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
+    res.writeHead(200, { "content-type": "application/json" });
     const data = buildStatusData();
     res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime }, null, 2));
     return;
   }
 
-  const cors = { "access-control-allow-origin": "*", "content-type": "application/json; charset=utf-8" };
+  const cors = { "content-type": "application/json; charset=utf-8" };
+
+  if (pathname.startsWith("/__") && !checkAdminAuth(req)) {
+    res.writeHead(401, cors);
+    res.end(JSON.stringify({ error: "unauthorized" }));
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/__admin_token") {
+    res.writeHead(200, cors);
+    res.end(JSON.stringify({ token: config.adminToken || "" }));
+    return;
+  }
 
   if (req.method === "GET" && pathname === "/__test_port") {
     const u = new URL(req.url, "http://localhost");
@@ -5221,12 +5262,21 @@ function createGroupServer(groupName, port) {
       res.end(JSON.stringify({ ok: true, message: "draining and exiting, watchdog will restart" }));
       if (global._restarting) return;
       global._restarting = true;
+      const drainStart = Date.now();
+      const maxDrainMs = 30000;
+      const drainCheck = () => {
+        const total = Object.values(activeRequests).reduce((s, a) => s + (Array.isArray(a) ? a.length : 0), 0);
+        if (total === 0 || Date.now() - drainStart >= maxDrainMs) {
+          console.log(`[proxy] drain complete (${total} active, ${Date.now()-drainStart}ms), exiting for watchdog restart...`);
+          process.exit(0);
+        } else {
+          console.log(`[proxy] draining... ${total} active requests remain`);
+          setTimeout(drainCheck, 1000);
+        }
+      };
       setImmediate(() => {
         for (const srv of Object.values(servers)) { try { srv.close(); } catch {} }
-        setTimeout(() => {
-          console.log("[proxy] draining complete, exiting for watchdog restart...");
-          process.exit(0);
-        }, 1000);
+        setTimeout(drainCheck, 1000);
       });
       return;
     }
@@ -5459,11 +5509,21 @@ function shutdown(signal) {
       srv.unref();
     } catch {}
   }
-  // Wait up to 5s for in-flight requests to drain, then force exit
-  setTimeout(() => {
-    try { fs.unlinkSync(PID_FILE); } catch {}
-    process.exit(0);
-  }, 5000).unref();
+  const drainStart = Date.now();
+  const maxDrainMs = 10000;
+  const drainCheck = () => {
+    const total = Object.values(activeRequests).reduce((s, a) => s + (Array.isArray(a) ? a.length : 0), 0);
+    if (total === 0 || Date.now() - drainStart >= maxDrainMs) {
+      try {
+        const pid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
+        if (pid === process.pid) fs.unlinkSync(PID_FILE);
+      } catch {}
+      process.exit(0);
+    } else {
+      setTimeout(drainCheck, 500);
+    }
+  };
+  setTimeout(drainCheck, 500).unref();
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
