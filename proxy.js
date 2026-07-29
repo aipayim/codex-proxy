@@ -121,6 +121,8 @@ let lastRequestTime = Date.now();
 let lastKeyUseTime = 0;
 let lastResumeTime = 0;
 let autoResumeTimer = null;
+let logWrittenCount = 0;
+const _logCache = { key: "", result: null, time: 0, ttl: 2000 };
 let autoResumeStateReady = false;
 let autoResumeRuntimeWriteErrorLogged = false;
 const autoResumeLaunches = new Map();
@@ -1213,12 +1215,13 @@ function writeLogEntry(entry) {
   try {
     ensureLogStream();
     logStream.write(JSON.stringify(entry) + "\n");
+    logWrittenCount++;
   } catch(e) { /* fail silently */ }
 }
 
 function cleanOldLogs() {
   try {
-    if (!fs.existsSync(LOG_DIR)) return;
+    if (!fs.existsSync(LOG_DIR)) { logWrittenCount = 0; return; }
     const files = fs.readdirSync(LOG_DIR);
     const now = Date.now();
     for (const f of files) {
@@ -1230,28 +1233,38 @@ function cleanOldLogs() {
         fs.unlinkSync(path.join(LOG_DIR, f));
       }
     }
+    // Initialize logWrittenCount by counting remaining files
+    logWrittenCount = 0;
+    const remaining = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
+    for (const f of remaining) {
+      const content = fs.readFileSync(path.join(LOG_DIR, f), "utf-8");
+      logWrittenCount += content.split("\n").filter(l => l.trim()).length;
+    }
   } catch(e) { /* fail silently */ }
 }
 
 function countAllEntries(since, until) {
-  let total = 0;
-  try {
-    if (!fs.existsSync(LOG_DIR)) return 0;
-    const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
-    const sTime = since ? parseInt(since, 10) : 0;
-    const uTime = until ? parseInt(until, 10) : 9e15;
-    for (const f of files) {
-      const dateStr = f.replace(".jsonl", "");
-      const fd = new Date(dateStr + "T00:00:00");
-      const fdEnd = fd.getTime() + 86400000;
-      if (fdEnd < sTime || fd.getTime() > uTime) continue;
-      const filePath = path.join(LOG_DIR, f);
-      const content = fs.readFileSync(filePath, "utf-8");
-      const lines = content.split("\n").filter(l => l.trim());
-      total += lines.length;
-    }
-  } catch (e) { /* fail silently */ }
-  return total + requestLog.length;
+  if (since || until) {
+    let total = 0;
+    try {
+      if (!fs.existsSync(LOG_DIR)) return requestLog.length;
+      const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
+      const sTime = since ? parseInt(since, 10) : 0;
+      const uTime = until ? parseInt(until, 10) : 9e15;
+      for (const f of files) {
+        const dateStr = f.replace(".jsonl", "");
+        const fd = new Date(dateStr + "T00:00:00");
+        const fdEnd = fd.getTime() + 86400000;
+        if (fdEnd < sTime || fd.getTime() > uTime) continue;
+        const filePath = path.join(LOG_DIR, f);
+        const content = fs.readFileSync(filePath, "utf-8");
+        const lines = content.split("\n").filter(l => l.trim());
+        total += lines.length;
+      }
+    } catch (e) { /* fail silently */ }
+    return total + requestLog.length;
+  }
+  return logWrittenCount + requestLog.length;
 }
 
 function computeHealthScore(ks, idx) {
@@ -3033,7 +3046,7 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <button class="btn" onclick="reloadLogs()" style="font-size:11px;padding:2px 8px">🔍 搜索</button>
 <button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px">⬇ CSV</button>
 </div>
-<div style="overflow-x:auto"><table class="log-table"><thead><tr>
+<div style="overflow-x:auto;max-height:500px;overflow-y:auto"><table class="log-table"><thead><tr>
 <th style="width:30px;font-size:10px;text-align:center">序</th>
 <th onclick="logSortBy('time')" style="cursor:pointer">时间<span id="logSortIcon" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
 <th onclick="logSortBy('idx')" style="cursor:pointer">#<span id="logSortIcon_idx" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
@@ -3278,6 +3291,7 @@ function connectWS(){
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
       if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
         logAllEntries.push(msg.data);
+        _logSparkVersion++;
         if(logAllEntries.length>LOG_PAGE_SIZE*3)logAllEntries.splice(0,logAllEntries.length-LOG_PAGE_SIZE*3);
         if(logLastStats)logLastStats.total=(logLastStats.total||0)+1;
         logTotalPages=Math.max(1,Math.ceil((logLastStats?.totalAll||logLastStats?.total||logAllEntries.length)/LOG_PAGE_SIZE));
@@ -3297,9 +3311,14 @@ function connectWS(){
             if(tbody.children.length>LOG_PAGE_SIZE*2+2)while(tbody.children.length>LOG_PAGE_SIZE*2+2)tbody.removeChild(tbody.lastChild);
           }
         }
-        renderLogSparkline();
-        renderLogModelDist();
-        renderLogErrorCluster();
+        // Debounce chart re-renders
+        if(_logRenderTimer)clearTimeout(_logRenderTimer);
+        _logRenderTimer=setTimeout(function(){
+          _logRenderTimer=null;
+          renderLogSparkline();
+          renderLogModelDist();
+          renderLogErrorCluster();
+        },500);
       }
     }catch(e){}
   };
@@ -3662,7 +3681,7 @@ function renderTrend(){
         }
       }
       const barH=Math.max(2,vals[i]/max*80);
-      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n"))+'">'+segments.join("")+'</div>';
+      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'">'+segments.join("")+'</div>';
     }).join("");
     const legendModels=topModels.slice();
     if(sortedModels.length>8){
@@ -3695,7 +3714,7 @@ function renderTrend(){
       if(c5xx)segments.push('<div class="trend-seg" style="height:'+pct(c5xx)+'%;background:#ef4444"></div>');
       if(fail)segments.push('<div class="trend-seg" style="height:'+pct(fail)+'%;background:#6b7280"></div>');
       const barH=Math.max(2,vals[i]/max*80);
-      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n"))+'">'+segments.join("")+'</div>';
+      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'">'+segments.join("")+'</div>';
     }).join("");
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML=
@@ -3715,7 +3734,7 @@ function renderTrend(){
         const kv=h.keys[ki];
         lines.push("  #"+ki+"  "+fmtBytes(kv.bytes)+"  "+kv.req+"次");
       }
-      return '<div class="trend-bar" style="height:'+Math.max(2,hMap[k][trendMode]/max*80)+'px" title="'+esc(lines.join("\\n"))+'"></div>';
+      return '<div class="trend-bar" style="height:'+Math.max(2,hMap[k][trendMode]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
     }).join("");
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML="";
@@ -4642,6 +4661,9 @@ let logTotalPages = 1;
 let logAllEntries = [];
 let logLastStats = null;
 const LOG_PAGE_SIZE = 200;
+let _logRenderTimer = null;
+let _logSparkVersion = 0;
+let _logSparkCache = { version: 0, bars: null };
 
 function logRequestFailed(e){
   return !!e && (e.status === 0 || e.status >= 400 || e.streamOutcome === "failed");
@@ -4686,6 +4708,7 @@ async function loadLogs(page){
     if(!r.ok)return;
     const resp=await r.json();
     logAllEntries = resp.entries || resp;
+    _logSparkVersion++;
     logLastStats = resp.stats || null;
     logTotalPages = Math.max(1, Math.ceil((logLastStats?.totalAll || logLastStats?.total || logAllEntries.length) / LOG_PAGE_SIZE));
     logCurrentPage = pg;
@@ -4730,6 +4753,11 @@ function renderLogs(){
   renderLogErrorCluster();
 }
 function renderLogSparkline(){
+  // Cache: only recompute if data changed
+  if (_logSparkCache.version === _logSparkVersion && _logSparkCache.bars) {
+    document.getElementById("logSparklineWrap").innerHTML = _logSparkCache.bars;
+    return;
+  }
   const wrap = document.getElementById("logSparklineWrap");
   const now = Date.now();
   const bars = [];
@@ -4742,13 +4770,15 @@ function renderLogSparkline(){
     bars.push({ total, errs, start });
   }
   const maxVal = Math.max(1, ...bars.map(b => b.total));
-  wrap.innerHTML = bars.map(b => {
+  const html = bars.map(b => {
     const h = Math.round(b.total / maxVal * 24);
-    const errH = b.errs > 0 ? Math.round(b.errs / maxVal * 24) : 0;
     const cls = b.errs > 0 ? "log-spark-bar err" : (b.total > 0 ? "log-spark-bar ok" : "log-spark-bar");
     const tip = new Date(b.start).toTimeString().slice(0,5)+" - 请求:"+b.total+" 错误:"+b.errs;
     return '<div class="'+cls+'" style="height:'+Math.max(h,1)+'px;background:'+(b.errs>0?'#ef4444':b.total>0?'#3b82f6':'#334155')+'" title="'+tip+'"></div>';
   }).join("");
+  _logSparkCache.version = _logSparkVersion;
+  _logSparkCache.bars = html;
+  wrap.innerHTML = html;
 }
 function renderLogModelDist(){
   const el = document.getElementById("logModelDist");
@@ -4818,6 +4848,7 @@ function logSortBy(field){
     }
     return logSortAsc ? va - vb : vb - va;
   });
+  _logSparkVersion++;
   renderLogs();
 }
 function toggleLogDetail(tr, idx){
@@ -6450,6 +6481,15 @@ function createGroupServer(groupName, port) {
       const q = u.searchParams.get("q") || "";
       const offset = parseInt(u.searchParams.get("offset") || "0", 10);
       const format = u.searchParams.get("format");
+
+      // Cache check for repeated requests
+      const cacheKey = req.url;
+      if (Date.now() - _logCache.time < _logCache.ttl && _logCache.key === cacheKey && _logCache.result) {
+        res.writeHead(200, cors);
+        res.end(_logCache.result);
+        return;
+      }
+
       let entries;
       if (since || until) {
         const sTime = since ? parseInt(since, 10) : 0;
@@ -6500,7 +6540,7 @@ function createGroupServer(groupName, port) {
               }
             }
           }
-        } catch (e) { console.error("[__logs] since/until branch read error:", e.message); }
+        } catch (e) { /* fail silently */ }
         const seen = new Set();
         const merged = [];
         for (const e of fileEntries) {
@@ -6515,6 +6555,7 @@ function createGroupServer(groupName, port) {
         }
         entries = merged;
       } else {
+        // No time filter: read from newest files backwards + merge with requestLog
         const maxNeeded = (limit + offset) || 500;
         const fileEntries = [];
         try {
@@ -6551,7 +6592,7 @@ function createGroupServer(groupName, port) {
               }
             }
           }
-          } catch (e) { console.error("[__logs] no-time-filter branch read error:", e.message); }
+        } catch (e) { /* fail silently */ }
         const seen = new Set();
         const merged = [];
         for (const e of fileEntries) {
@@ -6565,41 +6606,48 @@ function createGroupServer(groupName, port) {
         entries = merged;
         entries.sort((a, b) => b.time - a.time);
       }
-      if (since) { const t = parseInt(since, 10); if (t) entries = entries.filter(e => e.time >= t); }
-      if (until) { const t = parseInt(until, 10); if (t) entries = entries.filter(e => e.time <= t); }
+
+      // Apply filters
       if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length) entries = entries.filter(e => keys.includes(e.idx)); }
       if (status) { entries = entries.filter(e => { const s = e.status || 0; if (status.endsWith("xx")) { const prefix = parseInt(status, 10); return !isNaN(prefix) && Math.floor(s / 100) === prefix; } return String(s) === status; }); }
       if (model) { const ml = model.toLowerCase(); entries = entries.filter(e => (e.reqModel||"").toLowerCase().includes(ml) || (e.overrideModel||"").toLowerCase().includes(ml)); }
       if (q) { const ql = q.toLowerCase(); entries = entries.filter(e => (e.message||"").toLowerCase().includes(ql) || (e.url||"").toLowerCase().includes(ql) || (e.reqModel||"").toLowerCase().includes(ql) || (e.overrideModel||"").toLowerCase().includes(ql) || (e.method||"").toLowerCase().includes(ql) || (e.path||"").toLowerCase().includes(ql) || (e.eventType||"").toLowerCase().includes(ql) || (e.streamId||"").toLowerCase().includes(ql) || (e.streamOutcome||"").toLowerCase().includes(ql) || (e.streamReason||"").toLowerCase().includes(ql)); }
       if (since || until || q) entries.sort((a, b) => b.time - a.time);
-      // Compute statistics from all matching entries BEFORE pagination slice
+
+      // Compute stats
       const stats = { total: 0, successRate: 0, p95: 0, p99: 0, avgDuration: 0, error4xx: 0, error5xx: 0, errorTimeout: 0, errorStream: 0 };
       stats.total = entries.length;
       stats.totalAll = countAllEntries(since, until);
-      const durs = entries.filter(e => e.duration != null && e.type !== "event").map(e => e.duration).sort((a, b) => a - b);
-      if (durs.length) {
-        stats.avgDuration = Math.round(durs.reduce((a, b) => a + b, 0) / durs.length);
-        stats.p95 = durs[Math.floor(durs.length * 0.95)] || durs[durs.length - 1];
-        stats.p99 = durs[Math.floor(durs.length * 0.99)] || durs[durs.length - 1];
+      if (offset === 0) {
+        const durs = entries.filter(e => e.duration != null && e.type !== "event").map(e => e.duration).sort((a, b) => a - b);
+        if (durs.length) {
+          stats.avgDuration = Math.round(durs.reduce((a, b) => a + b, 0) / durs.length);
+          stats.p95 = durs[Math.floor(durs.length * 0.95)] || durs[durs.length - 1];
+          stats.p99 = durs[Math.floor(durs.length * 0.99)] || durs[durs.length - 1];
+        }
+        const reqs = entries.filter(e => e.type !== "event");
+        const success = reqs.filter(e => e.status >= 200 && e.status < 300 && !isRequestLogFailure(e)).length;
+        stats.successRate = reqs.length ? Math.round(success / reqs.length * 10000) / 100 : 0;
+        stats.error4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
+        stats.error5xx = reqs.filter(e => e.status >= 500 && e.status < 600).length;
+        stats.errorTimeout = reqs.filter(e => e.status === 0 || e.status == null).length;
+        stats.errorStream = reqs.filter(e => e.streamOutcome === "failed").length;
       }
-      const reqs = entries.filter(e => e.type !== "event");
-      const success = reqs.filter(e => e.status >= 200 && e.status < 300 && !isRequestLogFailure(e)).length;
-      stats.successRate = reqs.length ? Math.round(success / reqs.length * 10000) / 100 : 0;
-      stats.error4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
-      stats.error5xx = reqs.filter(e => e.status >= 500 && e.status < 600).length;
-      stats.errorTimeout = reqs.filter(e => e.status === 0 || e.status == null).length;
-      stats.errorStream = reqs.filter(e => e.streamOutcome === "failed").length;
       entries = entries.slice(offset, offset + limit);
       if (format === "csv") {
         const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,url,type,eventType,message,streamId,streamOutcome,streamReason,streamSawDone";
-        const esc = v => `"${String(v).replace(/"/g, '""')}"`;
-        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", esc(e.reqModel||""), esc(e.overrideModel||""), esc(e.url||""), e.type||"request", e.eventType||"", esc(e.message||""), esc(e.streamId||""), e.streamOutcome||"", e.streamReason||"", e.streamSawDone === true ? "true" : "false"].join(","));
+        const escCsv = v => `"${String(v).replace(/"/g, '""')}"`;
+        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", escCsv(e.reqModel||""), escCsv(e.overrideModel||""), escCsv(e.url||""), e.type||"request", e.eventType||"", escCsv(e.message||""), escCsv(e.streamId||""), e.streamOutcome||"", e.streamReason||"", e.streamSawDone === true ? "true" : "false"].join(","));
         res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
         res.end(header + "\n" + rows.join("\n"));
         return;
       }
+      const body = JSON.stringify({ entries, stats });
+      _logCache.key = cacheKey;
+      _logCache.result = body;
+      _logCache.time = Date.now();
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ entries, stats }, null, 2));
+      res.end(body);
       return;
     }
     res.writeHead(405, cors);
