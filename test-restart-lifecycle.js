@@ -10,8 +10,15 @@ function loadRestartHarness(proxyDir) {
   const source = fs.readFileSync(path.join(proxyDir, "proxy.js"), "utf8");
   const cutoff = source.lastIndexOf("// Start servers");
   if (cutoff < 0) throw new Error("proxy startup marker not found");
+  const watchdogReloadWrites = [];
+  const fsMock = {
+    ...fs,
+    writeFileSync(file, data, options) {
+      watchdogReloadWrites.push({ file, data: String(data), options });
+    },
+  };
   const sandbox = {
-    require,
+    require: moduleName => moduleName === "fs" ? fsMock : require(moduleName),
     console,
     Buffer,
     URL,
@@ -24,6 +31,7 @@ function loadRestartHarness(proxyDir) {
     process: { pid: 999996, argv: [], env: {}, on: () => {}, exit: () => {} },
   };
   sandbox.globalThis = sandbox;
+  sandbox.watchdogReloadWrites = watchdogReloadWrites;
   const harness = `
     ;LOG_FILE_ENABLED = false;
     let restartTestQueuedResponses = [];
@@ -32,7 +40,9 @@ function loadRestartHarness(proxyDir) {
       cancelRestartDrain,
       requestForcedRestart,
       buildRestartStatus,
+      requestWatchdogReload,
       getDashboardHTML,
+      watchdogReloadWritesForTest: () => globalThis.watchdogReloadWrites.slice(),
       isRestarting: () => globalThis._restarting === true,
       setActiveRequestsForTest: (count) => {
         for (const key of Object.keys(activeRequests)) delete activeRequests[key];
@@ -121,11 +131,24 @@ function testDashboardControls(harness) {
   for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new Function(match[1]);
 }
 
+function testWatchdogReloadContract(harness, proxyDir) {
+  assert.strictEqual(harness.requestWatchdogReload(), true);
+  const writes = harness.watchdogReloadWritesForTest();
+  assert.strictEqual(writes.length, 1);
+  assert.strictEqual(writes[0].file, path.join(proxyDir, ".watchdog-reload"));
+  assert.match(writes[0].data, /instanceId/);
+
+  const watchdog = fs.readFileSync(path.join(proxyDir, "watchdog.sh"), "utf8");
+  assert.match(watchdog, /WATCHDOG_RELOAD_FILE=/);
+  assert.match(watchdog, /exec \/bin\/bash "\$PROXY_DIR\/watchdog\.sh"/);
+}
+
 function main() {
   const harness = loadRestartHarness(__dirname);
   testDrainCanBeCancelled(harness);
   testForceNeedsExplicitDelay(harness);
   testDashboardControls(harness);
+  testWatchdogReloadContract(harness, __dirname);
   console.log("restart lifecycle: PASS");
 }
 

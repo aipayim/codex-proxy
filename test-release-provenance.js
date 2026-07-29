@@ -82,14 +82,17 @@ function testReleaseArtifact(releaseDir) {
   assert.strictEqual(buildInfo.channel, "official-release");
   const packageJson = JSON.parse(fs.readFileSync(path.join(releaseDir, "package.json"), "utf8"));
   assert.strictEqual(packageJson.version, "1.2.3");
-  assert.match(packageJson.scripts.test, /test-restart-lifecycle\.js/);
+  assert.ok(!Object.prototype.hasOwnProperty.call(packageJson, "scripts"));
   const packageLock = JSON.parse(fs.readFileSync(path.join(releaseDir, "package-lock.json"), "utf8"));
   assert.strictEqual(packageLock.version, "1.2.3");
   assert.strictEqual(packageLock.packages[""].version, "1.2.3");
-  assert.ok(fs.existsSync(path.join(releaseDir, "build-release.js")));
-  assert.ok(fs.existsSync(path.join(releaseDir, "test-release-provenance.js")));
-  assert.ok(fs.existsSync(path.join(releaseDir, "test-stream-lifecycle.js")));
-  assert.ok(fs.existsSync(path.join(releaseDir, "test-restart-lifecycle.js")));
+  assert.ok(!fs.existsSync(path.join(releaseDir, "build-release.js")));
+  const sourceTestFiles = fs.readdirSync(__dirname).filter((name) => /^test-.*\.js$/.test(name));
+  assert.ok(sourceTestFiles.length > 0);
+  for (const testFile of sourceTestFiles) {
+    assert.ok(!fs.existsSync(path.join(releaseDir, testFile)), `release must not contain ${testFile}`);
+    assert.ok(!Object.prototype.hasOwnProperty.call(manifest.files, testFile), `manifest must not contain ${testFile}`);
+  }
   assert.ok(!fs.existsSync(path.join(releaseDir, "scripts")));
   assert.ok(manifest.files["proxy.js"]);
   for (const privateFile of ["config.json", "keys.json", "state.json", "proxy.log", "proxy.pid"]) {

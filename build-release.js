@@ -20,10 +20,6 @@ const RELEASE_CONTENT_FILES = [
   "resume-codex.sh",
   "edit-keys.sh",
   "codex-proxy.service",
-  "build-release.js",
-  "test-release-provenance.js",
-  "test-stream-lifecycle.js",
-  "test-restart-lifecycle.js",
 ];
 const RELEASE_INTEGRITY_FILES = [
   "proxy.js",
@@ -119,6 +115,8 @@ function setReleasePackageVersion(releaseDir, tag) {
     fail("package.json must contain an object");
   }
   packageJson.version = version;
+  // Release assets are runtime-only and do not include the source test/build tooling.
+  delete packageJson.scripts;
   writeJson(packagePath, packageJson);
 
   const lockPath = path.join(releaseDir, "package-lock.json");

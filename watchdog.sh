@@ -3,6 +3,7 @@ PROXY_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$PROXY_DIR/proxy.pid"
 LOG="$PROXY_DIR/proxy.log"
 LOCK_FILE="$PROXY_DIR/.watchdog.lock"
+WATCHDOG_RELOAD_FILE="$PROXY_DIR/.watchdog-reload"
 STARTUP_GRACE=30
 
 exec 200>"$LOCK_FILE"
@@ -55,6 +56,14 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 while true; do
+  # Dashboard restarts request a supervisor re-exec after the old proxy exits.
+  # exec keeps this process as the single lock owner while re-reading this file.
+  if [ -f "$WATCHDOG_RELOAD_FILE" ]; then
+    rm -f "$WATCHDOG_RELOAD_FILE"
+    echo "[watchdog] $(date) reloading watchdog after dashboard restart" >> "$LOG"
+    exec /bin/bash "$PROXY_DIR/watchdog.sh"
+  fi
+
   NEED_START=false
 
   BOUND_PID=$(get_port_pid)

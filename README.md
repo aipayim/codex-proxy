@@ -38,6 +38,7 @@ codex-proxy/
 ├── test-release-provenance.js # 发布来源判定回归测试
 ├── test-stream-lifecycle.js # Responses 流终态回归测试
 ├── test-restart-lifecycle.js # 重启排空、取消与强制重启回归测试
+├── test-auto-resume-lifecycle.js # Key 心跳闲置恢复与 watchdog 重载回归测试
 ├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
@@ -50,13 +51,19 @@ codex-proxy/
 
 以下清单列出完整部署所需的所有文件和配置，AI agent 可逐项执行：
 
+### 源码仓库与 Release 资产
+
+GitHub 源码仓库保留构建器和全部回归测试，供发布维护者在构建前运行 `npm test`。面向普通用户的 GitHub Release 资产是运行时包：不包含 `build-release.js` 或任何 `test-*.js`，其 `package.json` 也不提供 `npm test` 或 `npm run build:release`。因此，测试和构建必须在源码仓库中完成，再上传生成的独立 Release 目录。
+
 ### 需从源码复制的文件
 
 | 文件 | 说明 | 安装方式 |
 |------|------|----------|
 | `build-release.js` | 发布资产生成工具 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-release-provenance.js` | 发布来源回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-stream-lifecycle.js` | Responses 流终态回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-restart-lifecycle.js` | 重启生命周期回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-auto-resume-lifecycle.js` | Key 心跳闲置恢复与 watchdog 重载回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `proxy.js` | 核心代理（含内嵌面板） | 复制到目标目录即可 |
 | `dashboard.html` | 独立面板备用 | 同目录放置 |
 | `package.json` | npm 依赖声明 | 复制后 `npm install` |
@@ -656,7 +663,9 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 
 面板确认后会立即显示全屏进度：提交重启请求、排空在途请求、等待旧实例退出与 watchdog 拉起、检测新实例就绪。新实例的 ID 变化且状态为 `ready` 后，Dashboard 自动重新载入，不会再出现无反馈的空白等待。嵌入式 Dashboard 和独立备用面板在 `draining` 阶段都可选择「取消重启」。
 
-`POST /__restart` 返回 `202` 后，旧实例进入 `draining`：已排队请求会收到 `503`，新的 API 请求暂时收到带 `Retry-After: 5` 的 `503`，在途请求继续完成。旧实例保留重启控制和进度轮询接口，排空后退出；watchdog 检测到端口空闲且原进程已退出后再拉起新进程，避免并发状态冲突。请让客户端按自身重试策略处理这段短暂不可用时间。
+`POST /__restart` 返回 `202` 后，旧实例进入 `draining`：已排队请求会收到 `503`，新的 API 请求暂时收到带 `Retry-After: 5` 的 `503`，在途请求继续完成。旧实例保留重启控制和进度轮询接口，排空后写入 watchdog 重载标记并退出；watchdog 在看到该标记后以 `exec` 方式重新读取自身脚本，再检测端口并拉起新进程。整个过程始终只有一个 watchdog 锁持有者，避免并发状态冲突。请让客户端按自身重试策略处理这段短暂不可用时间。
+
+首次从不支持该标记的旧 watchdog 升级时，旧脚本无法自行识别新的重载请求。请在没有活跃 CLI 任务的维护窗口，先人工停止已确认 PID 的旧 watchdog，再执行 `bash start-proxy.sh --boot` 启动新脚本；新脚本会接管仍在运行的代理。随后通过面板执行一次普通安全重启，使新 `proxy.js` 载入。此后面板的「重启代理」会同时完成 watchdog 的 `exec` 重载，不会额外启动竞争锁的第二个 watchdog。
 
 若发现重启是在仍有任务运行时误触，可在旧实例仍为 `draining` 时调用 `POST /__restart/cancel` 或点击「取消重启」。代理会立即恢复接入新请求，但此前已被拒绝的排队请求不能恢复，客户端应自行重试。
 
@@ -692,7 +701,7 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 - `release-manifest.json`：代理代码、启动脚本和包元数据的 SHA-256 清单；
 - 运行所需的白名单文件。
 
-发布器会将输出资产的 `package.json` 版本同步为 Release Tag，但不会修改开发源码。它不会复制 `config.json`、Key、状态、日志、PID 或本机路径。应将该目录归档后作为 GitHub Release 资产提供给普通用户。安装后的用户配置不在清单内；但代理代码或受保护脚本被修改时，清单校验会失败并自动退回“来源未知”，避免误报更新。
+发布器会将输出资产的 `package.json` 版本同步为 Release Tag，并移除仅在源码仓库可用的 `scripts`（包括 `npm test` 和 `npm run build:release`），但不会修改开发源码。它不会复制 `build-release.js`、任何 `test-*.js`、`config.json`、Key、状态、日志、PID 或本机路径。应将该目录归档后作为 GitHub Release 资产提供给普通用户。安装后的用户配置不在清单内；但代理代码或受保护脚本被修改时，清单校验会失败并自动退回“来源未知”，避免误报更新。
 
 清单用于本地完整性和版本来源判定，不执行远端代码，也不启用覆盖式升级。无论来源状态如何，“一键升级”都保持禁用，避免覆盖本地代码、配置或运行状态。安全升级流程是：备份当前代理目录及配置/状态，审核 Release，手动合并需要的改动，执行 `node -c proxy.js`，再在维护窗口重启代理。
 
@@ -1020,15 +1029,16 @@ model = "o3#87"
 
 ## 闲置自动恢复（autoResume）
 
-代理空闲超过阈值时，自动在 Windows 可见终端中重新打开项目终端窗口（适用于 WSL2 环境，确保 codex CLI 运行在可见窗口中）。
+最后一次实际应用 Key 超过阈值时，自动在 Windows 可见终端中重新打开项目终端窗口（适用于 WSL2 环境，确保 codex CLI 运行在可见窗口中）。
 
 ### 工作原理
 
-1. 代理记录每次 codex CLI 转发请求的时间（`lastRequestTime`），仅 `/v1/*`、`/responses` 等实际 API 调用计入活动时间。仪表盘页面（`/`、`/dashboard`）、管理接口（`/__*`）、Prometheus 指标（`/metrics`）不重置空闲计时，即使 WebSocket 断开降级为 HTTP 轮询也不影响
-2. 每 30 秒检测空闲时长，超过 `autoResumeIdleMinutes`（默认 10 分钟）且距上次恢复超过 `autoResumeDebounceMinutes`（默认 3 分钟）时触发
-3. `checkAutoResume()` 遍历 `autoResumeProjects` 列表，为每个项目执行 `triggerResume()`
-4. 通过 `cmd.exe /c start` 启动新的 Windows 可见 cmd 窗口 → 运行 wsl.exe → bash → 执行项目命令
-5. 每个项目启动时写入 PID 到 `/tmp/codex-resume-<项目名>.pid`，再次触发时自动 kill 旧进程
+1. 代理仅在选中的上游 Key 已写入实际转发请求时记录 `lastKeyUseTime`。普通下游连接、管理接口、仪表盘/轮询请求、以及一个持续很久但没有再次应用 Key 的流都不会重置此计时
+2. 运行时心跳保存在 `.auto-resume-runtime.json`，并镜像到 `state.json`；因此完整状态写入被节流、代理安全重启或旧状态文件被覆盖时，最近一次 Key 应用时间不会丢失。首次运行且没有历史心跳时，以代理启动时刻建立基线，避免把未知历史误判为故障
+3. 启动和保存配置后立即检测一次，之后每 30 秒检测空闲时长；超过 `autoResumeIdleMinutes`（默认 10 分钟）且距上次恢复超过 `autoResumeDebounceMinutes`（默认 3 分钟）时触发
+4. `checkAutoResume()` 遍历 `autoResumeProjects` 列表，为每个项目执行 `triggerResume()`
+5. 通过 `cmd.exe /c start` 启动新的 Windows 可见 cmd 窗口 → 运行 wsl.exe → bash → 执行项目命令
+6. 每个项目启动时写入 PID 到 `/tmp/codex-resume-<项目名>.pid`，再次触发时自动 kill 旧进程
 
 ### 配置字段
 
@@ -1048,14 +1058,14 @@ model = "o3#87"
 | 字段 | 说明 |
 |------|------|
 | `autoResume` | 是否启用闲置自动恢复（true/false） |
-| `autoResumeIdleMinutes` | 空闲阈值（分钟，默认 10）。代理无任何请求超过此分钟后触发 |
+| `autoResumeIdleMinutes` | Key 应用阈值（分钟，默认 10）。最后一次实际应用 Key 超过此分钟后触发 |
 | `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3）。防止频繁触发 |
 | `autoResumeProjects` | 项目列表，最多 10 个。每个项目包含 `name`（显示名）、`path`（WSL 路径，支持 `E:\xxx` 格式自动转换）、`cmd`（要执行的命令） |
 | `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
 
 ### 面板状态
 
-- **配置弹窗**：显示 `🧬 闲置恢复: 空闲 Xm，上次触发 Ym 前` 实时状态行
+- **配置弹窗**：显示 `🧬 闲置恢复: Key 闲置 Xm，上次触发 Ym 前` 实时状态行
 - **仪表盘**：工具栏右侧显示 `🧬空闲Xm/恢复Ym前`
 - **并发 Key 跑马灯**：时间戳行右侧内联显示「⚡ 并发中：」+ 每个活跃请求的 badge（Key 编号、模型名、已用时间，如 `#3 gpt-5.6-sol 12s`），已用时间每秒实时更新；badge 从左向右排列，超出容器宽度时自动折叠多余 badge 并在前面显示「+N」（灰色）提示未显示数量；无并发时整个 ticker 隐藏，不占空间
 
@@ -1152,7 +1162,7 @@ pkill -f watchdog.sh
 
 | 组件 | 作用 |
 |---|---|
-| `watchdog.sh` | 每 10 秒检测代理存活：flock 单实例锁 → 检查 `proxy.pid` + 端口绑定 + 命令行验证。脚本以自身目录定位代理，不含固定机器路径。进程消失则自动拉起；非 proxy 进程占用端口只报警不杀。proxy.js 在 A 端口成功监听后自行写入 PID 文件 |
+| `watchdog.sh` | 每 10 秒检测代理存活：flock 单实例锁 → 检查 `proxy.pid` + 端口绑定 + 命令行验证。脚本以自身目录定位代理，不含固定机器路径。进程消失则自动拉起；非 proxy 进程占用端口只报警不杀。面板安全重启会请求 watchdog 以 `exec` 重载自身脚本，再拉起代理，不会创建第二个 watchdog。proxy.js 在 A 端口成功监听后自行写入 PID 文件 |
 | `start-proxy.sh` | 前台启动 watchdog（手动用）。`bash start-proxy.sh --boot` 后台启动（WSL 开机用） |
 | `proxy.pid` | `proxy.js` 启动时自动写入 `process.pid`，退出时自动清理 |
 | `/etc/wsl.conf` | 已配置 `[boot] command = /usr/local/bin/codex-watchdog.sh`，Windows 启动 WSL 时自动加载 watchdog |
@@ -1264,7 +1274,9 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-07-29 Release 运行时精简**：构建产物不再包含构建器或任何回归测试；Release 内的 `package.json` 移除源码专用脚本，测试和构建固定在 GitHub 源码仓库完成。
 - **2026-07-28 可取消与强制重启控制**：安全重启排空阶段新增取消控制，恢复新请求接入但不虚假恢复已拒绝的排队请求；排空满 30 秒后才允许二次确认强制重启。强制重启明确记录和提示会中断活跃流，新增重启生命周期回归测试，并同步独立备用面板。
+- **2026-07-28 Key 心跳闲置恢复与 watchdog 重载**：闲置恢复改为仅依据实际应用上游 Key 的持久化心跳，不再受普通请求或状态文件节流影响；启动/保存配置后立即检查。安全重启在排空后请求 watchdog `exec` 重载自身，保持单实例锁，并新增闲置恢复与 watchdog 重载回归测试。
 - **2026-07-28 Responses 流终态修复**：转换流仅在收到上游 `[DONE]` 后发送 `response.completed`；修复末尾无换行的 `[DONE]` 被漏解析、活动流 socket 空闲超时被忽略的问题。异常 EOF/关闭/错误/超时明确发送 `response.failed`，日志新增可检索的 `stream_terminal` 诊断事件和流终态字段；新增独立流生命周期回归测试。
 - **2026-07-28 管理 Token 内存态**：Dashboard 管理 Token 改为仅存于当前页面内存；启动时清除旧版会话存储残留，HTTP 与 WebSocket 共用同一认证状态，WebSocket 返回 `4001` 时重新认证。感谢 @anupamme 提供安全改进思路。
 - **2026-07-28 发布来源识别**：新增 `npm run build:release`，生成不含运行敏感文件的 Release 资产、`build-info.json` 和 SHA-256 清单。未修改的官方发布资产及干净官方 Git Release Tag 自动比较版本；开发/定制副本 fail-closed。watchdog 改为从自身目录定位代理，移除固定机器路径。

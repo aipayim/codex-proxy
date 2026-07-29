@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const { Transform } = require("stream");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { WebSocketServer } = require("ws");
 
 const PORT = 3456;
@@ -13,6 +13,9 @@ const servers = {};
 const KEYS_FILE = path.join(__dirname, "keys.json");
 const STATE_FILE = path.join(__dirname, "state.json");
 const CONFIG_FILE = path.join(__dirname, "config.json");
+const RESUME_SCRIPT = path.join(__dirname, "resume-codex.sh");
+const AUTO_RESUME_RUNTIME_FILE = path.join(__dirname, ".auto-resume-runtime.json");
+const WATCHDOG_RELOAD_FILE = path.join(__dirname, ".watchdog-reload");
 const TIMEOUT = 1500000;
 const PRIORITY = { daily: 0, weekly: 1, never: 2, hourly: 0 };
 const HTTP_MOD = { "http:": http, "https:": https };
@@ -31,6 +34,7 @@ const RELEASE_MANIFEST_FILE = path.join(__dirname, "release-manifest.json");
 const BUILD_INFO_MAX_BYTES = 16 * 1024;
 const RELEASE_MANIFEST_MAX_BYTES = 64 * 1024;
 const RELEASE_INTEGRITY_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const AUTO_RESUME_RUNTIME_FILE_MAX_BYTES = 8 * 1024;
 const GIT_PROBE_TIMEOUT_MS = 1000;
 const RELEASE_INTEGRITY_FILES = new Set([
   "proxy.js",
@@ -114,8 +118,12 @@ let autoRecoverDailyNextTime = 0;
 let autoRecoverPollTimer = null;
 let autoRecoverPollNextTime = 0;
 let lastRequestTime = Date.now();
+let lastKeyUseTime = 0;
 let lastResumeTime = 0;
 let autoResumeTimer = null;
+let autoResumeStateReady = false;
+let autoResumeRuntimeWriteErrorLogged = false;
+const autoResumeLaunches = new Map();
 let _rrCursor = 0;
 let _weeklyLastDay = null;
 let _weeklySubCursors = {};
@@ -156,6 +164,25 @@ function clearRestartDrainTimer() {
   }
 }
 
+function requestWatchdogReload() {
+  try {
+    fs.writeFileSync(WATCHDOG_RELOAD_FILE, JSON.stringify({
+      requestedAt: Date.now(),
+      instanceId: INSTANCE_ID,
+    }) + "\n", { mode: 0o600 });
+    return true;
+  } catch (error) {
+    console.error(`[proxy] Failed to request watchdog reload: ${error.message}`);
+    return false;
+  }
+}
+
+function exitForWatchdogRestart(message) {
+  const reloadRequested = requestWatchdogReload();
+  console.log(`[proxy] ${message}; exiting for ${reloadRequested ? "watchdog reload" : "watchdog restart"}...`);
+  process.exit(0);
+}
+
 function rejectQueuedRequestsForRestart() {
   const queued = requestQueue;
   requestQueue = [];
@@ -177,10 +204,9 @@ function scheduleRestartDrainCheck(restartId, delay) {
     const total = getActiveRequestCount();
     if (total === 0) {
       restartState = { ...restartState, phase: "stopping" };
-      addEventLog("restart_stopping", 0, "排空完成，正在退出以便 watchdog 重启", "");
+      addEventLog("restart_stopping", 0, "排空完成，正在退出并请求 watchdog 重载", "");
       broadcastStatus();
-      console.log(`[proxy] drain complete (${Date.now()-restartState.startedAt}ms), exiting for watchdog restart...`);
-      process.exit(0);
+      exitForWatchdogRestart(`drain complete (${Date.now()-restartState.startedAt}ms)`);
       return;
     }
 
@@ -255,8 +281,7 @@ function exitForForcedRestartAfterResponse(res) {
     scheduled = true;
     setTimeout(() => {
       if (restartState.phase !== "stopping") return;
-      console.log("[proxy] force restart requested, exiting immediately for watchdog restart...");
-      process.exit(0);
+      exitForWatchdogRestart("force restart requested, exiting immediately");
     }, 25);
   };
   if (res && typeof res.once === "function") res.once("finish", scheduleExit);
@@ -695,15 +720,7 @@ function loadConfig() {
       }
     }
   }
-  if (autoResumeTimer) { clearInterval(autoResumeTimer); autoResumeTimer = null; }
-  if (config.autoResume) {
-    lastRequestTime = Date.now();
-    // 项目路径自检：自动修正 Win 路径格式
-    for (const proj of config.autoResumeProjects) {
-      if (proj.path) proj.path = normalizePath(proj.path);
-    }
-    autoResumeTimer = setInterval(checkAutoResume, 30000);
-  }
+  configureAutoResumeTimer();
 }
 
 function normalizePath(p) {
@@ -725,32 +742,300 @@ function checkAdminAuth(req) {
   }
   return diff === 0 && auth.startsWith("Bearer ");
 }
-function checkAutoResume() {
-  if (!config.autoResume || !config.autoResumeProjects || config.autoResumeProjects.length === 0) return;
-  const idleMinutes = (Date.now() - lastRequestTime) / 60000;
-  if (idleMinutes < config.autoResumeIdleMinutes) return;
-  const sinceLastResume = (Date.now() - lastResumeTime) / 60000;
-  if (sinceLastResume < config.autoResumeDebounceMinutes) return;
-  lastResumeTime = Date.now();
-  console.log("[proxy] autoResume triggered after " + Math.round(idleMinutes) + "min idle");
-  for (const proj of config.autoResumeProjects) {
-    if (proj.path && proj.cmd) triggerResume(proj);
+function normalizeAutoResumeTimestamp(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
+  return Math.floor(timestamp);
+}
+
+function readAutoResumeRuntimeFile() {
+  try {
+    const raw = fs.readFileSync(AUTO_RESUME_RUNTIME_FILE, "utf8");
+    if (Buffer.byteLength(raw, "utf8") > AUTO_RESUME_RUNTIME_FILE_MAX_BYTES) return null;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return null;
+    const triggerIdleMinutes = Number(saved.lastTriggerIdleMinutes);
+    return {
+      lastKeyUseTime: normalizeAutoResumeTimestamp(saved.lastKeyUseTime),
+      lastResumeTime: normalizeAutoResumeTimestamp(saved.lastResumeTime),
+      lastTriggerIdleMinutes: Number.isFinite(triggerIdleMinutes) && triggerIdleMinutes >= 0
+        ? Math.floor(triggerIdleMinutes)
+        : null,
+    };
+  } catch {
+    return null;
   }
 }
-function triggerResume(proj) {
+
+function persistAutoResumeRuntime() {
+  const runtime = autoResumeStateReady ? getAutoResumeRuntimeState() : null;
+  const payload = {
+    schema: 1,
+    lastKeyUseTime,
+    lastResumeTime,
+    lastTriggerIdleMinutes: runtime && Number.isFinite(Number(runtime.lastTriggerIdleMinutes))
+      ? Math.max(0, Math.floor(Number(runtime.lastTriggerIdleMinutes)))
+      : null,
+    updatedAt: Date.now(),
+  };
   try {
-    const spawn = require('child_process').spawn;
-    const sanitized = (proj.name || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const pidFile = '/tmp/codex-resume-' + sanitized + '.pid';
-    try { const oldPid = fs.readFileSync(pidFile, 'utf8').trim(); if (oldPid) try { process.kill(parseInt(oldPid)); } catch(e) {} } catch(e) {}
-    const normalizedPath = normalizePath(proj.path);
-    const wrapperCmd = 'echo $$ > ' + pidFile + '; cd ' + JSON.stringify(normalizedPath).slice(1,-1) + ' && ' + proj.cmd + '; rm -f ' + pidFile;
-    const cmdPath = config.cmdPath || '/mnt/c/Windows/System32/cmd.exe';
-    const title = 'Codex Resume - ' + (proj.name || 'default');
-    const args = ['/c', 'start', title, cmdPath, '/c', '/mnt/c/Windows/System32/wsl.exe', 'bash', '-l', '-c', wrapperCmd];
-    spawn(cmdPath, args, { detached: true, stdio: 'ignore' }).unref();
-    console.log('[proxy] triggerResume: ' + proj.name + ' (' + normalizedPath + ')');
-  } catch(e) { console.error('[proxy] triggerResume error:', e); }
+    fs.writeFileSync(AUTO_RESUME_RUNTIME_FILE, JSON.stringify(payload) + "\n", { mode: 0o600 });
+    autoResumeRuntimeWriteErrorLogged = false;
+  } catch (error) {
+    if (!autoResumeRuntimeWriteErrorLogged) {
+      console.error(`[proxy] Failed to persist auto-resume runtime: ${error.message}`);
+      autoResumeRuntimeWriteErrorLogged = true;
+    }
+  }
+}
+
+function getAutoResumeRuntimeState() {
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    state = { keys: [], activeKey: null, dailyLog: {} };
+  }
+  if (!state.autoResume || typeof state.autoResume !== "object" || Array.isArray(state.autoResume)) {
+    state.autoResume = {};
+  }
+  const runtime = state.autoResume;
+  runtime.lastKeyUseTime = normalizeAutoResumeTimestamp(runtime.lastKeyUseTime);
+  runtime.lastResumeTime = normalizeAutoResumeTimestamp(runtime.lastResumeTime);
+  if (!runtime.projects || typeof runtime.projects !== "object" || Array.isArray(runtime.projects)) {
+    runtime.projects = {};
+  }
+  return runtime;
+}
+
+function restoreAutoResumeRuntimeState() {
+  const runtime = getAutoResumeRuntimeState();
+  const durable = readAutoResumeRuntimeFile();
+  lastKeyUseTime = Math.max(runtime.lastKeyUseTime, durable ? durable.lastKeyUseTime : 0);
+  lastResumeTime = Math.max(runtime.lastResumeTime, durable ? durable.lastResumeTime : 0);
+  runtime.lastKeyUseTime = lastKeyUseTime;
+  runtime.lastResumeTime = lastResumeTime;
+  if (durable && durable.lastTriggerIdleMinutes !== null) {
+    runtime.lastTriggerIdleMinutes = durable.lastTriggerIdleMinutes;
+  }
+  autoResumeStateReady = true;
+  configureAutoResumeTimer();
+}
+
+function initializeAutoResumeKeyUseTime() {
+  if (lastKeyUseTime > 0 || !autoResumeStateReady) return;
+  lastKeyUseTime = Date.now();
+  const runtime = getAutoResumeRuntimeState();
+  runtime.lastKeyUseTime = lastKeyUseTime;
+  runtime.initializedAt = lastKeyUseTime;
+  persistAutoResumeRuntime();
+  saveState(true);
+}
+
+function recordKeyUse(idx, at = Date.now()) {
+  lastKeyUseTime = normalizeAutoResumeTimestamp(at) || Date.now();
+  if (autoResumeStateReady) {
+    const runtime = getAutoResumeRuntimeState();
+    runtime.lastKeyUseTime = lastKeyUseTime;
+    runtime.lastKeyIndex = idx + 1;
+  }
+  // Keep this small heartbeat durable even when the full state write is throttled.
+  persistAutoResumeRuntime();
+  saveState();
+  broadcastStatus();
+}
+
+function autoResumeProjectId(proj, index) {
+  const base = String((proj && proj.name) || "project").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48) || "project";
+  return `${base}_${index + 1}`;
+}
+
+function autoResumeProjectLabel(proj, index) {
+  const name = String((proj && proj.name) || "").trim();
+  return name ? name.slice(0, 80) : `项目 ${index + 1}`;
+}
+
+function autoResumeProjectFiles(proj, index) {
+  const id = autoResumeProjectId(proj, index);
+  return {
+    id,
+    pidFile: `/tmp/codex-resume-${id}.pid`,
+    statusFile: `/tmp/codex-resume-${id}.status`,
+  };
+}
+
+function updateAutoResumeProjectState(id, patch, forceSave) {
+  if (!autoResumeStateReady) return;
+  const runtime = getAutoResumeRuntimeState();
+  runtime.projects[id] = { ...(runtime.projects[id] || {}), ...patch };
+  saveState(forceSave === true);
+}
+
+function readAutoResumePid(pidFile) {
+  try {
+    const raw = fs.readFileSync(pidFile, "utf8").trim();
+    const match = /^(pgid:)?(\d+)$/.exec(raw);
+    if (!match) return null;
+    const pid = parseInt(match[2], 10);
+    if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return null;
+    return { pid, processGroup: Boolean(match[1]) };
+  } catch {
+    return null;
+  }
+}
+
+function stopAutoResumeProcess(pidInfo) {
+  if (!pidInfo) return false;
+  if (pidInfo.processGroup) {
+    try {
+      process.kill(-pidInfo.pid, "SIGTERM");
+      return true;
+    } catch { /* fall through to the leader process */ }
+  }
+  try {
+    process.kill(pidInfo.pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readAutoResumeRunnerStatus(statusFile) {
+  try {
+    const fields = fs.readFileSync(statusFile, "utf8").trim().split("\t");
+    const [phase, rawPid, rawUpdatedAt, rawExitCode] = fields;
+    const allowed = new Set(["starting", "running", "exited", "failed", "terminated", "cd_failed", "launcher_failed"]);
+    if (!allowed.has(phase)) return null;
+    const pid = parseInt(rawPid, 10);
+    const updatedAt = normalizeAutoResumeTimestamp(rawUpdatedAt);
+    const exitCode = rawExitCode === "" || rawExitCode === undefined ? null : parseInt(rawExitCode, 10);
+    if (!updatedAt || (rawPid && (!Number.isSafeInteger(pid) || pid < 0))) return null;
+    return { phase, pid: Number.isSafeInteger(pid) ? pid : 0, updatedAt, exitCode: Number.isSafeInteger(exitCode) ? exitCode : null };
+  } catch {
+    return null;
+  }
+}
+
+function refreshAutoResumeProjectStatus(proj, index) {
+  const { id, statusFile } = autoResumeProjectFiles(proj, index);
+  const status = readAutoResumeRunnerStatus(statusFile);
+  if (!status || !autoResumeStateReady) return;
+  const runtime = getAutoResumeRuntimeState();
+  const previous = runtime.projects[id] || {};
+  if (previous.runnerUpdatedAt === status.updatedAt && previous.phase === status.phase) return;
+
+  updateAutoResumeProjectState(id, {
+    phase: status.phase,
+    runnerPid: status.pid || null,
+    runnerUpdatedAt: status.updatedAt,
+    exitCode: status.exitCode,
+  }, true);
+
+  const label = autoResumeProjectLabel(proj, index);
+  if (status.phase === "running") addEventLog("auto_resume_running", 0, `闲置恢复：${label} 已开始执行`, "");
+  else if (status.phase === "exited") addEventLog("auto_resume_exited", 0, `闲置恢复：${label} 已退出（代码 ${status.exitCode ?? 0}）`, "");
+  else if (status.phase === "terminated") addEventLog("auto_resume_terminated", 0, `闲置恢复：${label} 已被下一次恢复终止`, "");
+  else if (status.phase === "cd_failed") addEventLog("auto_resume_command_failed", 0, `闲置恢复：${label} 无法进入项目目录`, "");
+  else if (status.phase === "failed") addEventLog("auto_resume_command_failed", 0, `闲置恢复：${label} 命令退出失败（代码 ${status.exitCode ?? "未知"}）`, "");
+  else if (status.phase === "launcher_failed") addEventLog("auto_resume_launcher_failed", 0, `闲置恢复：${label} 启动器退出失败`, "");
+}
+
+function configureAutoResumeTimer() {
+  if (autoResumeTimer) { clearInterval(autoResumeTimer); autoResumeTimer = null; }
+  if (!config.autoResume || !autoResumeStateReady) return;
+  for (const proj of config.autoResumeProjects || []) {
+    if (proj.path) proj.path = normalizePath(proj.path);
+  }
+  initializeAutoResumeKeyUseTime();
+  try {
+    checkAutoResume();
+  } catch (error) {
+    console.error(`[proxy] auto-resume initial check failed: ${error.message}`);
+  }
+  autoResumeTimer = setInterval(() => {
+    try { checkAutoResume(); } catch (error) { console.error(`[proxy] auto-resume check failed: ${error.message}`); }
+  }, 30000);
+}
+
+function checkAutoResume(now = Date.now()) {
+  if (!config.autoResume || !autoResumeStateReady || !config.autoResumeProjects || config.autoResumeProjects.length === 0) return;
+  for (let index = 0; index < config.autoResumeProjects.length; index++) {
+    refreshAutoResumeProjectStatus(config.autoResumeProjects[index], index);
+  }
+  initializeAutoResumeKeyUseTime();
+  const idleMinutes = (now - lastKeyUseTime) / 60000;
+  if (idleMinutes < config.autoResumeIdleMinutes) return;
+  const sinceLastResume = (now - lastResumeTime) / 60000;
+  if (sinceLastResume < config.autoResumeDebounceMinutes) return;
+
+  lastResumeTime = now;
+  const runtime = getAutoResumeRuntimeState();
+  runtime.lastResumeTime = lastResumeTime;
+  runtime.lastTriggerIdleMinutes = Math.round(idleMinutes);
+  persistAutoResumeRuntime();
+  saveState(true);
+  broadcastStatus();
+  console.log("[proxy] autoResume triggered after " + Math.round(idleMinutes) + "min without key use");
+  addEventLog("auto_resume_triggered", 0, `闲置恢复触发：Key 已 ${Math.round(idleMinutes)} 分钟未使用`, "");
+  for (let index = 0; index < config.autoResumeProjects.length; index++) {
+    const proj = config.autoResumeProjects[index];
+    if (proj.path && proj.cmd) triggerResume(proj, index);
+  }
+}
+
+function triggerResume(proj, index) {
+  const label = autoResumeProjectLabel(proj, index);
+  const files = autoResumeProjectFiles(proj, index);
+  const normalizedPath = normalizePath(proj.path);
+  if (autoResumeLaunches.has(files.id)) return;
+
+  try {
+    if (!fs.statSync(normalizedPath).isDirectory()) throw new Error("project directory is unavailable");
+    if (!fs.existsSync(RESUME_SCRIPT)) throw new Error("resume launcher is unavailable");
+
+    const oldPid = readAutoResumePid(files.pidFile);
+    if (oldPid) {
+      const stopped = stopAutoResumeProcess(oldPid);
+      addEventLog("auto_resume_replacing", 0, `闲置恢复：${label}${stopped ? " 正在停止上一次命令" : " 发现上一次命令已结束"}`, "");
+    }
+    try { fs.unlinkSync(files.statusFile); } catch { /* stale status is optional */ }
+
+    const startedAt = Date.now();
+    updateAutoResumeProjectState(files.id, { phase: "launching", launchRequestedAt: startedAt, launcherExitCode: null }, true);
+    addEventLog("auto_resume_launching", 0, `闲置恢复：正在启动 ${label}`, "");
+    const child = spawn("/bin/bash", [
+      RESUME_SCRIPT,
+      normalizedPath,
+      String(proj.cmd),
+      files.pidFile,
+      files.statusFile,
+      `Codex Resume - ${files.id}`,
+      config.cmdPath || "/mnt/c/Windows/System32/cmd.exe",
+    ], { detached: true, stdio: "ignore" });
+    autoResumeLaunches.set(files.id, child);
+    let settled = false;
+    const finish = (phase, extra, eventType, message) => {
+      if (settled) return;
+      settled = true;
+      autoResumeLaunches.delete(files.id);
+      updateAutoResumeProjectState(files.id, { phase, launcherUpdatedAt: Date.now(), ...extra }, true);
+      addEventLog(eventType, 0, message, "");
+      broadcastStatus();
+    };
+    child.once("error", error => {
+      finish("launcher_failed", { launcherError: String(error.message || error).slice(0, 160) }, "auto_resume_launcher_failed", `闲置恢复：${label} 启动器失败`);
+    });
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        finish("launcher_accepted", { launcherExitCode: 0, launcherSignal: null }, "auto_resume_launcher_accepted", `闲置恢复：${label} 启动器已接受`);
+      } else {
+        finish("launcher_failed", { launcherExitCode: Number.isInteger(code) ? code : null, launcherSignal: signal || null }, "auto_resume_launcher_failed", `闲置恢复：${label} 启动器退出失败`);
+      }
+    });
+    child.unref();
+    console.log(`[proxy] autoResume launch requested: ${label}`);
+  } catch (error) {
+    updateAutoResumeProjectState(files.id, { phase: "launcher_failed", launcherUpdatedAt: Date.now(), launcherError: String(error.message || error).slice(0, 160) }, true);
+    addEventLog("auto_resume_launcher_failed", 0, `闲置恢复：${label} 无法启动`, "");
+    console.error(`[proxy] autoResume launcher error for ${label}: ${error.message}`);
+  }
 }
 
 function calcNextDailyRun(from, days, hour, min){
@@ -1089,9 +1374,13 @@ function estimateCost(inputBytes, outputBytes) {
 
 // --- State ---
 function loadState() {
+  autoResumeStateReady = false;
   try {
     state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
   } catch {
+    state = { keys: [], activeKey: null, dailyLog: {} };
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
     state = { keys: [], activeKey: null, dailyLog: {} };
   }
   // Migrate old ISO week failPeriod (e.g. "2026-W28") → null for new per-key cycle format
@@ -1104,6 +1393,7 @@ function loadState() {
       }
     }
   }
+  restoreAutoResumeRuntimeState();
 }
 let _saveThrottle = 0;
 function saveState(force) {
@@ -1851,6 +2141,8 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     onDone({ switched: false });
   });
   proxyReq.setTimeout(TIMEOUT);
+  // The request is now flushed with the selected account's Authorization key.
+  proxyReq.once("finish", () => recordKeyUse(idx));
 
   proxyReq.on("error", (err) => {
     if (streamAttached && lifecycle && !clientCancelled && !lifecycle.terminalKind) {
@@ -2028,7 +2320,7 @@ function setupWebSocket(server) {
     }
     wsClients.add(ws);
     const data = buildStatusData();
-    const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode });
+    const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastKeyUseTime, lastResumeTime });
     ws.send(msg);
     ws.on("close", () => wsClients.delete(ws));
     ws.on("error", () => wsClients.delete(ws));
@@ -2037,7 +2329,7 @@ function setupWebSocket(server) {
 
 function broadcastStatus() {
   const data = buildStatusData();
-  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime });
+  const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastKeyUseTime, lastResumeTime });
   lastBroadcast = msg;
   for (const ws of wsClients) {
     if (ws.readyState === 1) ws.send(msg);
@@ -2624,8 +2916,8 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><label><input type="checkbox" id="cfgWeeklySortBy"> 每周重置的 Key 按「最先到期先使用」排序（当日最后），无 resetDay 排最后</label></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🧬 闲置自动恢复（autoResume）</div>
   <div style="color:#94a3b8;padding:4px 0">启用闲置恢复</div>
-  <div><label><input type="checkbox" id="cfgAutoResume"> 代理空闲时自动在 Windows 中打开终端运行项目命令</label></div>
-  <div style="color:#94a3b8;padding:4px 0">空闲阈值（分钟）</div>
+  <div><label><input type="checkbox" id="cfgAutoResume"> Key 闲置时自动在 Windows 中打开终端运行项目命令</label></div>
+  <div style="color:#94a3b8;padding:4px 0">Key 闲置阈值（分钟）</div>
   <div><input id="cfgAutoResumeIdle" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="10"> 分钟无请求视为空闲</div>
   <div style="color:#94a3b8;padding:4px 0">防抖间隔（分钟）</div>
   <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"> 两次触发最小间隔</div>
@@ -2853,7 +3145,7 @@ let sortBy="idx",filterBy="all",trendRange="24h",trendMode="model",searchQ="",st
 let ws=null,wsReconnectTimer=null,pollTimer=null;
 let wsFailed=false;
 let autoRecoverNextTime=0,autoRecoverDailyNextTime=0,autoRecoverPollNextTime=0;
-let lastRequestTime=0,lastResumeTime=0;
+let lastRequestTime=0,lastKeyUseTime=0,lastResumeTime=0;
 let collapsedCards={};
 let updateInfo=null;
 const UPDATE_UI_RECHECK_MS=30*60*1000;
@@ -2963,7 +3255,7 @@ async function httpLoad(){
   try{
     const r=await fetch("http://localhost:3456/__status");
     if(!r.ok)throw new Error("HTTP "+r.status);
-    const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;boostedBatch=j.boostedBatch||[];boostedBatchMode=j.boostedBatchMode||"";if(j.lastRequestTime)lastRequestTime=j.lastRequestTime;if(j.lastResumeTime)lastResumeTime=j.lastResumeTime;render();
+    const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;boostedBatch=j.boostedBatch||[];boostedBatchMode=j.boostedBatchMode||"";if(j.lastRequestTime)lastRequestTime=j.lastRequestTime;if(j.lastKeyUseTime)lastKeyUseTime=j.lastKeyUseTime;if(j.lastResumeTime)lastResumeTime=j.lastResumeTime;render();
   }catch(e){
     if(!wsFailed)document.getElementById("subText").textContent="连接失败，正在重试...";
   }
@@ -2976,7 +3268,7 @@ function connectWS(){
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
-      if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;boostedBatch=msg.boostedBatch||[];boostedBatchMode=msg.boostedBatchMode||"";if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
+      if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;boostedBatch=msg.boostedBatch||[];boostedBatchMode=msg.boostedBatchMode||"";if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastKeyUseTime)lastKeyUseTime=msg.lastKeyUseTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
       if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
         logAllEntries.push(msg.data);
@@ -3084,6 +3376,7 @@ async function loadConfigUI(){
     if(c.autoRecoverDailyNextTime)autoRecoverDailyNextTime=parseInt(c.autoRecoverDailyNextTime);else autoRecoverDailyNextTime=0;
     if(c.autoRecoverPollNextTime)autoRecoverPollNextTime=parseInt(c.autoRecoverPollNextTime);else autoRecoverPollNextTime=0;
     if(c.lastRequestTime)lastRequestTime=parseInt(c.lastRequestTime);else lastRequestTime=Date.now();
+    if(c.lastKeyUseTime)lastKeyUseTime=parseInt(c.lastKeyUseTime);else lastKeyUseTime=0;
     if(c.lastResumeTime)lastResumeTime=parseInt(c.lastResumeTime);else lastResumeTime=0;
     if(window.autoCountTimer)clearInterval(window.autoCountTimer);
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
@@ -3179,10 +3472,10 @@ function updateAutoCountdown(){
   }
   const resumeEl=document.getElementById("cfgAutoResumeStatus");
   if(resumeEl){
-    if(typeof lastResumeTime==='number'&&lastResumeTime>0&&typeof lastRequestTime==='number'){
-      const idleMin=Math.round((Date.now()-lastRequestTime)/60000);
-      const sinceResume=Math.round((Date.now()-lastResumeTime)/60000);
-      resumeEl.textContent="🧬 闲置恢复: 空闲 "+idleMin+"m，上次触发 "+sinceResume+"m 前";
+    if(typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
+      const idleMin=Math.round((Date.now()-lastKeyUseTime)/60000);
+      const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
+      resumeEl.textContent="🧬 闲置恢复: Key 闲置 "+idleMin+"m"+(sinceResume!==null?"，上次触发 "+sinceResume+"m 前":"，等待阈值");
     }else{
       resumeEl.textContent="🧬 闲置恢复: 等待中";
     }
@@ -3465,11 +3758,11 @@ function render(){
   const shieldedCount=data.filter(x=>x.shielded).length;
   if(shieldedCount>0)document.getElementById("filterCount").textContent+="，屏蔽 "+shieldedCount+" 个";
   const dashResume=document.getElementById("dashResumeStatus");
-  if(dashResume&&typeof lastRequestTime==='number'&&lastRequestTime>0){
-    const idleMin=Math.round((Date.now()-lastRequestTime)/60000);
+  if(dashResume&&typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
+    const idleMin=Math.round((Date.now()-lastKeyUseTime)/60000);
     const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
-    if(sinceResume!==null)dashResume.textContent="🧬空闲"+idleMin+"m/恢复"+sinceResume+"m前";
-    else dashResume.textContent="🧬空闲"+idleMin+"m";
+    if(sinceResume!==null)dashResume.textContent="🧬Key闲置"+idleMin+"m/恢复"+sinceResume+"m前";
+    else dashResume.textContent="🧬Key闲置"+idleMin+"m";
   }
   const actKeys=data.filter(x=>x.active);
   if(!window._tickerInit){
@@ -5718,7 +6011,7 @@ function createGroupServer(groupName, port) {
   if (req.method === "GET" && pathname === "/__status") {
     res.writeHead(200, cors);
     const data = buildStatusData();
-    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastResumeTime }, null, 2));
+    res.end(JSON.stringify({ keys: data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastKeyUseTime, lastResumeTime }, null, 2));
     return;
   }
 
@@ -5737,7 +6030,7 @@ function createGroupServer(groupName, port) {
   if (pathname === "/__config") {
     if (req.method === "GET") {
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime, lastRequestTime, lastResumeTime }, null, 2));
+      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime, lastRequestTime, lastKeyUseTime, lastResumeTime }, null, 2));
       return;
     }
     if (req.method === "PUT") {
