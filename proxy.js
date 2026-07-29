@@ -1468,7 +1468,7 @@ function getKeyState(idx) {
   return ks;
 }
 
-function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, model) {
+function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, model, statusCode) {
   const ks = getKeyState(idx);
   const s = ks.stats;
   const cost = estimateCost(inputBytes || 0, outputBytes || 0);
@@ -1504,6 +1504,13 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
   s.hourly[hk].models[_mk].requests++;
   if (inputBytes) s.hourly[hk].models[_mk].inputBytes += inputBytes;
   if (outputBytes) s.hourly[hk].models[_mk].outputBytes += outputBytes;
+  if (statusCode !== undefined) {
+    if (!s.hourly[hk].statusCodes) s.hourly[hk].statusCodes = {};
+    const scKey = statusCode === 200 ? "ok" : (statusCode >= 400 && statusCode < 500 ? "4xx" : (statusCode >= 500 ? "5xx" : "fail"));
+    s.hourly[hk].statusCodes[scKey] = (s.hourly[hk].statusCodes[scKey] || 0) + 1;
+    if (!s.daily[d].statusCodes) s.daily[d].statusCodes = {};
+    s.daily[d].statusCodes[scKey] = (s.daily[d].statusCodes[scKey] || 0) + 1;
+  }
 
   state.activeKey = idx;
   recordSliding(idx, success, duration);
@@ -2018,7 +2025,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       const dur = Date.now() - reqStart;
       activeDecr(idx);
       markFailure(idx, apiRes.statusCode);
-      recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
+      recordRequest(idx, false, 0, 0, dur, null, resolvedModel, apiRes.statusCode);
       recordPath(pathname, method, 0, 0, dur);
       Object.assign(logEntry, { status: apiRes.statusCode, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
       addLog(logEntry);
@@ -2065,7 +2072,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       if (!lifecycle) {
-        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel);
+        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode);
       }
       broadcastStatus();
     };
@@ -2074,7 +2081,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       lifecycle._metricsCallback = (success) => {
         const dur = Date.now() - reqStart;
         const accBytes = transform.accBytes || 0;
-        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel);
+        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel, success ? (apiRes.statusCode || 200) : 0);
         if (!success && !clientCancelled) markFailure(idx, 0);
       };
       lifecycle._onTerminal = completedLifecycle => {
@@ -2156,8 +2163,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     activeDecr(idx);
     console.error(`[proxy] #${idx + 1} Error: ${err.message}`);
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
-    recordPath(pathname, method, 0, 0, dur);
+    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
     addLog(logEntry);
     const _ks3=getKeyState(idx);_ks3.lastStatus=0;_ks3.lastTime=Date.now();_ks3.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
@@ -2179,7 +2185,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     proxyReq.destroy();
     markFailure(idx, 0);
     if (!lifecycle) {
-      recordRequest(idx, false, 0, 0, dur, null, resolvedModel);
+      recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0);
     }
     recordPath(pathname, method, 0, 0, dur);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
@@ -3560,8 +3566,8 @@ function removeResumeProject(btn){
 }
 
 function toggleTrendMode(){
-  trendMode=trendMode==="bytes"?"req":(trendMode==="req"?"model":"bytes");
-  const labels={bytes:"📊 流量趋势",req:"📈 次数趋势",model:"📊 模型趋势"};
+  trendMode=trendMode==="bytes"?"req":(trendMode==="req"?"model":(trendMode==="model"?"health":"bytes"));
+  const labels={bytes:"📊 流量趋势",req:"📈 次数趋势",model:"📊 模型趋势",health:"💚 健康趋势"};
   document.getElementById("trendModeLabel").textContent=labels[trendMode]||"📊 流量趋势";
   renderTrend();
 }
@@ -3572,7 +3578,7 @@ function renderTrend(){
   for(let i=hours-1;i>=0;i--){
     const d=new Date(now-i*3600000);
     const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0"),hh=String(d.getHours()).padStart(2,"0");
-    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,keys:{},models:{}};
+    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,keys:{},models:{},status:{}};
   }
   const allModels={};
   for(const a of data){
@@ -3596,6 +3602,12 @@ function renderTrend(){
           allModels[mk]+=mv.requests||0;
         }
       }
+      if(v.statusCodes){
+        for(const [scKey,scVal] of Object.entries(v.statusCodes)){
+          if(!h.status[scKey])h.status[scKey]=0;
+          h.status[scKey]+=scVal;
+        }
+      }
     }
   }
   const modelColors=["#3b82f6","#f59e0b","#10b981","#ef4444","#8b5cf6","#ec4899","#06b6d4","#f97316"];
@@ -3610,6 +3622,9 @@ function renderTrend(){
   let vals,max;
   if(trendMode==="model"){
     vals=keys.map(k=>{let s=0;for(const mk of topModels)s+=hMap[k].models[mk]?.requests||0;if(sortedModels.length>8){for(const [mk,mv] of Object.entries(hMap[k].models)){if(!topModels.includes(mk))s+=mv.requests||0;}}return s;});
+    max=Math.max(...vals,1);
+  }else if(trendMode==="health"){
+    vals=keys.map(k=>{const s=hMap[k].status;return(s.ok||0)+(s["4xx"]||0)+(s["5xx"]||0)+(s.fail||0);});
     max=Math.max(...vals,1);
   }else{
     vals=keys.map(k=>hMap[k][trendMode]);
@@ -3659,6 +3674,35 @@ function renderTrend(){
     const legendHtml=legendModels.map(mk=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+modelColorMap[mk]+'"></span>'+esc(mk)+' ('+allModels[mk]+')</span>').join("");
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML=legendHtml;
+  }else if(trendMode==="health"){
+    bars.innerHTML=keys.map((k,i)=>{
+      const h=hMap[k];
+      const st=h.status||{};
+      const ok=st.ok||0,c4xx=st["4xx"]||0,c5xx=st["5xx"]||0,fail=st.fail||0;
+      const total=ok+c4xx+c5xx+fail;
+      const lines=[];
+      const mmdd=k.slice(0,10),hh=k.slice(11);
+      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+      lines.push("合计: "+total+"次");
+      if(ok)lines.push("  200: "+ok+"次");
+      if(c4xx)lines.push("  4xx: "+c4xx+"次");
+      if(c5xx)lines.push("  5xx: "+c5xx+"次");
+      if(fail)lines.push("  失败: "+fail+"次");
+      const pct=s=>total?s/total*100:0;
+      const segments=[];
+      if(ok)segments.push('<div class="trend-seg" style="height:'+pct(ok)+'%;background:#22c55e"></div>');
+      if(c4xx)segments.push('<div class="trend-seg" style="height:'+pct(c4xx)+'%;background:#eab308"></div>');
+      if(c5xx)segments.push('<div class="trend-seg" style="height:'+pct(c5xx)+'%;background:#ef4444"></div>');
+      if(fail)segments.push('<div class="trend-seg" style="height:'+pct(fail)+'%;background:#6b7280"></div>');
+      const barH=Math.max(2,vals[i]/max*80);
+      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n"))+'">'+segments.join("")+'</div>';
+    }).join("");
+    const legendEl=document.getElementById("trendLegend");
+    if(legendEl)legendEl.innerHTML=
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#22c55e"></span>200</span>'+
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#eab308"></span>4xx</span>'+
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#ef4444"></span>5xx</span>'+
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#6b7280"></span>失败</span>';
   }else{
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];

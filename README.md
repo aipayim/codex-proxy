@@ -1283,7 +1283,7 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 - **2026-07-28 版本基线修正**：移除固定本地版本和具体本机目录说明。`updateBaselineTag` 保留为定制构建的高级手动基线；来源未知时只展示 Release，不误报更新。覆盖式一键升级继续禁用。
 - **2026-07-28 重启计时与版本检查**：重启遮罩新增独立 1 秒计时和状态请求超时，不再因旧进程连接切换而停在 `0 秒`。Dashboard 新增 GitHub Release 缓存检查、更新闪烁标识、版本/Release Notes 弹窗及系统配置版本链接；覆盖式一键升级保持禁用。
 - **2026-07-28 Dashboard 重启进度**：系统配置的「重启代理」新增全屏动态进度，展示排空与 watchdog 恢复状态；通过实例 ID 确认新进程就绪后自动刷新面板。新增 `GET /__restart-status`，重启期间 API 请求明确返回短暂不可用状态。
-- **2026-07-28 Dashboard 周重置日筛选**：主面板选择「每周重置」后显示周重置日下拉，可筛选全部、周一至周日或自动重置的 Key；筛选结果继续支持既有卡片勾选和批量操作。
+- **2026-07-28 健康趋势图**：趋势图新增第 4 模式「健康趋势」，每个时段显示 200/4xx/5xx/失败的堆叠柱状图，支持 24h/7d/30d 时段；后端 `recordRequest` 新增 `statusCode` 参数，请求状态码按小时聚合存入 `hourly.statusCodes`，随 WebSocket 推送至前端
 - **2026-07-28 close15 安全加固**：fetch 包装器改用 `new URL()` origin 判断（不再用字符串包含）；WebSocket 连接需 token 认证；`/metrics` 纳入管理 Token 认证范围；watchdog drain 超时 30s 后自动 kill 孤儿进程（不再无限等待）
 - **2026-07-28 close14 安全加固**：timeout 重试修复（首包前超时不再浪费可用 Key）；watchdog drain 冲突修复（端口空闲但旧进程未退时不抢先启动新进程）；`/__admin_token` → `/__auth_check`（不再暴露实际 Token）；fetch 包装器仅对同源请求附加 Authorization
 
