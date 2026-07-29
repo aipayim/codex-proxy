@@ -1508,10 +1508,13 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
 
   const now = new Date();
   const hk = d + "-" + String(now.getHours()).padStart(2, "0");
-  if (!s.hourly[hk]) s.hourly[hk] = { requests: 0, inputBytes: 0, outputBytes: 0, models: {} };
+  if (!s.hourly[hk]) s.hourly[hk] = { requests: 0, inputBytes: 0, outputBytes: 0, totalCost: 0, totalDuration: 0, totalTtfb: 0, models: {} };
   s.hourly[hk].requests++;
   if (inputBytes) s.hourly[hk].inputBytes += inputBytes;
   if (outputBytes) s.hourly[hk].outputBytes += outputBytes;
+  s.hourly[hk].totalCost = (s.hourly[hk].totalCost || 0) + cost;
+  if (duration) s.hourly[hk].totalDuration = (s.hourly[hk].totalDuration || 0) + duration;
+  if (ttfb) s.hourly[hk].totalTtfb = (s.hourly[hk].totalTtfb || 0) + ttfb;
   const _mk = model || "(未知)";
   if (!s.hourly[hk].models[_mk]) s.hourly[hk].models[_mk] = { requests: 0, inputBytes: 0, outputBytes: 0 };
   s.hourly[hk].models[_mk].requests++;
@@ -2482,7 +2485,7 @@ function getDashboardHTML() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenAPI 多 Key 代理监控</title>
+<title>OpenAPI Multi-Key Proxy</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;padding:clamp(8px,2vw,20px)}
@@ -2587,6 +2590,10 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .trend-legend{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:6px;font-size:clamp(9px,1.2vw,11px);color:#94a3b8}
 .trend-legend-item{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .trend-legend-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+.trend-tabs{display:flex;gap:4px;flex-wrap:wrap}
+.trend-tab{padding:2px 8px;font-size:clamp(11px,1.2vw,12px);color:#64748b;background:#1e293b;border:1px solid #334155;border-radius:4px;cursor:pointer;user-select:none;white-space:nowrap}
+.trend-tab:hover{background:#334155;color:#e2e8f0}
+.trend-tab.active{background:#3b82f6;color:#fff;border-color:#3b82f6}
 .log-table{width:100%;border-collapse:collapse;font-size:clamp(10px,1.3vw,11px)}
 .log-table th,.log-table td{padding:2px 4px;text-align:left;border-bottom:1px solid #334155;white-space:nowrap}
 .log-table th{color:#94a3b8;font-weight:600;position:sticky;top:0;background:#1e293b}
@@ -2669,7 +2676,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 </head>
 <body>
 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-<h1>OpenAPI 多 Key 代理监控</h1>
+<h1>OpenAPI Multi-Key Proxy</h1>
 <div style="display:flex;gap:6px;flex-wrap:wrap">
 <button class="btn" onclick="openLogs()">📋 日志</button>
 <button class="btn" onclick="openExportCover()">⬇ 导出 CSV</button>
@@ -2722,7 +2729,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
-<div class="trend-title"><span id="trendModeLabel" style="cursor:pointer;user-select:none" onclick="toggleTrendMode()">📊 模型趋势</span><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
+<div class="trend-title"><div class="trend-tabs" id="trendTabs"><span class="trend-tab active" data-mode="model" onclick="setTrendMode('model')">📊 模型</span><span class="trend-tab" data-mode="bytes" onclick="setTrendMode('bytes')">📊 流量</span><span class="trend-tab" data-mode="req" onclick="setTrendMode('req')">📈 次数</span><span class="trend-tab" data-mode="health" onclick="setTrendMode('health')">💚 健康</span><span class="trend-tab" data-mode="cost" onclick="setTrendMode('cost')">💰 费用</span><span class="trend-tab" data-mode="latency" onclick="setTrendMode('latency')">⏱ 延迟</span></div><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
 <div class="trend-bars" id="trendBars"></div>
 <div class="trend-labels" id="trendLabels"></div>
 <div id="trendLegend" class="trend-legend"></div>
@@ -3584,10 +3591,11 @@ function removeResumeProject(btn){
   }
 }
 
-function toggleTrendMode(){
-  trendMode=trendMode==="bytes"?"req":(trendMode==="req"?"model":(trendMode==="model"?"health":"bytes"));
-  const labels={bytes:"📊 流量趋势",req:"📈 次数趋势",model:"📊 模型趋势",health:"💚 健康趋势"};
-  document.getElementById("trendModeLabel").textContent=labels[trendMode]||"📊 流量趋势";
+function setTrendMode(mode){
+  trendMode=mode;
+  document.querySelectorAll("#trendTabs .trend-tab").forEach(function(el){
+    el.classList.toggle("active",el.getAttribute("data-mode")===mode);
+  });
   renderTrend();
 }
 function renderTrend(){
@@ -3597,7 +3605,7 @@ function renderTrend(){
   for(let i=hours-1;i>=0;i--){
     const d=new Date(now-i*3600000);
     const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0"),hh=String(d.getHours()).padStart(2,"0");
-    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,keys:{},models:{},status:{}};
+    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,totalCost:0,totalDuration:0,keys:{},models:{},status:{}};
   }
   const allModels={};
   for(const a of data){
@@ -3608,6 +3616,7 @@ function renderTrend(){
       const h=hMap[hk];
       const ib=v.inputBytes||0,ob=v.outputBytes||0;
       h.input+=ib;h.output+=ob;h.bytes+=ib+ob;h.req+=v.requests||0;
+      h.totalCost+=v.totalCost||0;h.totalDuration+=v.totalDuration||0;
       if(!h.keys[ai])h.keys[ai]={bytes:0,req:0};
       h.keys[ai].bytes+=ib+ob;
       h.keys[ai].req+=v.requests||0;
@@ -3644,6 +3653,9 @@ function renderTrend(){
     max=Math.max(...vals,1);
   }else if(trendMode==="health"){
     vals=keys.map(k=>{const s=hMap[k].status;return(s.ok||0)+(s["4xx"]||0)+(s["5xx"]||0)+(s.fail||0);});
+    max=Math.max(...vals,1);
+  }else if(trendMode==="latency"){
+    vals=keys.map(k=>{const h=hMap[k];return h.req>0?Math.round(h.totalDuration/h.req):0;});
     max=Math.max(...vals,1);
   }else{
     vals=keys.map(k=>hMap[k][trendMode]);
@@ -3722,6 +3734,30 @@ function renderTrend(){
       '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#eab308"></span>4xx</span>'+
       '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#ef4444"></span>5xx</span>'+
       '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#6b7280"></span>失败</span>';
+  }else if(trendMode==="cost"){
+    bars.innerHTML=keys.map((k,i)=>{
+      const h=hMap[k];
+      const lines=[];
+      const mmdd=k.slice(0,10),hh=k.slice(11);
+      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+      lines.push("费用: $"+h.totalCost.toFixed(6));
+      return '<div class="trend-bar" style="height:'+Math.max(2,vals[i]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
+    }).join("");
+    const legendEl=document.getElementById("trendLegend");
+    if(legendEl)legendEl.innerHTML="";
+  }else if(trendMode==="latency"){
+    bars.innerHTML=keys.map((k,i)=>{
+      const h=hMap[k];
+      const avg=h.req>0?Math.round(h.totalDuration/h.req):0;
+      const lines=[];
+      const mmdd=k.slice(0,10),hh=k.slice(11);
+      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+      lines.push("平均延迟: "+fmtDur(avg));
+      if(h.req)lines.push("请求数: "+h.req+"次");
+      return '<div class="trend-bar" style="height:'+Math.max(2,vals[i]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
+    }).join("");
+    const legendEl=document.getElementById("trendLegend");
+    if(legendEl)legendEl.innerHTML="";
   }else{
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
@@ -3734,7 +3770,7 @@ function renderTrend(){
         const kv=h.keys[ki];
         lines.push("  #"+ki+"  "+fmtBytes(kv.bytes)+"  "+kv.req+"次");
       }
-      return '<div class="trend-bar" style="height:'+Math.max(2,hMap[k][trendMode]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
+      return '<div class="trend-bar" style="height:'+Math.max(2,vals[i]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
     }).join("");
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML="";
@@ -3747,7 +3783,7 @@ function renderTrend(){
     const vis=i%labelStep===0;
     return '<div class="trend-label" style="'+(vis?"":"visibility:hidden;font-size:0")+'">'+text+'</div>';
   }).join("");
-  document.getElementById("trend").style.display=vals.some(v=>v>0)?"block":"none";
+  document.getElementById("trend").style.display="block";
   document.getElementById("trendRangeLabel").textContent={"24h":"24小时","7d":"7天","30d":"30天"}[trendRange];
 }
 
