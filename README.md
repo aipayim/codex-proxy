@@ -35,11 +35,13 @@ codex-proxy/
 ├── edit-keys.sh          # 命令行快速编辑 keys.json 的辅助脚本
 ├── package.json          # npm 依赖（仅 ws）
 ├── build-release.js      # 生成带来源及完整性元数据的发布资产
+├── log-query-worker.js   # 历史 JSONL 查询与汇总 Worker（不阻塞代理主线程）
 ├── test-release-provenance.js # 发布来源判定回归测试
 ├── test-stream-lifecycle.js # Responses 流终态回归测试
 ├── test-restart-lifecycle.js # 重启排空、取消与强制重启回归测试
 ├── test-auto-resume-lifecycle.js # Key 心跳闲置恢复与 watchdog 重载回归测试
-├── logs/                 # 自动生成，按天滚动的 JSONL 日志文件（保留 N 天）
+├── test-log-operations-lifecycle.js # 日志游标、汇总与事件处置回归测试
+├── logs/                 # 自动生成，按天滚动的 JSONL 日志及本地汇总/事件 sidecar（保留 N 天）
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
 ├── resume-codex.sh       # autoResume 辅助脚本：通过 cmd.exe 创建 Windows 可见终端运行 wsl 命令
@@ -64,7 +66,9 @@ GitHub 源码仓库保留构建器和全部回归测试，供发布维护者在�
 | `test-stream-lifecycle.js` | Responses 流终态回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-restart-lifecycle.js` | 重启生命周期回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-auto-resume-lifecycle.js` | Key 心跳闲置恢复与 watchdog 重载回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-log-operations-lifecycle.js` | 日志查询、汇总与事件处置回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `proxy.js` | 核心代理（含内嵌面板） | 复制到目标目录即可 |
+| `log-query-worker.js` | 历史日志查询与汇总 Worker | 必须与 `proxy.js` 同级 |
 | `dashboard.html` | 独立面板备用 | 同目录放置 |
 | `package.json` | npm 依赖声明 | 复制后 `npm install` |
 | `watchdog.sh` | 进程守护（WSL2） | 复制到同目录；脚本自动以自身位置作为代理目录 |
@@ -475,25 +479,23 @@ codex
 📂 按钮一键折叠/展开全部卡片
 
 ### 日志查看器
-顶部统计卡片展示全局指标：总请求数、成功率（按百分比着色：≥95% 绿、≥80% 黄、<80% 红）、平均耗时、P95、P99、4xx 数、5xx 数、超时数。
-统计卡片下方为 **30 分钟请求量 sparkline 图**（蓝色柱=成功请求，红色柱=含错误的分钟，悬停显示具体数字）和 **模型分布行**（Top 8 模型：请求数、错误数、平均耗时，点击 Key 号可查看该 Key 的独立统计弹窗）。
-可折叠 **错误分布区**：按错误码和流中断聚类显示次数（超时/4xx/5xx/流中断），点击展开详情。
-表格列：序 / 时间（可排序） / Key 序号（可排序，点击弹出该 Key 独立统计卡片） / 上游 URL / HTTP 方法 / 模型（可排序） / 路径 / 状态码（可排序） / 上行流量 / 下行流量 / 耗时（可排序） / 首字节耗时。
-事件行（紫色/绿色/红色/橙色背景）：协议转换（带 `R→C`/`M→C`/`C→M` 方向标签）、自动恢复、自动锁死、废弃、流终态——以不同颜色区分。
-**点击行展开详情**：显示完整时间戳、模型、协议转换标志、URL、请求/响应字节数，以及流 ID、终态、终态原因和是否收到 `[DONE]`。
-实时推送：WebSocket 自动追加新日志到当前页末尾，同时更新 sparkline/模型分布/错误聚类。
-分页：每页 200 条，上一页/下一页按钮 + 页码显示。
-支持筛选：按 Key 序号、状态码（支持 `4xx` `5xx` 通配）、模型名子串、时间范围（5 分钟/15 分钟/1 小时/24 小时/7 天/30 天/自定义范围）。
-自定义范围使用 `<input type="datetime-local">` 选择起止时间，选中「自定义范围」后显示输入框。
-选择 24h/7d/30d 或自定义范围时，服务端自动读取 `logs/` 目录下的历史 JSONL 文件与内存日志合并去重，支持回溯已保存的日志文件。
-支持 CSV 导出当前筛选结果。
-服务端 `GET /__logs` 返回 `{ entries: [...], stats: { total, totalAll, successRate, p95, p99, avgDuration, error4xx, error5xx, errorTimeout, errorStream } }` 结构（`totalAll` 为全量行数，用于分页计算）。
+打开日志不会同步读取完整日志文件。默认“即时视图”优先返回内存中的最新 50 条；若代理刚重启、内存记录不足，会由 `log-query-worker.js` 异步回读最多 100 条已保存日志，与内存记录去重合并后显示最近 50 条。因此重启后打开日志仍会显示保存的历史尾部，并在面板中标注“历史尾部”。该读取不依赖“日志文件”开关：即使已停止写入新文件，只要旧 JSONL 仍在，仍可查询和导出。面板还会显示发现和扫描的历史文件数；Worker 暂不可用时，会明确说明仅显示当前内存记录。表格只创建当前可见行；WebSocket 也仅在日志窗口打开时订阅，实时到达的记录每 350ms 批量刷新一次。
+
+默认日志页展示最新 50 条；点击“浏览历史”可切换到可分页的历史视图，再用上一页、下一页按游标翻看旧记录，并可随时返回最新视图。筛选、指定时间范围或导出也会进入历史模式。未填写时间范围即查询全部可用时间，不会被当作 Unix 时间 0。历史 JSONL 由 `log-query-worker.js` 反向分块扫描，主代理不读取整文件、不做全量行数统计；每页最多 100 条，通过游标前后翻页，单次查询受 64MB / 30 秒边界保护。关闭窗口或发起新查询会取消旧查询。
+
+统计卡片、最近 30 分钟趋势、模型分布和错误分布来自服务端分钟/日汇总，而非当前表格页面。汇总保存在 `logs/.log-summary.json`；首次缺失时会在后台 Worker 自动重建，亦可手动点击“重建汇总”。日汇总跨自然日边界时标记为近似值，不会阻塞代理请求。
+
+支持按 Key、状态码（含 `4xx` / `5xx`）、模型、上游域名、路径、分组、全文和时间范围筛选。表格保留请求与运行事件，点击行按需展开完整的流终态、URL、耗时和字节详情。CSV / JSONL 历史导出同样走 Worker，最多导出 2000 条。
+
+日志窗口内置“运行事件”中心。它会按上游、模型、路径和分组监测失败突增、流终态失败和可选的 P95 延迟劣化；可确认、静默或启用桌面/Webhook 通知。“刷新事件”会显示刷新中、成功时间或失败状态。对分组事件可人工临时暂停 1–60 分钟，暂停期间该分组的新代理请求返回 `503`，可随时恢复。该操作不会自动修改 Key、不会自动重启代理，且暂停状态不跨代理重启保留。
+
+`GET /__logs` 返回 `{ entries, stats, overview, mode, hasMore, nextCursor, truncated }`：无筛选时为 `recent`，内存不足会补齐已保存的日志尾部；有筛选/游标/时间范围时为 `history`。`recent` 响应还会带 `source`、`historyChecked`、`historyUnavailable`、`historyFilesAvailable` 和 `historyFilesScanned`；`history` 响应带 `filesAvailable` 和 `filesScanned`。这些字段分别说明是否包含保存历史、是否完成尾部检查、Worker 是否暂不可用，以及发现/实际扫描的符合格式的日志文件数。`overview` 是服务端汇总；`truncated=true` 表示本页触及扫描边界，应缩小筛选范围或继续使用时间/维度筛选。
 
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -522,8 +524,12 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
 | `/__test_port?port=3457` | GET | 检测分组端口是否运行（查询内存中 `servers` 注册表） |
 | `/__keys` `_batchGroup` | PUT | 批量迁移分组：`{"_batchGroup":"B", …完整 keys 数组…}` |
-| `/__logs` | GET | 请求日志（`?key=11&status=502&model=gpt-5.6-sol&since=ts&until=ts&limit=200&offset=0&format=csv`，支持 `4xx`/`5xx` 通配） |
-| `/__export-logs` | GET | 导出历史日志（`?date=2026-07-10&key=11&status=502&model=gpt-5.6-sol&format=csv`，无 date 时返回内存日志） |
+| `/__logs` | GET | 日志查询。无筛选默认返回最新 50 条，内存不足时由 Worker 补齐已保存日志尾部；筛选、时间范围或 `cursor` 自动进入 Worker 历史模式。支持 `key/status/model/upstream/path/group/q/since/until/limit/cursor`，状态可用 `4xx`/`5xx` 通配；返回游标而非 `offset`/总行数 |
+| `/__export-logs` | GET | Worker 历史导出（`?date=2026-07-10&key=11&status=502&model=gpt-5.6-sol&format=csv` 或 `jsonl`），最多 2000 条 |
+| `/__log-overview` | GET | 服务端分钟/日汇总，支持 `since/until`，返回趋势、维度分布、统计及当前运行事件 |
+| `/__incidents` | GET | 日志事件、临时分组暂停和汇总重建状态 |
+| `/__incident-action` | POST | 人工处置日志事件：`acknowledge`、`snooze`、`pause_group`、`resume_group`；暂停仅允许有效分组且最长 60 分钟 |
+| `/__logs/rebuild-summary` | POST | 在后台 Worker 重建历史日汇总；返回 `202`，不阻塞代理请求 |
 | `/__export` | GET | CSV 导出统计报表 |
 | `/__pathstats` | GET | 按路径/模型的请求分布 |
 | `/metrics` | GET | Prometheus 格式指标 |
@@ -751,6 +757,20 @@ npm run build:release -- --tag v1.2.3 --out ./dist
   "logFile": true,
   "logRetentionDays": 7,
   "logDetail": "full",
+  "logIncidents": {
+    "enabled": true,
+    "notify": false,
+    "latencyEnabled": false,
+    "windowMinutes": 5,
+    "minRequests": 8,
+    "errorBurst": 5,
+    "errorRatePercent": 60,
+    "streamFailureBurst": 3,
+    "p95Ms": 120000,
+    "p95TtfbMs": 20000,
+    "resolveAfterMinutes": 5,
+    "defaultSnoozeMinutes": 15
+  },
   "updateBaselineTag": "",
   "groups": {
     "A": 3456,
@@ -794,9 +814,10 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `enableAutoLock` | 是否启用自动锁死（true/false，默认 true） |
 | `lockAfterFailCount` | 连续 N 次失败后自动锁死（默认 3） |
 | `lockFailCodes` | 只有这些错误码会计入连续失败计数（默认 `["401","403"]`） |
-| `logFile` | 是否启用文件日志（true/false，默认 true）。关闭后仅内存缓存 2000 条，不写磁盘 |
+| `logFile` | 是否启用文件日志（true/false，默认 true）。关闭后仅内存缓存 2000 条，不再写入新日志；已有 JSONL 仍可在日志查看器中查询和导出 |
 | `logRetentionDays` | 日志文件保留天数（默认 7）。设为 0 关闭自动清理 |
 | `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
+| `logIncidents` | 日志事件规则对象。可配置是否启用/通知、观察窗口、最低请求数、失败次数及失败率、流失败次数、可选 P95 请求/首字节阈值、自动恢复时间和默认静默分钟数；默认只告警，不会自动暂停分组、重启或变更 Key |
 | `updateBaselineTag` | 高级可选项。定制构建的已人工确认上游稳定 Release Tag，格式 `vX.Y.Z` 或 `X.Y.Z`。官方发布资产和干净官方 Git Tag 自动识别，无需填写；来源未知的定制构建留空时只显示 Release 信息，不比较更新 |
 | `groups` | 端口分组映射，如 `{"A": 3456, "B": 3457}`。A 组始终运行且不可删除，B/C/D 等通过面板动态管理 |
 | `groupEnabled` | 分组开关状态，如 `{"B": true, "C": false}`。关闭的分组重启后不启动端口。默认全部启用 |
@@ -1283,7 +1304,7 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
-- **2026-07-29 日志系统性能优化**：`countAllEntries()` 改用运行时计数器替代每次请求读取全部日志文件（消除 8.4MB 同步磁盘 I/O）；默认视图倒序读取最新日志文件合并内存数据（兼顾历史可见性与性能）；`stats.totalAll` 用运行时计数器保证分页总页数准确；添加统计懒计算（仅首页计算 p95/p99）；后端 2s 响应缓存；WebSocket 日志图表渲染添加 500ms 防抖；`renderLogSparkline()` 添加版本缓存避免重复计算；修复 `_logSparkCache` 变量错放在 Node 端导致柱状图/统计不显示的 bug；HTML title 属性 `\n` 改为 `&#10;` 实现多行 tooltip；日志表格容器添加 max-height 滚动
+- **2026-07-30 日志查询与事件处置**：默认日志视图优先使用内存尾部 50 条；代理重启后内存不足时由受限 Worker 补齐已保存的日志尾部，避免误以为历史日志被清空。修复未填写时间范围被误解析为 Unix 时间 0、导致历史与内存日志同时被筛空的问题。历史筛选、游标分页和导出同样由 Worker 反向扫描 JSONL，取消主线程全量计数/读取。新增分钟与日汇总、首次缺失时后台重建、按需 WebSocket 订阅及 350ms 批量刷新。新增按上游/模型/路径/分组的日志事件中心，可确认、静默、发送通知，并可人工临时暂停或恢复分组；不会自动修改 Key 或重启代理。
 - **2026-07-29 Release 运行时精简**：构建产物不再包含构建器或任何回归测试；Release 内的 `package.json` 移除源码专用脚本，测试和构建固定在 GitHub 源码仓库完成。
 - **2026-07-28 可取消与强制重启控制**：安全重启排空阶段新增取消控制，恢复新请求接入但不虚假恢复已拒绝的排队请求；排空满 30 秒后才允许二次确认强制重启。强制重启明确记录和提示会中断活跃流，新增重启生命周期回归测试，并同步独立备用面板。
 - **2026-07-28 Key 心跳闲置恢复与 watchdog 重载**：闲置恢复改为仅依据实际应用上游 Key 的持久化心跳，不再受普通请求或状态文件节流影响；启动/保存配置后立即检查。安全重启在排空后请求 watchdog `exec` 重载自身，保持单实例锁，并新增闲置恢复与 watchdog 重载回归测试。

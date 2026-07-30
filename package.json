@@ -4,7 +4,7 @@
   "description": "## 目录结构",
   "main": "proxy.js",
   "scripts": {
-    "test": "node test-release-provenance.js && node test-stream-lifecycle.js && node test-restart-lifecycle.js && node test-auto-resume-lifecycle.js",
+    "test": "node test-release-provenance.js && node test-stream-lifecycle.js && node test-restart-lifecycle.js && node test-auto-resume-lifecycle.js && node test-log-operations-lifecycle.js",
     "build:release": "node build-release.js"
   },
   "keywords": [],

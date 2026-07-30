@@ -6,6 +6,7 @@ const path = require("path");
 const { URL } = require("url");
 const { Transform } = require("stream");
 const { spawn, spawnSync } = require("child_process");
+const { Worker } = require("worker_threads");
 const { WebSocketServer } = require("ws");
 
 const PORT = 3456;
@@ -25,6 +26,9 @@ const QUEUE_TIMEOUT = 30000;
 const RESTART_FORCE_MIN_WAIT_MS = 30000;
 let STREAM_LIFETIME = 1800000;
 const LOG_DIR = path.join(__dirname, "logs");
+const LOG_QUERY_WORKER_FILE = path.join(__dirname, "log-query-worker.js");
+const LOG_SUMMARY_FILE = path.join(LOG_DIR, ".log-summary.json");
+const LOG_INCIDENT_STATE_FILE = path.join(LOG_DIR, ".log-incidents.json");
 const PID_FILE = path.join(__dirname, "proxy.pid");
 const UPSTREAM_REPOSITORY = "aipayim/codex-proxy";
 const UPSTREAM_REPOSITORY_URL = "https://github.com/aipayim/codex-proxy";
@@ -47,13 +51,27 @@ const RELEASE_INTEGRITY_FILES = new Set([
   "resume-codex.sh",
   "edit-keys.sh",
   "codex-proxy.service",
+  "log-query-worker.js",
 ]);
-const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json"]);
+const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json", "log-query-worker.js"]);
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_CHECK_MIN_REFRESH_MS = 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 8000;
 const UPDATE_MAX_RESPONSE_BYTES = 64 * 1024;
 const UPDATE_MAX_RELEASE_NOTES_CHARS = 24000;
+const LOG_RECENT_DEFAULT_LIMIT = 50;
+const LOG_HISTORY_MAX_LIMIT = 100;
+const LOG_EXPORT_MAX_LIMIT = 2000;
+const LOG_QUERY_MAX_SCAN_BYTES = 64 * 1024 * 1024;
+const LOG_QUERY_TIMEOUT_MS = 30000;
+const LOG_QUERY_MAX_QUEUE = 3;
+const LOG_ROLLUP_RETENTION_MS = 24 * 60 * 60 * 1000;
+const LOG_SUMMARY_SCHEMA = 1;
+const LOG_SUMMARY_PERSIST_DELAY_MS = 30000;
+const LOG_INCIDENT_PERSIST_DELAY_MS = 3000;
+const LOG_INCIDENT_EVALUATION_DELAY_MS = 3000;
+const LOG_LATENCY_BOUNDS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, 120000, 300000, 900000, 1800000];
+const LOG_DIMENSION_LIMITS = { upstream: 32, model: 48, path: 32, group: 16, key: 256 };
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
 let LOG_DETAIL = "full";
@@ -84,6 +102,7 @@ function isBailian(url) { return supportsCacheControl(url); }
 // --- End protocol hosts ---
 let logStream = null;
 let logDate = null;
+let logCleanupInFlight = false;
 
 let accounts = [];
 let state = { keys: [], activeKey: null, dailyLog: {} };
@@ -106,7 +125,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, updateBaselineTag: "" };
+let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, updateBaselineTag: "", logIncidents: {} };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -121,8 +140,23 @@ let lastRequestTime = Date.now();
 let lastKeyUseTime = 0;
 let lastResumeTime = 0;
 let autoResumeTimer = null;
-let logWrittenCount = 0;
-const _logCache = { key: "", result: null, time: 0, ttl: 2000 };
+const logMinuteBuckets = new Map();
+const logDailySummaries = new Map();
+const logSummaryPendingEntries = [];
+const logIncidents = new Map();
+const groupPauses = new Map();
+const logWorkerQueue = [];
+let activeLogWorkerJob = null;
+let logSummaryPersistTimer = null;
+let logSummaryPersisting = false;
+let logSummaryDirty = false;
+let logIncidentPersistTimer = null;
+let logIncidentPersisting = false;
+let logIncidentDirty = false;
+let logIncidentEvaluationTimer = null;
+let logSummaryLoaded = false;
+let logIncidentsLoaded = false;
+let logSummaryRebuildState = { phase: "idle", startedAt: 0, finishedAt: 0, error: "", rebuiltDays: 0 };
 let autoResumeStateReady = false;
 let autoResumeRuntimeWriteErrorLogged = false;
 const autoResumeLaunches = new Map();
@@ -635,6 +669,8 @@ setInterval(() => {
   const qcut = Date.now() - 30000;
   requestQueue = requestQueue.filter(r => r.time > qcut && !r.clientRes.destroyed);
   cleanOldLogs();
+  pruneLogRollups();
+  scheduleLogIncidentEvaluation();
 }, 600000); // every 10 minutes
 
 function loadConfig() {
@@ -675,6 +711,7 @@ function loadConfig() {
     config.logFile = LOG_FILE_ENABLED;
     config.logRetentionDays = LOG_RETENTION_DAYS;
     config.logDetail = LOG_DETAIL;
+    config.logIncidents = normalizeLogIncidentConfig(c.logIncidents);
     STREAM_LIFETIME = Math.min(7200000, Math.max(60000, parseInt(c.streamLifetime) || 1800000));
     config.streamLifetime = STREAM_LIFETIME;
     config.adminToken = c.adminToken || "";
@@ -692,6 +729,7 @@ function loadConfig() {
     }
     if (!config.groups["A"]) config.groups["A"] = 3456;
   } catch { /* defaults */ }
+  config.logIncidents = normalizeLogIncidentConfig(config.logIncidents);
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
     const ms = config.autoRecoverInterval * 3600000;
@@ -1147,6 +1185,7 @@ function autoRecover(optCodes){
 function addLog(entry) {
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  recordLogSummary(entry);
   if (LOG_FILE_ENABLED) writeLogEntry(entry);
   broadcastLog(entry);
 }
@@ -1155,6 +1194,7 @@ function addEventLog(eventType, idx, message, url) {
   const entry = { time: Date.now(), type: "event", eventType, idx, message, url: url || "" };
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  recordLogSummary(entry);
   if (LOG_FILE_ENABLED) writeLogEntry(entry);
   broadcastLog(entry);
 }
@@ -1176,28 +1216,13 @@ function addStreamTerminalLog(idx, lifecycle) {
   };
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  recordLogSummary(entry);
   if (LOG_FILE_ENABLED) writeLogEntry(entry);
   broadcastLog(entry);
 }
 
 function isRequestLogFailure(entry) {
   return entry.status === 0 || entry.status >= 400 || entry.streamOutcome === "failed";
-}
-
-function requestLogDedupeKey(entry) {
-  return [
-    entry.time || 0,
-    entry.type || "request",
-    entry.eventType || "",
-    entry.idx || 0,
-    entry.path || "",
-    entry.status ?? "",
-    entry.streamId || "",
-    entry.streamOutcome || "",
-    entry.streamReason || "",
-    entry.duration || 0,
-    entry.message || "",
-  ].join("|");
 }
 
 function ensureLogStream() {
@@ -1215,56 +1240,904 @@ function writeLogEntry(entry) {
   try {
     ensureLogStream();
     logStream.write(JSON.stringify(entry) + "\n");
-    logWrittenCount++;
   } catch(e) { /* fail silently */ }
 }
 
 function cleanOldLogs() {
-  try {
-    if (!fs.existsSync(LOG_DIR)) { logWrittenCount = 0; return; }
-    const files = fs.readdirSync(LOG_DIR);
-    const now = Date.now();
-    for (const f of files) {
-      if (!f.endsWith(".jsonl")) continue;
-      const dateStr = f.replace(".jsonl", "");
-      const fd = new Date(dateStr);
-      if (isNaN(fd.getTime())) continue;
-      if ((now - fd.getTime()) / 86400000 > LOG_RETENTION_DAYS) {
-        fs.unlinkSync(path.join(LOG_DIR, f));
-      }
+  if (logCleanupInFlight || LOG_RETENTION_DAYS <= 0) return;
+  logCleanupInFlight = true;
+  const now = Date.now();
+  fs.promises.readdir(LOG_DIR).then(files => Promise.all(files.map(async file => {
+    if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(file)) return;
+    const startedAt = Date.parse(`${file.slice(0, 10)}T00:00:00.000Z`);
+    if (Number.isFinite(startedAt) && now - startedAt > LOG_RETENTION_DAYS * 86400000) {
+      await fs.promises.unlink(path.join(LOG_DIR, file));
     }
-    // Initialize logWrittenCount by counting remaining files
-    logWrittenCount = 0;
-    const remaining = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
-    for (const f of remaining) {
-      const content = fs.readFileSync(path.join(LOG_DIR, f), "utf-8");
-      logWrittenCount += content.split("\n").filter(l => l.trim()).length;
-    }
-  } catch(e) { /* fail silently */ }
+  }))).catch(() => {}).finally(() => {
+    logCleanupInFlight = false;
+  });
 }
 
-function countAllEntries(since, until) {
-  if (since || until) {
-    let total = 0;
-    try {
-      if (!fs.existsSync(LOG_DIR)) return requestLog.length;
-      const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
-      const sTime = since ? parseInt(since, 10) : 0;
-      const uTime = until ? parseInt(until, 10) : 9e15;
-      for (const f of files) {
-        const dateStr = f.replace(".jsonl", "");
-        const fd = new Date(dateStr + "T00:00:00");
-        const fdEnd = fd.getTime() + 86400000;
-        if (fdEnd < sTime || fd.getTime() > uTime) continue;
-        const filePath = path.join(LOG_DIR, f);
-        const content = fs.readFileSync(filePath, "utf-8");
-        const lines = content.split("\n").filter(l => l.trim());
-        total += lines.length;
-      }
-    } catch (e) { /* fail silently */ }
-    return total + requestLog.length;
+function createLogHistogram() {
+  return new Array(LOG_LATENCY_BOUNDS.length + 1).fill(0);
+}
+
+function normalizeLogHistogram(value) {
+  const histogram = createLogHistogram();
+  if (!Array.isArray(value)) return histogram;
+  for (let i = 0; i < histogram.length; i++) histogram[i] = Math.max(0, Number(value[i]) || 0);
+  return histogram;
+}
+
+function addLogHistogram(histogram, value) {
+  if (!Array.isArray(histogram) || !Number.isFinite(value) || value < 0) return;
+  let index = LOG_LATENCY_BOUNDS.findIndex(bound => value <= bound);
+  if (index < 0) index = LOG_LATENCY_BOUNDS.length;
+  histogram[index] = (histogram[index] || 0) + 1;
+}
+
+function estimateLogPercentile(histogram, total, fraction) {
+  if (!Array.isArray(histogram) || !total) return 0;
+  const target = Math.max(1, Math.ceil(total * fraction));
+  let seen = 0;
+  for (let i = 0; i < histogram.length; i++) {
+    seen += Number(histogram[i]) || 0;
+    if (seen >= target) return i < LOG_LATENCY_BOUNDS.length ? LOG_LATENCY_BOUNDS[i] : LOG_LATENCY_BOUNDS[LOG_LATENCY_BOUNDS.length - 1];
   }
-  return logWrittenCount + requestLog.length;
+  return LOG_LATENCY_BOUNDS[LOG_LATENCY_BOUNDS.length - 1];
+}
+
+function createLogMetrics() {
+  return {
+    requests: 0,
+    success: 0,
+    error4xx: 0,
+    error5xx: 0,
+    timeout: 0,
+    streamFailed: 0,
+    durationSum: 0,
+    durationCount: 0,
+    ttfbSum: 0,
+    ttfbCount: 0,
+    durationHistogram: createLogHistogram(),
+    ttfbHistogram: createLogHistogram(),
+  };
+}
+
+function createLogAggregate() {
+  return {
+    ...createLogMetrics(),
+    dimensions: { upstream: {}, model: {}, path: {}, group: {}, key: {} },
+    events: {},
+  };
+}
+
+function normalizeLogMetrics(value) {
+  const normalized = createLogMetrics();
+  if (!value || typeof value !== "object") return normalized;
+  for (const field of ["requests", "success", "error4xx", "error5xx", "timeout", "streamFailed", "durationSum", "durationCount", "ttfbSum", "ttfbCount"]) {
+    normalized[field] = Math.max(0, Number(value[field]) || 0);
+  }
+  normalized.durationHistogram = normalizeLogHistogram(value.durationHistogram);
+  normalized.ttfbHistogram = normalizeLogHistogram(value.ttfbHistogram);
+  return normalized;
+}
+
+function normalizeLogAggregate(value) {
+  const normalized = { ...createLogAggregate(), ...normalizeLogMetrics(value) };
+  const dimensions = value && value.dimensions && typeof value.dimensions === "object" ? value.dimensions : {};
+  for (const type of Object.keys(normalized.dimensions)) {
+    normalized.dimensions[type] = {};
+    const source = dimensions[type] && typeof dimensions[type] === "object" ? dimensions[type] : {};
+    for (const [key, metrics] of Object.entries(source)) {
+      if (Object.keys(normalized.dimensions[type]).length >= LOG_DIMENSION_LIMITS[type]) break;
+      normalized.dimensions[type][String(key).slice(0, 160)] = normalizeLogMetrics(metrics);
+    }
+  }
+  const events = value && value.events && typeof value.events === "object" ? value.events : {};
+  for (const [eventType, count] of Object.entries(events)) normalized.events[String(eventType).slice(0, 160)] = Math.max(0, Number(count) || 0);
+  return normalized;
+}
+
+function mergeLogMetrics(target, source) {
+  if (!source) return target;
+  for (const field of ["requests", "success", "error4xx", "error5xx", "timeout", "streamFailed", "durationSum", "durationCount", "ttfbSum", "ttfbCount"]) {
+    target[field] += Number(source[field]) || 0;
+  }
+  for (const histogramField of ["durationHistogram", "ttfbHistogram"]) {
+    const sourceHistogram = Array.isArray(source[histogramField]) ? source[histogramField] : [];
+    for (let i = 0; i < target[histogramField].length; i++) target[histogramField][i] += Number(sourceHistogram[i]) || 0;
+  }
+  return target;
+}
+
+function mergeLogAggregate(target, source) {
+  mergeLogMetrics(target, source);
+  if (!source) return target;
+  for (const type of Object.keys(target.dimensions)) {
+    const sourceMap = source.dimensions && source.dimensions[type] ? source.dimensions[type] : {};
+    for (const [key, metrics] of Object.entries(sourceMap)) {
+      let targetKey = key;
+      if (!target.dimensions[type][targetKey] && Object.keys(target.dimensions[type]).length >= LOG_DIMENSION_LIMITS[type]) targetKey = "(other)";
+      if (!target.dimensions[type][targetKey]) target.dimensions[type][targetKey] = createLogMetrics();
+      mergeLogMetrics(target.dimensions[type][targetKey], metrics);
+    }
+  }
+  for (const [eventType, count] of Object.entries(source.events || {})) target.events[eventType] = (target.events[eventType] || 0) + (Number(count) || 0);
+  return target;
+}
+
+function logUpstreamHost(url) {
+  try { return new URL(String(url || "")).hostname || "(unknown)"; } catch { return "(unknown)"; }
+}
+
+function logDimensionValue(entry, type) {
+  if (type === "upstream") return logUpstreamHost(entry.url);
+  if (type === "model") return String(entry.overrideModel || entry.reqModel || "(unknown)").slice(0, 120);
+  if (type === "path") return String(entry.path || "(unknown)").slice(0, 120);
+  if (type === "group") return String(entry.group || "A").toUpperCase().slice(0, 32);
+  if (type === "key") return entry.idx ? `#${entry.idx}` : "(unknown)";
+  return "(unknown)";
+}
+
+function getLogDimensionMetrics(aggregate, entry, type) {
+  const map = aggregate.dimensions[type];
+  let key = logDimensionValue(entry, type);
+  if (!Object.prototype.hasOwnProperty.call(map, key) && Object.keys(map).length >= LOG_DIMENSION_LIMITS[type]) key = "(other)";
+  if (!map[key]) map[key] = createLogMetrics();
+  return map[key];
+}
+
+function addRequestLogMetrics(metrics, entry) {
+  metrics.requests++;
+  const status = Number(entry.status || 0);
+  const failed = status === 0 || status >= 400 || entry.streamOutcome === "failed";
+  if (!failed && status >= 200 && status < 300) metrics.success++;
+  if (status >= 400 && status < 500) metrics.error4xx++;
+  if (status >= 500 && status < 600) metrics.error5xx++;
+  if (status === 0) metrics.timeout++;
+  if (entry.streamOutcome === "failed") metrics.streamFailed++;
+  if (Number.isFinite(entry.duration) && entry.duration >= 0) {
+    metrics.durationSum += entry.duration;
+    metrics.durationCount++;
+    addLogHistogram(metrics.durationHistogram, entry.duration);
+  }
+  if (Number.isFinite(entry.ttfb) && entry.ttfb >= 0) {
+    metrics.ttfbSum += entry.ttfb;
+    metrics.ttfbCount++;
+    addLogHistogram(metrics.ttfbHistogram, entry.ttfb);
+  }
+}
+
+function addLogEntryToAggregate(aggregate, entry) {
+  if (!entry || typeof entry !== "object") return;
+  if (entry.type === "event") {
+    const eventType = String(entry.eventType || "event").slice(0, 120);
+    aggregate.events[eventType] = (aggregate.events[eventType] || 0) + 1;
+    return;
+  }
+  addRequestLogMetrics(aggregate, entry);
+  for (const type of Object.keys(aggregate.dimensions)) addRequestLogMetrics(getLogDimensionMetrics(aggregate, entry, type), entry);
+}
+
+function getLogDateKey(time) {
+  return new Date(Number.isFinite(time) ? time : Date.now()).toISOString().slice(0, 10);
+}
+
+function pruneLogRollups(now = Date.now()) {
+  const minuteCutoff = now - LOG_ROLLUP_RETENTION_MS;
+  for (const [minute] of logMinuteBuckets) if (minute < minuteCutoff) logMinuteBuckets.delete(minute);
+  const dayCutoff = getLogDateKey(now - Math.max(1, LOG_RETENTION_DAYS) * 86400000);
+  for (const day of logDailySummaries.keys()) if (day < dayCutoff) logDailySummaries.delete(day);
+}
+
+function recordLogSummary(entry, options = {}) {
+  if (!entry || typeof entry !== "object") return;
+  if (!logSummaryLoaded) {
+    if (logSummaryPendingEntries.length < MAX_LOG) logSummaryPendingEntries.push(entry);
+    return;
+  }
+  const time = Number.isFinite(entry.time) ? entry.time : Date.now();
+  const minute = Math.floor(time / 60000) * 60000;
+  if (!logMinuteBuckets.has(minute)) logMinuteBuckets.set(minute, createLogAggregate());
+  addLogEntryToAggregate(logMinuteBuckets.get(minute), entry);
+  const day = getLogDateKey(time);
+  if (!logDailySummaries.has(day)) logDailySummaries.set(day, createLogAggregate());
+  addLogEntryToAggregate(logDailySummaries.get(day), entry);
+  pruneLogRollups(time);
+  if (!options.skipPersist) scheduleLogSummaryPersist();
+  if (!options.skipIncident) scheduleLogIncidentEvaluation();
+}
+
+function logMetricsToStats(metrics, extra = {}) {
+  const total = Number(metrics.requests) || 0;
+  return {
+    total,
+    successRate: total ? Math.round(((Number(metrics.success) || 0) / total) * 10000) / 100 : 0,
+    avgDuration: metrics.durationCount ? Math.round(metrics.durationSum / metrics.durationCount) : 0,
+    p95: estimateLogPercentile(metrics.durationHistogram, metrics.durationCount, 0.95),
+    p99: estimateLogPercentile(metrics.durationHistogram, metrics.durationCount, 0.99),
+    p95Ttfb: estimateLogPercentile(metrics.ttfbHistogram, metrics.ttfbCount, 0.95),
+    error4xx: Number(metrics.error4xx) || 0,
+    error5xx: Number(metrics.error5xx) || 0,
+    errorTimeout: Number(metrics.timeout) || 0,
+    errorStream: Number(metrics.streamFailed) || 0,
+    ...extra,
+  };
+}
+
+function sortLogDimensions(aggregate) {
+  const output = {};
+  for (const type of Object.keys(aggregate.dimensions)) {
+    output[type] = Object.entries(aggregate.dimensions[type])
+      .map(([value, metrics]) => ({ value, ...logMetricsToStats(metrics) }))
+      .sort((a, b) => (b.error5xx + b.error4xx + b.errorTimeout + b.errorStream) - (a.error5xx + a.error4xx + a.errorTimeout + a.errorStream) || b.total - a.total)
+      .slice(0, 12);
+  }
+  return output;
+}
+
+function buildLogRollup(options = {}) {
+  const now = Date.now();
+  const since = Number.isFinite(options.since) ? options.since : now - LOG_ROLLUP_RETENTION_MS;
+  const until = Number.isFinite(options.until) ? options.until : now;
+  const aggregate = createLogAggregate();
+  const useMinuteBuckets = until - since <= LOG_ROLLUP_RETENTION_MS;
+  if (useMinuteBuckets) {
+    for (const [minute, bucket] of logMinuteBuckets) {
+      if (minute >= since - 60000 && minute <= until) mergeLogAggregate(aggregate, bucket);
+    }
+  } else {
+    const startDay = getLogDateKey(since);
+    const endDay = getLogDateKey(until);
+    for (const [day, summary] of logDailySummaries) {
+      if (day >= startDay && day <= endDay) mergeLogAggregate(aggregate, summary);
+    }
+  }
+  return { aggregate, approximate: !useMinuteBuckets && (since % 86400000 !== 0 || until % 86400000 !== 0) };
+}
+
+function listActiveGroupPauses(now = Date.now()) {
+  const active = [];
+  for (const [group, pause] of groupPauses) {
+    if (!pause || pause.expiresAt <= now) {
+      groupPauses.delete(group);
+      continue;
+    }
+    active.push({ group, expiresAt: pause.expiresAt, incidentId: pause.incidentId || "", reason: pause.reason || "" });
+  }
+  return active.sort((a, b) => a.expiresAt - b.expiresAt);
+}
+
+function buildLogOverview(options = {}) {
+  const rollup = buildLogRollup(options);
+  const now = Date.now();
+  const timeline = [];
+  for (let i = 29; i >= 0; i--) {
+    const minute = Math.floor((now - i * 60000) / 60000) * 60000;
+    const bucket = logMinuteBuckets.get(minute) || createLogAggregate();
+    timeline.push({ time: minute, total: bucket.requests, errors: bucket.error4xx + bucket.error5xx + bucket.timeout + bucket.streamFailed });
+  }
+  return {
+    stats: logMetricsToStats(rollup.aggregate, { approximate: rollup.approximate }),
+    dimensions: sortLogDimensions(rollup.aggregate),
+    events: rollup.aggregate.events,
+    timeline,
+    incidents: listLogIncidents(),
+    groupPauses: listActiveGroupPauses(),
+    summaryReady: logSummaryLoaded,
+  };
+}
+
+function serializeLogSummary() {
+  return {
+    schema: LOG_SUMMARY_SCHEMA,
+    savedAt: Date.now(),
+    minuteBuckets: Array.from(logMinuteBuckets.entries()),
+    dailySummaries: Array.from(logDailySummaries.entries()),
+  };
+}
+
+function scheduleLogSummaryPersist() {
+  if (!LOG_FILE_ENABLED || !logSummaryLoaded) return;
+  logSummaryDirty = true;
+  if (logSummaryPersistTimer) return;
+  logSummaryPersistTimer = setTimeout(() => {
+    logSummaryPersistTimer = null;
+    persistLogSummary();
+  }, LOG_SUMMARY_PERSIST_DELAY_MS);
+  if (logSummaryPersistTimer.unref) logSummaryPersistTimer.unref();
+}
+
+async function persistLogSummary() {
+  if (!LOG_FILE_ENABLED || logSummaryPersisting || !logSummaryDirty) return;
+  logSummaryPersisting = true;
+  logSummaryDirty = false;
+  try {
+    await fs.promises.mkdir(LOG_DIR, { recursive: true });
+    const tempFile = `${LOG_SUMMARY_FILE}.${process.pid}.tmp`;
+    await fs.promises.writeFile(tempFile, JSON.stringify(serializeLogSummary()), "utf8");
+    await fs.promises.rename(tempFile, LOG_SUMMARY_FILE);
+  } catch (error) {
+    console.error(`[proxy] failed to persist log summary: ${error.message}`);
+  } finally {
+    logSummaryPersisting = false;
+    if (logSummaryDirty) scheduleLogSummaryPersist();
+  }
+}
+
+function loadLogSummary() {
+  let summaryWasLoaded = false;
+  fs.promises.readFile(LOG_SUMMARY_FILE, "utf8").then(raw => {
+    const saved = JSON.parse(raw);
+    if (!saved || saved.schema !== LOG_SUMMARY_SCHEMA) return;
+    for (const [minute, aggregate] of Array.isArray(saved.minuteBuckets) ? saved.minuteBuckets : []) {
+      const numericMinute = Number(minute);
+      if (Number.isFinite(numericMinute)) logMinuteBuckets.set(numericMinute, normalizeLogAggregate(aggregate));
+    }
+    for (const [day, aggregate] of Array.isArray(saved.dailySummaries) ? saved.dailySummaries : []) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(day))) logDailySummaries.set(day, normalizeLogAggregate(aggregate));
+    }
+    summaryWasLoaded = true;
+  }).catch(() => {}).finally(() => {
+    logSummaryLoaded = true;
+    const pending = logSummaryPendingEntries.splice(0);
+    for (const entry of pending) recordLogSummary(entry, { skipPersist: true, skipIncident: true });
+    pruneLogRollups();
+    if (pending.length) scheduleLogSummaryPersist();
+    scheduleLogIncidentEvaluation();
+    if (!summaryWasLoaded && LOG_FILE_ENABLED) {
+      const timer = setTimeout(() => startLogSummaryRebuild(), 2000);
+      if (timer.unref) timer.unref();
+    }
+  });
+}
+
+function encodeLogCursor(cursor) {
+  if (!cursor) return "";
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeLogCursor(value) {
+  if (!value || typeof value !== "string" || value.length > 512) return null;
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+    const cursor = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+    if (!cursor || !/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(String(cursor.file || "")) || !Number.isFinite(Number(cursor.position)) || Number(cursor.position) < 0) return null;
+    return { file: cursor.file, position: Math.floor(Number(cursor.position)) };
+  } catch {
+    return null;
+  }
+}
+
+function parseLogQuery(url, format) {
+  const parseTime = value => {
+    if (value == null || String(value).trim() === "") return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  };
+  const keys = String(url.searchParams.get("key") || "").split(",").map(value => parseInt(value.trim(), 10)).filter(value => Number.isInteger(value) && value > 0).slice(0, 64);
+  const exporting = format === "csv" || format === "jsonl";
+  const maximum = exporting ? LOG_EXPORT_MAX_LIMIT : LOG_HISTORY_MAX_LIMIT;
+  const defaultLimit = exporting ? LOG_EXPORT_MAX_LIMIT : LOG_RECENT_DEFAULT_LIMIT;
+  const requestedLimit = parseInt(url.searchParams.get("limit") || String(defaultLimit), 10);
+  const limit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : defaultLimit, maximum));
+  const mode = url.searchParams.get("mode") === "history" ? "history" : "recent";
+  const cursorValue = url.searchParams.get("cursor") || "";
+  return {
+    mode: exporting || cursorValue || url.searchParams.get("since") || url.searchParams.get("until") || keys.length || url.searchParams.get("status") || url.searchParams.get("model") || url.searchParams.get("q") || url.searchParams.get("upstream") || url.searchParams.get("path") || url.searchParams.get("group") ? "history" : mode,
+    limit,
+    keys,
+    status: String(url.searchParams.get("status") || "").trim().slice(0, 12),
+    model: String(url.searchParams.get("model") || "").trim().slice(0, 120),
+    q: String(url.searchParams.get("q") || "").trim().slice(0, 160),
+    upstream: String(url.searchParams.get("upstream") || "").trim().slice(0, 160),
+    path: String(url.searchParams.get("path") || "").trim().slice(0, 160),
+    group: String(url.searchParams.get("group") || "").trim().toUpperCase().slice(0, 32),
+    since: parseTime(url.searchParams.get("since")),
+    until: parseTime(url.searchParams.get("until")),
+    cursor: cursorValue ? decodeLogCursor(cursorValue) : null,
+  };
+}
+
+function logEntryMatchesQuery(entry, query) {
+  if (!entry || typeof entry !== "object") return false;
+  const time = Number(entry.time || 0);
+  if (Number.isFinite(query.since) && time < query.since) return false;
+  if (Number.isFinite(query.until) && time > query.until) return false;
+  if (query.keys.length && !query.keys.includes(Number(entry.idx))) return false;
+  const status = Number(entry.status || 0);
+  if (query.status) {
+    if (/^[1-5]xx$/i.test(query.status)) {
+      if (Math.floor(status / 100) !== Number(query.status[0])) return false;
+    } else if (String(status) !== query.status) return false;
+  }
+  if (query.model) {
+    const needle = query.model.toLowerCase();
+    if (!String(entry.reqModel || "").toLowerCase().includes(needle) && !String(entry.overrideModel || "").toLowerCase().includes(needle)) return false;
+  }
+  if (query.upstream && !logUpstreamHost(entry.url).toLowerCase().includes(query.upstream.toLowerCase())) return false;
+  if (query.path && !String(entry.path || "").toLowerCase().includes(query.path.toLowerCase())) return false;
+  if (query.group && String(entry.group || "A").toUpperCase() !== query.group) return false;
+  if (query.q) {
+    const haystack = [entry.message, entry.url, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason].map(value => String(value || "").toLowerCase()).join("\n");
+    if (!haystack.includes(query.q.toLowerCase())) return false;
+  }
+  return true;
+}
+
+function summarizeLogEntries(entries) {
+  const aggregate = createLogAggregate();
+  for (const entry of entries) addLogEntryToAggregate(aggregate, entry);
+  return logMetricsToStats(aggregate);
+}
+
+function getRecentLogEntries(query) {
+  return requestLog.slice().reverse().filter(entry => logEntryMatchesQuery(entry, query)).slice(0, query.limit);
+}
+
+function logEntryFingerprint(entry) {
+  try {
+    return JSON.stringify(entry);
+  } catch {
+    return "";
+  }
+}
+
+function mergeRecentLogEntries(memoryEntries, historicalEntries, limit) {
+  const memory = Array.isArray(memoryEntries) ? memoryEntries : [];
+  const historical = Array.isArray(historicalEntries) ? historicalEntries : [];
+  const memoryCounts = new Map();
+  for (const entry of memory) {
+    const fingerprint = logEntryFingerprint(entry);
+    if (!fingerprint) continue;
+    memoryCounts.set(fingerprint, (memoryCounts.get(fingerprint) || 0) + 1);
+  }
+  const merged = memory.slice();
+  for (const entry of historical) {
+    const fingerprint = logEntryFingerprint(entry);
+    const count = fingerprint ? memoryCounts.get(fingerprint) || 0 : 0;
+    if (count > 0) {
+      memoryCounts.set(fingerprint, count - 1);
+      continue;
+    }
+    merged.push(entry);
+  }
+  return merged
+    .sort((left, right) => Number(right.time || 0) - Number(left.time || 0))
+    .slice(0, Math.max(1, Number(limit) || LOG_RECENT_DEFAULT_LIMIT));
+}
+
+function startHistoricalLogQuery(query, options = {}) {
+  return queueLogWorker({
+    kind: "query",
+    logDir: LOG_DIR,
+    query,
+    maxLimit: options.maxLimit || LOG_HISTORY_MAX_LIMIT,
+    maxScanBytes: options.maxScanBytes || LOG_QUERY_MAX_SCAN_BYTES,
+  }, { timeoutMs: options.timeoutMs || LOG_QUERY_TIMEOUT_MS });
+}
+
+function escapeLogCsvCell(value) {
+  let text = String(value == null ? "" : value);
+  // Keep spreadsheet applications from interpreting upstream-controlled values as formulas.
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function formatLogCsv(entries) {
+  const header = ["time", "idx", "group", "method", "path", "status", "inputBytes", "outputBytes", "duration", "ttfb", "reqModel", "overrideModel", "url", "type", "eventType", "message", "streamId", "streamOutcome", "streamReason", "streamSawDone"];
+  const rows = entries.map(entry => [
+    entry.time,
+    entry.idx,
+    entry.group,
+    entry.method,
+    entry.path,
+    entry.status || 0,
+    entry.inputBytes || 0,
+    entry.outputBytes || 0,
+    entry.duration || 0,
+    entry.ttfb == null ? "" : entry.ttfb,
+    entry.reqModel,
+    entry.overrideModel,
+    entry.url,
+    entry.type || "request",
+    entry.eventType,
+    entry.message,
+    entry.streamId,
+    entry.streamOutcome,
+    entry.streamReason,
+    entry.streamSawDone === true ? "true" : "false",
+  ].map(escapeLogCsvCell).join(","));
+  return `${header.join(",")}\n${rows.join("\n")}`;
+}
+
+function settleLogWorkerJob(job, error, result) {
+  if (!job || job.settled) return;
+  job.settled = true;
+  if (job.timer) clearTimeout(job.timer);
+  if (activeLogWorkerJob === job) activeLogWorkerJob = null;
+  if (error) job.reject(error); else job.resolve(result);
+  pumpLogWorkerQueue();
+}
+
+function pumpLogWorkerQueue() {
+  if (activeLogWorkerJob) return;
+  let job = null;
+  while (logWorkerQueue.length && !job) {
+    const candidate = logWorkerQueue.shift();
+    if (!candidate.cancelled && !candidate.settled) job = candidate;
+  }
+  if (!job) return;
+  activeLogWorkerJob = job;
+  try {
+    const worker = new Worker(LOG_QUERY_WORKER_FILE, {
+      workerData: job.payload,
+      resourceLimits: { maxOldGenerationSizeMb: 96 },
+    });
+    job.worker = worker;
+    job.timer = setTimeout(() => {
+      worker.terminate();
+      settleLogWorkerJob(job, new Error("log worker query timed out"));
+    }, job.timeoutMs || LOG_QUERY_TIMEOUT_MS);
+    if (job.timer.unref) job.timer.unref();
+    worker.once("message", message => {
+      if (!message || message.ok !== true) settleLogWorkerJob(job, new Error(message && message.error ? message.error : "log worker failed"));
+      else settleLogWorkerJob(job, null, message.result);
+      worker.terminate();
+    });
+    worker.once("error", error => settleLogWorkerJob(job, error));
+    worker.once("exit", code => {
+      if (!job.settled && code !== 0) settleLogWorkerJob(job, new Error(`log worker exited with code ${code}`));
+    });
+  } catch (error) {
+    settleLogWorkerJob(job, error);
+  }
+}
+
+function queueLogWorker(payload, options = {}) {
+  if (logWorkerQueue.length + (activeLogWorkerJob ? 1 : 0) >= LOG_QUERY_MAX_QUEUE) {
+    return { promise: Promise.reject(new Error("log query queue is busy")), cancel() {} };
+  }
+  let job;
+  const promise = new Promise((resolve, reject) => {
+    job = { payload, resolve, reject, settled: false, cancelled: false, worker: null, timer: null, timeoutMs: options.timeoutMs || LOG_QUERY_TIMEOUT_MS };
+    if (options.priority === "background") logWorkerQueue.push(job); else logWorkerQueue.unshift(job);
+    pumpLogWorkerQueue();
+  });
+  return {
+    promise,
+    cancel() {
+      if (!job || job.settled) return;
+      job.cancelled = true;
+      if (activeLogWorkerJob === job && job.worker) job.worker.terminate();
+      settleLogWorkerJob(job, new Error("log worker job cancelled"));
+    },
+  };
+}
+
+function clampLogIncidentNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function normalizeLogIncidentConfig(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    enabled: source.enabled !== false,
+    notify: source.notify === true,
+    latencyEnabled: source.latencyEnabled === true,
+    windowMinutes: clampLogIncidentNumber(source.windowMinutes, 5, 1, 60),
+    minRequests: Math.round(clampLogIncidentNumber(source.minRequests, 8, 1, 10000)),
+    errorBurst: Math.round(clampLogIncidentNumber(source.errorBurst, 5, 1, 10000)),
+    errorRatePercent: clampLogIncidentNumber(source.errorRatePercent, 60, 1, 100),
+    streamFailureBurst: Math.round(clampLogIncidentNumber(source.streamFailureBurst, 3, 1, 10000)),
+    p95Ms: Math.round(clampLogIncidentNumber(source.p95Ms, 120000, 1000, 1800000)),
+    p95TtfbMs: Math.round(clampLogIncidentNumber(source.p95TtfbMs, 20000, 100, 300000)),
+    resolveAfterMinutes: clampLogIncidentNumber(source.resolveAfterMinutes, 5, 1, 120),
+    defaultSnoozeMinutes: clampLogIncidentNumber(source.defaultSnoozeMinutes, 15, 1, 1440),
+  };
+}
+
+function serializableLogIncident(incident) {
+  return {
+    id: incident.id,
+    source: "log",
+    rule: incident.rule,
+    severity: incident.severity,
+    status: incident.status,
+    title: incident.title,
+    scope: incident.scope,
+    metrics: incident.metrics,
+    startedAt: incident.startedAt,
+    lastSeenAt: incident.lastSeenAt,
+    updatedAt: incident.updatedAt,
+    resolvedAt: incident.resolvedAt || 0,
+    acknowledgedAt: incident.acknowledgedAt || 0,
+    snoozedUntil: incident.snoozedUntil || 0,
+    occurrences: incident.occurrences || 1,
+  };
+}
+
+function listLogIncidents(limit = 50) {
+  const now = Date.now();
+  return Array.from(logIncidents.values())
+    .filter(incident => incident && typeof incident === "object")
+    .map(incident => {
+      const serialized = serializableLogIncident(incident);
+      if (serialized.status === "snoozed" && serialized.snoozedUntil && serialized.snoozedUntil <= now) serialized.status = "open";
+      return serialized;
+    })
+    .sort((a, b) => {
+      const activeA = a.status === "resolved" ? 0 : 1;
+      const activeB = b.status === "resolved" ? 0 : 1;
+      return activeB - activeA || b.updatedAt - a.updatedAt;
+    })
+    .slice(0, Math.max(1, Math.min(limit, 200)));
+}
+
+function scheduleLogIncidentPersist() {
+  if (!logIncidentsLoaded) return;
+  logIncidentDirty = true;
+  if (logIncidentPersistTimer) return;
+  logIncidentPersistTimer = setTimeout(() => {
+    logIncidentPersistTimer = null;
+    persistLogIncidents();
+  }, LOG_INCIDENT_PERSIST_DELAY_MS);
+  if (logIncidentPersistTimer.unref) logIncidentPersistTimer.unref();
+}
+
+async function persistLogIncidents() {
+  if (logIncidentPersisting || !logIncidentDirty) return;
+  logIncidentPersisting = true;
+  logIncidentDirty = false;
+  try {
+    await fs.promises.mkdir(LOG_DIR, { recursive: true });
+    const incidents = listLogIncidents(200);
+    const tempFile = `${LOG_INCIDENT_STATE_FILE}.${process.pid}.tmp`;
+    await fs.promises.writeFile(tempFile, JSON.stringify({ schema: 1, savedAt: Date.now(), incidents }), "utf8");
+    await fs.promises.rename(tempFile, LOG_INCIDENT_STATE_FILE);
+  } catch (error) {
+    console.error(`[proxy] failed to persist log incidents: ${error.message}`);
+  } finally {
+    logIncidentPersisting = false;
+    if (logIncidentDirty) scheduleLogIncidentPersist();
+  }
+}
+
+function loadLogIncidents() {
+  fs.promises.readFile(LOG_INCIDENT_STATE_FILE, "utf8").then(raw => {
+    const saved = JSON.parse(raw);
+    if (!saved || saved.schema !== 1 || !Array.isArray(saved.incidents)) return;
+    for (const candidate of saved.incidents.slice(0, 200)) {
+      if (!candidate || typeof candidate !== "object" || typeof candidate.id !== "string" || candidate.id.length > 300) continue;
+      const incident = serializableLogIncident(candidate);
+      incident.status = ["open", "acknowledged", "snoozed", "resolved"].includes(incident.status) ? incident.status : "open";
+      incident.scope = incident.scope && typeof incident.scope === "object" ? { type: String(incident.scope.type || "global").slice(0, 32), value: String(incident.scope.value || "").slice(0, 160) } : { type: "global", value: "" };
+      logIncidents.set(incident.id, incident);
+    }
+  }).catch(() => {}).finally(() => {
+    logIncidentsLoaded = true;
+    scheduleLogIncidentEvaluation();
+  });
+}
+
+function broadcastIncidentUpdate() {
+  if (!wsClients.size) return;
+  const message = JSON.stringify({ type: "incidents", data: { incidents: listLogIncidents(), groupPauses: listActiveGroupPauses(), summaryRebuild: logSummaryRebuildState } });
+  for (const ws of wsClients) if (ws.readyState === 1) ws.send(message);
+}
+
+function incidentFailedCount(metrics) {
+  return (Number(metrics.error4xx) || 0) + (Number(metrics.error5xx) || 0) + (Number(metrics.errorTimeout) || 0) + (Number(metrics.errorStream) || 0);
+}
+
+function buildLogIncidentConditions(now = Date.now()) {
+  const rules = config.logIncidents || normalizeLogIncidentConfig();
+  const since = now - rules.windowMinutes * 60000;
+  const overview = buildLogOverview({ since, until: now });
+  const conditions = [];
+  const addCondition = (rule, scope, severity, title, metrics) => {
+    conditions.push({ rule, scope, severity, title, metrics, windowMinutes: rules.windowMinutes });
+  };
+  for (const type of ["upstream", "model", "path", "group"]) {
+    for (const metrics of overview.dimensions[type] || []) {
+      if (metrics.value === "(other)" || metrics.total < rules.minRequests) continue;
+      const failures = incidentFailedCount(metrics);
+      const failureRate = metrics.total ? failures / metrics.total * 100 : 0;
+      const scope = { type, value: metrics.value };
+      if (failures >= rules.errorBurst && failureRate >= rules.errorRatePercent) {
+        const severity = failureRate >= 80 || failures >= rules.errorBurst * 2 ? "critical" : "warning";
+        addCondition("failure_burst", scope, severity, `${type} 请求失败突增`, { ...metrics, failures, failureRate: Math.round(failureRate * 100) / 100 });
+      }
+      if (metrics.errorStream >= rules.streamFailureBurst) {
+        addCondition("stream_failures", scope, metrics.errorStream >= rules.streamFailureBurst * 2 ? "critical" : "warning", `${type} 流终态失败增多`, { ...metrics, failures, failureRate: Math.round(failureRate * 100) / 100 });
+      }
+      if (rules.latencyEnabled && (metrics.p95 >= rules.p95Ms || metrics.p95Ttfb >= rules.p95TtfbMs)) {
+        addCondition("latency_regression", scope, metrics.p95 >= rules.p95Ms * 2 || metrics.p95Ttfb >= rules.p95TtfbMs * 2 ? "critical" : "warning", `${type} 延迟劣化`, { ...metrics, failures, failureRate: Math.round(failureRate * 100) / 100 });
+      }
+    }
+  }
+  return conditions;
+}
+
+function createLogIncidentId(rule, scope) {
+  return `log:${rule}:${scope.type}:${scope.value}`.slice(0, 300);
+}
+
+function emitLogIncidentNotification(incident) {
+  if (!config.logIncidents || config.logIncidents.notify !== true) return;
+  sendWebhook("log_incident", { incident: serializableLogIncident(incident) });
+  broadcastNotification("log_incident", { incident: serializableLogIncident(incident) });
+}
+
+function upsertLogIncident(condition, now) {
+  const id = createLogIncidentId(condition.rule, condition.scope);
+  let incident = logIncidents.get(id);
+  const wasResolved = !incident || incident.status === "resolved";
+  let stateChanged = wasResolved;
+  if (!incident) {
+    incident = {
+      id,
+      source: "log",
+      rule: condition.rule,
+      severity: condition.severity,
+      status: "open",
+      title: condition.title,
+      scope: condition.scope,
+      metrics: condition.metrics,
+      startedAt: now,
+      lastSeenAt: now,
+      updatedAt: now,
+      resolvedAt: 0,
+      acknowledgedAt: 0,
+      snoozedUntil: 0,
+      occurrences: 1,
+    };
+    logIncidents.set(id, incident);
+  } else {
+    incident.severity = condition.severity;
+    incident.title = condition.title;
+    incident.scope = condition.scope;
+    incident.metrics = condition.metrics;
+    incident.lastSeenAt = now;
+    incident.updatedAt = now;
+    incident.occurrences = (incident.occurrences || 0) + 1;
+    if (incident.status === "resolved") {
+      incident.status = "open";
+      incident.startedAt = now;
+      incident.resolvedAt = 0;
+      incident.acknowledgedAt = 0;
+    }
+    if (incident.status === "snoozed" && incident.snoozedUntil <= now) {
+      incident.status = "open";
+      stateChanged = true;
+    }
+  }
+  if (wasResolved) {
+    addEventLog("incident_opened", 0, `日志事件：${incident.title}（${incident.scope.value || "全局"}）`, "");
+    emitLogIncidentNotification(incident);
+  }
+  return { incident, stateChanged };
+}
+
+function scheduleLogIncidentEvaluation() {
+  if (!logSummaryLoaded || !logIncidentsLoaded || !config.logIncidents || !config.logIncidents.enabled) return;
+  if (logIncidentEvaluationTimer) return;
+  logIncidentEvaluationTimer = setTimeout(() => {
+    logIncidentEvaluationTimer = null;
+    evaluateLogIncidents();
+  }, LOG_INCIDENT_EVALUATION_DELAY_MS);
+  if (logIncidentEvaluationTimer.unref) logIncidentEvaluationTimer.unref();
+}
+
+function evaluateLogIncidents() {
+  if (!logSummaryLoaded || !logIncidentsLoaded || !config.logIncidents || !config.logIncidents.enabled) return;
+  const now = Date.now();
+  const seen = new Set();
+  let stateChanged = false;
+  for (const condition of buildLogIncidentConditions(now)) {
+    const result = upsertLogIncident(condition, now);
+    seen.add(result.incident.id);
+    stateChanged = stateChanged || result.stateChanged;
+  }
+  const resolveAfter = config.logIncidents.resolveAfterMinutes * 60000;
+  for (const incident of logIncidents.values()) {
+    if (incident.source !== "log" || incident.status === "resolved" || seen.has(incident.id)) continue;
+    if (now - (incident.lastSeenAt || 0) < resolveAfter) continue;
+    incident.status = "resolved";
+    incident.resolvedAt = now;
+    incident.updatedAt = now;
+    stateChanged = true;
+    addEventLog("incident_resolved", 0, `日志事件已恢复：${incident.title}（${incident.scope.value || "全局"}）`, "");
+  }
+  while (logIncidents.size > 200) {
+    const oldest = Array.from(logIncidents.values()).sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))[0];
+    if (!oldest) break;
+    logIncidents.delete(oldest.id);
+    stateChanged = true;
+  }
+  if (stateChanged) {
+    scheduleLogIncidentPersist();
+    broadcastIncidentUpdate();
+  }
+}
+
+function getGroupPause(group, now = Date.now()) {
+  const normalized = String(group || "A").toUpperCase();
+  const pause = groupPauses.get(normalized);
+  if (!pause) return null;
+  if (pause.expiresAt <= now) {
+    groupPauses.delete(normalized);
+    broadcastIncidentUpdate();
+    return null;
+  }
+  return pause;
+}
+
+function isGroupPaused(group) {
+  return !!getGroupPause(group);
+}
+
+function handleLogIncidentAction(body) {
+  const id = String(body && body.id || "");
+  const action = String(body && body.action || "");
+  const incident = logIncidents.get(id);
+  if (!incident) throw new Error("incident not found");
+  const now = Date.now();
+  if (action === "acknowledge") {
+    incident.status = "acknowledged";
+    incident.acknowledgedAt = now;
+    incident.updatedAt = now;
+    addEventLog("incident_acknowledged", 0, `已确认日志事件：${incident.title}`, "");
+  } else if (action === "snooze") {
+    const minutes = clampLogIncidentNumber(body.minutes, config.logIncidents.defaultSnoozeMinutes, 1, 1440);
+    incident.status = "snoozed";
+    incident.snoozedUntil = now + minutes * 60000;
+    incident.updatedAt = now;
+    addEventLog("incident_snoozed", 0, `日志事件已静默 ${minutes} 分钟：${incident.title}`, "");
+  } else if (action === "pause_group") {
+    const group = String(body.group || (incident.scope && incident.scope.type === "group" ? incident.scope.value : "")).toUpperCase();
+    if (!group || !config.groups || !config.groups[group]) throw new Error("a valid group is required");
+    const minutes = clampLogIncidentNumber(body.minutes, 5, 1, 60);
+    groupPauses.set(group, { expiresAt: now + minutes * 60000, incidentId: incident.id, reason: incident.title });
+    addEventLog("incident_group_paused", 0, `日志事件处置：分组 ${group} 已暂停 ${minutes} 分钟（${incident.title}）`, "");
+  } else if (action === "resume_group") {
+    const group = String(body.group || (incident.scope && incident.scope.type === "group" ? incident.scope.value : "")).toUpperCase();
+    if (!group) throw new Error("group is required");
+    groupPauses.delete(group);
+    addEventLog("incident_group_resumed", 0, `日志事件处置：分组 ${group} 已恢复接入`, "");
+  } else {
+    throw new Error("unsupported incident action");
+  }
+  scheduleLogIncidentPersist();
+  broadcastIncidentUpdate();
+  return { incident: serializableLogIncident(incident), groupPauses: listActiveGroupPauses() };
+}
+
+function startLogSummaryRebuild() {
+  if (logSummaryRebuildState.phase === "running") return { ok: false, error: "summary rebuild is already running", ...logSummaryRebuildState };
+  logSummaryRebuildState = { phase: "running", startedAt: Date.now(), finishedAt: 0, error: "", rebuiltDays: 0 };
+  const task = queueLogWorker({ kind: "summary", logDir: LOG_DIR, excludeDays: [getLogDateKey(Date.now())] }, { priority: "background", timeoutMs: 120000 });
+  task.promise.then(result => {
+    const today = getLogDateKey(Date.now());
+    let rebuiltDays = 0;
+    for (const [day, aggregate] of Object.entries(result.days || {})) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day === today) continue;
+      logDailySummaries.set(day, normalizeLogAggregate(aggregate));
+      rebuiltDays++;
+    }
+    pruneLogRollups();
+    logSummaryRebuildState = { phase: "completed", startedAt: logSummaryRebuildState.startedAt, finishedAt: Date.now(), error: "", rebuiltDays };
+    scheduleLogSummaryPersist();
+    scheduleLogIncidentEvaluation();
+    broadcastIncidentUpdate();
+  }).catch(error => {
+    logSummaryRebuildState = { phase: "failed", startedAt: logSummaryRebuildState.startedAt, finishedAt: Date.now(), error: String(error.message || error).slice(0, 240), rebuiltDays: 0 };
+    broadcastIncidentUpdate();
+  });
+  broadcastIncidentUpdate();
+  return { ok: true, ...logSummaryRebuildState };
 }
 
 function computeHealthScore(ks, idx) {
@@ -2021,7 +2894,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     timeout: TIMEOUT,
   };
 
-  const logEntry = { time: Date.now(), idx: idx + 1, method, path: pathname, url: acct.url };
+  const logEntry = { time: Date.now(), idx: idx + 1, group: (acct.group || "A").toUpperCase(), method, path: pathname, url: acct.url };
   if (lifecycle) logEntry.streamId = lifecycle.responseId;
   if (body && LOG_DETAIL !== "basic") {
     try { const p = JSON.parse(body.toString()); logEntry.reqModel = p.model || null; } catch(e) {}
@@ -2341,9 +3214,19 @@ function setupWebSocket(server) {
       return;
     }
     wsClients.add(ws);
+    ws._logSubscribed = false;
     const data = buildStatusData();
     const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastKeyUseTime, lastResumeTime });
     ws.send(msg);
+    ws.on("message", raw => {
+      try {
+        const message = JSON.parse(String(raw));
+        if (message && message.type === "log_subscribe") {
+          ws._logSubscribed = message.enabled === true;
+          ws.send(JSON.stringify({ type: "log_subscription", enabled: ws._logSubscribed }));
+        }
+      } catch { /* ignore malformed dashboard messages */ }
+    });
     ws.on("close", () => wsClients.delete(ws));
     ws.on("error", () => wsClients.delete(ws));
   });
@@ -2358,8 +3241,8 @@ function broadcastStatus() {
   }
 }
 
-function broadcastNotification(type) {
-  const msg = JSON.stringify({ type: "notification", notificationType: type, time: new Date().toISOString() });
+function broadcastNotification(type, data = {}) {
+  const msg = JSON.stringify({ type: "notification", notificationType: type, time: new Date().toISOString(), ...data });
   for (const ws of wsClients) {
     if (ws.readyState === 1) ws.send(msg);
   }
@@ -2367,9 +3250,8 @@ function broadcastNotification(type) {
 
 function broadcastLog(entry) {
   if (!wsClients.size) return;
-  const msg = JSON.stringify({ type: "log", data: entry });
   for (const ws of wsClients) {
-    if (ws.readyState === 1) ws.send(msg);
+    if (ws.readyState === 1 && ws._logSubscribed === true) ws.send(JSON.stringify({ type: "log", data: entry }));
   }
 }
 
@@ -2552,7 +3434,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .tab:hover{background:#475569}
 .btn{background:#334155;border:1px solid #475569;color:#e2e8f0;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:clamp(11px,1.4vw,12px);white-space:nowrap}
 .btn:hover{background:#475569}
-.btn:disabled{cursor:wait;opacity:.65}
+.btn:disabled{cursor:not-allowed;opacity:.55}
 .btn-p{background:#1e3a5f;border-color:#3b82f6}
 .btn-p:hover{background:#1e4a7f}
 .btn-d{background:#3b1f1e;border-color:#7f3f3e}
@@ -2956,6 +3838,19 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><label><input type="checkbox" id="cfgLogFile" checked> 保留 <input id="cfgLogRetention" type="number" min="0" max="365" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天自动清理</label></div>
   <div style="color:#94a3b8;padding:4px 0">日志详情级别</div>
   <div><label><select id="cfgLogDetail" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><option value="full">完整</option><option value="basic">简洁</option></select> 简洁模式不记录模型名</label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）</div>
+  <div style="color:#94a3b8;padding:4px 0">启用日志事件</div>
+  <div><label><input type="checkbox" id="cfgLogIncidentEnabled" checked> 触发失败/流失败规则　<input type="checkbox" id="cfgLogIncidentNotify"> 发送通知</label></div>
+  <div style="color:#94a3b8;padding:4px 0">观察窗口 / 最低请求</div>
+  <div><input id="cfgLogIncidentWindow" type="number" min="1" max="60" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟 / <input id="cfgLogIncidentMinRequests" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 次</div>
+  <div style="color:#94a3b8;padding:4px 0">失败次数 / 失败率</div>
+  <div><input id="cfgLogIncidentErrorBurst" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 次 / <input id="cfgLogIncidentErrorRate" type="number" min="1" max="100" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> %</div>
+  <div style="color:#94a3b8;padding:4px 0">流失败次数 / 默认静默</div>
+  <div><input id="cfgLogIncidentStreamBurst" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 次 / <input id="cfgLogIncidentSnooze" type="number" min="1" max="1440" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟</div>
+  <div style="color:#94a3b8;padding:4px 0">恢复判定</div>
+  <div><input id="cfgLogIncidentResolve" type="number" min="1" max="120" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟无异常后自动恢复</div>
+  <div style="color:#94a3b8;padding:4px 0">延迟告警</div>
+  <div><label><input type="checkbox" id="cfgLogIncidentLatency"> 启用 P95　请求 <input id="cfgLogIncidentP95" type="number" min="1000" max="1800000" style="width:76px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> ms　首字节 <input id="cfgLogIncidentP95Ttfb" type="number" min="100" max="300000" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> ms</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔒 连续失败锁死阈值</div>
   <div><input id="cfgLockCount" type="number" min="1" max="20" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:60px" value="3" title="连续 N 次失败后自动锁死该 Key"> 次</div>
   <div style="color:#94a3b8;padding:4px 0">🎯 锁死监控错误码</div>
@@ -2999,7 +3894,7 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 
 <div class="modal" id="logModal">
 <div class="mcontent" style="max-width:1100px">
-<div class="mtitle"><span>实时请求日志</span><button class="btn" onclick="closeLogs()">✕</button></div>
+<div class="mtitle"><span>请求日志与运行事件</span><span style="display:flex;gap:6px"><button class="btn" id="logRebuildBtn" onclick="rebuildLogSummary()" title="后台重建历史日汇总，不读取或阻塞代理请求">重建汇总</button><button class="btn" onclick="closeLogs()">✕</button></span></div>
 <div id="logStats" style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
   <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
     <div style="font-size:10px;color:#94a3b8">总请求</div>
@@ -3037,10 +3932,18 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <div id="logSparklineWrap" class="log-sparkline-wrap" style="margin-bottom:2px" title="最近 30 分钟请求量趋势（蓝色=成功，红色=错误）"></div>
 <div id="logModelDist" class="log-model-row"></div>
 <div id="logErrorCluster" class="log-error-cluster" onclick="toggleErrorCluster()"><span class="head">⚠ 错误分布</span><div class="body" id="logErrorBody"></div></div>
+<div id="logIncidentPanel" style="display:none;border-top:1px solid #334155;margin:6px 0;padding-top:6px">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px"><span style="color:#fbbf24;font-weight:600">运行事件 <span id="logIncidentStatus" style="color:#94a3b8;font-weight:400"></span></span><span id="logIncidentRefreshStatus" aria-live="polite" style="color:#94a3b8;font-size:10px;flex:1;min-width:90px"></span><button class="btn" id="logIncidentRefreshBtn" type="button" style="font-size:10px;padding:2px 7px" onclick="refreshLogOperations({interactive:true})" title="重新读取当前运行事件">刷新事件</button></div>
+  <div id="logIncidentList" style="display:grid;gap:4px;margin-top:5px"></div>
+  <div id="logGroupPauseList" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px"></div>
+</div>
 <div class="log-filters" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center">
 <input id="logKeyFilter" placeholder="Key #" style="width:50px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logStatusFilter" placeholder="状态码" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logModelFilter" placeholder="模型" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logUpstreamFilter" placeholder="上游域名" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logPathFilter" placeholder="路径" style="width:82px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logGroupFilter" placeholder="分组" style="width:48px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <input id="logSearch" placeholder="搜索..." style="width:90px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" onkeydown="if(event.key==='Enter')reloadLogs()">
 <select id="logTimeFilter" onchange="toggleLogCustomRange()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
 <option value="">全部时间</option><option value="5m">最近 5 分钟</option><option value="15m">最近 15 分钟</option><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="custom">自定义范围</option>
@@ -3052,6 +3955,7 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 </span>
 <button class="btn" onclick="reloadLogs()" style="font-size:11px;padding:2px 8px">🔍 搜索</button>
 <button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px">⬇ CSV</button>
+<span id="logQueryHint" style="color:#64748b;font-size:10px"></span>
 </div>
 <div style="overflow-x:auto;max-height:500px;overflow-y:auto"><table class="log-table"><thead><tr>
 <th style="width:30px;font-size:10px;text-align:center">序</th>
@@ -3063,10 +3967,11 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <th>首字节</th>
 </tr></thead><tbody id="logBody"></tbody></table></div>
 <div id="logPagination" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:6px 0;font-size:12px">
-  <button class="btn" id="logPrevBtn" onclick="logPage(-1)" style="font-size:11px;padding:2px 10px" disabled>← 上一页</button>
-  <span id="logPageInfo" style="color:#94a3b8">第 1 / 1 页</span>
-  <button class="btn" id="logNextBtn" onclick="logPage(1)" style="font-size:11px;padding:2px 10px" disabled>下一页 →</button>
-  <span style="color:#64748b;font-size:10px;margin-left:8px" id="logRealTimeBadge">● 实时</span>
+  <button class="btn" id="logPrevBtn" type="button" onclick="logPage(-1)" style="font-size:11px;padding:2px 10px" title="浏览历史后可按页返回" disabled>← 上一页</button>
+  <span id="logPageInfo" style="color:#94a3b8">最新 50 条</span>
+  <button class="btn" id="logBrowseHistoryBtn" type="button" onclick="toggleLogHistory()" style="font-size:11px;padding:2px 8px" title="切换为可分页的历史日志视图">浏览历史</button>
+  <button class="btn" id="logNextBtn" type="button" onclick="logPage(1)" style="font-size:11px;padding:2px 10px" title="浏览历史后可翻到更早记录" disabled>下一页 →</button>
+  <span style="color:#64748b;font-size:10px;margin-left:8px" id="logRealTimeBadge">● 未订阅</span>
 </div>
 </div></div>
 
@@ -3291,46 +4196,20 @@ function connectWS(){
   wsFailed=false;
   const t=__adminTokenState.get();
   ws=new WebSocket("ws://localhost:3456"+(t?"?token="+encodeURIComponent(t):""));
+  ws.onopen=function(){logSubscriptionEnabled=false;if(document.getElementById("logModal").classList.contains("on"))setLogSubscription(true)};
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
       if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;boostedBatch=msg.boostedBatch||[];boostedBatchMode=msg.boostedBatchMode||"";if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastKeyUseTime)lastKeyUseTime=msg.lastKeyUseTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
-      if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on")){
-        logAllEntries.push(msg.data);
-        _logSparkVersion++;
-        if(logAllEntries.length>LOG_PAGE_SIZE*3)logAllEntries.splice(0,logAllEntries.length-LOG_PAGE_SIZE*3);
-        if(logLastStats)logLastStats.total=(logLastStats.total||0)+1;
-        logTotalPages=Math.max(1,Math.ceil((logLastStats?.totalAll||logLastStats?.total||logAllEntries.length)/LOG_PAGE_SIZE));
-        if(logCurrentPage===1){
-          const tbody=document.getElementById("logBody");
-          if(tbody){
-            const tr=document.createElement("tr");
-            tr.className=logRowClass(msg.data);
-            tr.onclick=function(){toggleLogDetail(this,logAllEntries.length-1)};
-            tr.innerHTML=makeLogRow(msg.data, logAllEntries.length);
-            tbody.insertBefore(tr,tbody.firstChild);
-            const expandRow=document.createElement("tr");
-            expandRow.className="log-row-expand";
-            expandRow.id="logDetail_"+(logAllEntries.length-1);
-            expandRow.innerHTML='<td colspan="12"><span id="logDetailContent_'+(logAllEntries.length-1)+'"></span></td>';
-            tbody.insertBefore(expandRow,tr.nextSibling);
-            if(tbody.children.length>LOG_PAGE_SIZE*2+2)while(tbody.children.length>LOG_PAGE_SIZE*2+2)tbody.removeChild(tbody.lastChild);
-          }
-        }
-        // Debounce chart re-renders
-        if(_logRenderTimer)clearTimeout(_logRenderTimer);
-        _logRenderTimer=setTimeout(function(){
-          _logRenderTimer=null;
-          renderLogSparkline();
-          renderLogModelDist();
-          renderLogErrorCluster();
-        },500);
-      }
+      if(msg.type==="notification"&&msg.notificationType==="log_incident"){const incident=msg.incident||{};const message="日志事件："+(incident.title||"检测到异常")+(incident.scope&&incident.scope.value?"（"+incident.scope.value+"）":"");showAlert(message);playAlert();sendDesktop(message)}
+      if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on"))enqueueLiveLog(msg.data);
+      if(msg.type==="incidents")applyLogIncidentData(msg.data||{});
     }catch(e){}
   };
   ws.onclose=function(e){
     wsFailed=true;
+    logSubscriptionEnabled=false;
     if(pollTimer)clearInterval(pollTimer);
     if(e&&e.code===4001){
       __adminTokenState.clear();
@@ -3346,7 +4225,7 @@ function connectWS(){
 }
 
 function playAlert(){try{var a=new AudioContext(),o=a.createOscillator(),g=a.createGain();o.type="sine";o.frequency.value=880;g.gain.value=.3;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+.3)}catch(e){}}
-function sendDesktop(){try{if(config.notifications.desktop!==false&&Notification.permission==="granted")new Notification("Codex Proxy",{body:"所有 Key 已不可用！",icon:""})}catch(e){}}
+function sendDesktop(message){try{if(config.notifications.desktop!==false&&Notification.permission==="granted")new Notification("Codex Proxy",{body:message||"所有 Key 已不可用！",icon:""})}catch(e){}}
 
 async function loadKeys(){
   try{
@@ -3385,6 +4264,19 @@ async function loadConfigUI(){
     document.getElementById("cfgLogFile").checked=c.logFile!==false;
     document.getElementById("cfgLogRetention").value=c.logRetentionDays||7;
     document.getElementById("cfgLogDetail").value=c.logDetail||"full";
+    const logIncidents=c.logIncidents||{};
+    document.getElementById("cfgLogIncidentEnabled").checked=logIncidents.enabled!==false;
+    document.getElementById("cfgLogIncidentNotify").checked=logIncidents.notify===true;
+    document.getElementById("cfgLogIncidentWindow").value=logIncidents.windowMinutes||5;
+    document.getElementById("cfgLogIncidentMinRequests").value=logIncidents.minRequests||8;
+    document.getElementById("cfgLogIncidentErrorBurst").value=logIncidents.errorBurst||5;
+    document.getElementById("cfgLogIncidentErrorRate").value=logIncidents.errorRatePercent||60;
+    document.getElementById("cfgLogIncidentStreamBurst").value=logIncidents.streamFailureBurst||3;
+    document.getElementById("cfgLogIncidentSnooze").value=logIncidents.defaultSnoozeMinutes||15;
+    document.getElementById("cfgLogIncidentResolve").value=logIncidents.resolveAfterMinutes||5;
+    document.getElementById("cfgLogIncidentLatency").checked=logIncidents.latencyEnabled===true;
+    document.getElementById("cfgLogIncidentP95").value=logIncidents.p95Ms||120000;
+    document.getElementById("cfgLogIncidentP95Ttfb").value=logIncidents.p95TtfbMs||20000;
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
@@ -4693,242 +5585,13 @@ function doFrontendExport(){
 }
 // --- Log panel state ---
 let logCurrentPage = 1;
-let logTotalPages = 1;
 let logAllEntries = [];
 let logLastStats = null;
-const LOG_PAGE_SIZE = 200;
-let _logRenderTimer = null;
-let _logSparkVersion = 0;
-let _logSparkCache = { version: 0, bars: null };
+let logSortField = "time";
+let logSortAsc = false;
 
 function logRequestFailed(e){
   return !!e && (e.status === 0 || e.status >= 400 || e.streamOutcome === "failed");
-}
-
-function closeLogs(){
-  document.getElementById("logModal").classList.remove("on");
-}
-function buildLogFilterQuery(){
-  const p=new URLSearchParams();
-  const k=document.getElementById("logKeyFilter")?.value.trim();
-  if(k)p.set("key",k);
-  const s=document.getElementById("logStatusFilter")?.value.trim();
-  if(s)p.set("status",s);
-  const m=document.getElementById("logModelFilter")?.value.trim();
-  if(m)p.set("model",m);
-  const qs=document.getElementById("logSearch")?.value.trim();
-  if(qs)p.set("q",qs);
-  const t=document.getElementById("logTimeFilter")?.value;
-  if(t==="custom"){
-    const st=document.getElementById("logStartTime")?.value;
-    const et=document.getElementById("logEndTime")?.value;
-    if(st)p.set("since",new Date(st).getTime());
-    if(et)p.set("until",new Date(et).getTime());
-  }else if(t){
-    const ms={"5m":3e5,"15m":9e5,"1h":36e5,"24h":864e5,"7d":6048e5,"30d":2592e6}[t];
-    if(ms)p.set("since",Date.now()-ms);
-  }
-  p.set("limit",String(LOG_PAGE_SIZE));
-  return p;
-}
-async function openLogs(){
-  document.getElementById("logModal").classList.add("on");
-  await loadLogs(1);
-}
-async function loadLogs(page){
-  try{
-    const qp=buildLogFilterQuery();
-    const pg=page||logCurrentPage;
-    qp.set("offset",String(Math.max(0,(pg-1)*LOG_PAGE_SIZE)));
-    const r=await fetch("http://localhost:3456/__logs?"+qp.toString());
-    if(!r.ok)return;
-    const resp=await r.json();
-    logAllEntries = resp.entries || resp;
-    _logSparkVersion++;
-    logLastStats = resp.stats || null;
-    logTotalPages = Math.max(1, Math.ceil((logLastStats?.totalAll || logLastStats?.total || logAllEntries.length) / LOG_PAGE_SIZE));
-    logCurrentPage = pg;
-    if (logCurrentPage > logTotalPages) logCurrentPage = logTotalPages;
-    renderLogs();
-  }catch(e){}
-}
-function reloadLogs(){ loadLogs(1); }
-function logPage(delta){
-  const np = Math.max(1, Math.min(logTotalPages, logCurrentPage + delta));
-  if (np !== logCurrentPage) loadLogs(np);
-}
-function renderLogs(){
-  const tbody=document.getElementById("logBody");
-  const startIdx = (logCurrentPage - 1) * LOG_PAGE_SIZE;
-  const pageEntries = logAllEntries;
-  tbody.innerHTML = pageEntries.length
-    ? pageEntries.map((e,i) => '<tr class="'+logRowClass(e)+'" onclick="toggleLogDetail(this,'+(startIdx+i)+')">'+makeLogRow(e, startIdx+i+1)+'</tr>'
-      + '<tr class="log-row-expand" id="logDetail_'+(startIdx+i)+'"><td colspan="12"><span id="logDetailContent_'+(startIdx+i)+'"></span></td></tr>').join("")
-    : '<tr><td colspan="12" style="text-align:center;color:#64748b;padding:20px">暂无记录</td></tr>';
-  // Pagination
-  document.getElementById("logPrevBtn").disabled = logCurrentPage <= 1;
-  document.getElementById("logNextBtn").disabled = logCurrentPage >= logTotalPages;
-  document.getElementById("logPageInfo").textContent = "\u7b2c "+logCurrentPage+" / "+logTotalPages+" \u9875";
-  // Stats
-  if (logLastStats) {
-    const s = logLastStats;
-    document.getElementById("lsTotal").textContent = s.total;
-    document.getElementById("lsSuccess").textContent = s.total > 0 ? s.successRate + "%" : "-";
-    document.getElementById("lsSuccess").style.color = s.successRate >= 95 ? "#22c55e" : s.successRate >= 80 ? "#f59e0b" : "#ef4444";
-    document.getElementById("lsAvgDur").textContent = s.avgDuration ? fmtDur(s.avgDuration) : "-";
-    document.getElementById("lsP95").textContent = s.p95 ? fmtDur(s.p95) : "-";
-    document.getElementById("lsP99").textContent = s.p99 ? fmtDur(s.p99) : "-";
-    document.getElementById("ls4xx").textContent = s.error4xx || "0";
-    document.getElementById("ls4xx").style.color = s.error4xx > 0 ? "#f59e0b" : "#94a3b8";
-    document.getElementById("ls5xx").textContent = s.error5xx || "0";
-    document.getElementById("ls5xx").style.color = s.error5xx > 0 ? "#ef4444" : "#94a3b8";
-    document.getElementById("lsTimeout").textContent = s.errorTimeout || "0";
-  }
-  renderLogSparkline();
-  renderLogModelDist();
-  renderLogErrorCluster();
-}
-function renderLogSparkline(){
-  // Cache: only recompute if data changed
-  if (_logSparkCache.version === _logSparkVersion && _logSparkCache.bars) {
-    document.getElementById("logSparklineWrap").innerHTML = _logSparkCache.bars;
-    return;
-  }
-  const wrap = document.getElementById("logSparklineWrap");
-  const now = Date.now();
-  const bars = [];
-  for (let i = 29; i >= 0; i--) {
-    const start = now - (i + 1) * 60000;
-    const end = now - i * 60000;
-    const inMin = logAllEntries.filter(e => e.time >= start && e.time < end && e.type !== "event");
-    const total = inMin.length;
-    const errs = inMin.filter(logRequestFailed).length;
-    bars.push({ total, errs, start });
-  }
-  const maxVal = Math.max(1, ...bars.map(b => b.total));
-  const html = bars.map(b => {
-    const h = Math.round(b.total / maxVal * 24);
-    const cls = b.errs > 0 ? "log-spark-bar err" : (b.total > 0 ? "log-spark-bar ok" : "log-spark-bar");
-    const tip = new Date(b.start).toTimeString().slice(0,5)+" - 请求:"+b.total+" 错误:"+b.errs;
-    return '<div class="'+cls+'" style="height:'+Math.max(h,1)+'px;background:'+(b.errs>0?'#ef4444':b.total>0?'#3b82f6':'#334155')+'" title="'+tip+'"></div>';
-  }).join("");
-  _logSparkCache.version = _logSparkVersion;
-  _logSparkCache.bars = html;
-  wrap.innerHTML = html;
-}
-function renderLogModelDist(){
-  const el = document.getElementById("logModelDist");
-  const map = {};
-  const reqs = logAllEntries.filter(e => e.type !== "event");
-  for (const e of reqs) {
-    const m = e.overrideModel || e.reqModel || "(未知)";
-    if (!map[m]) map[m] = { total: 0, fail: 0, dur: 0 };
-    map[m].total++;
-    if (logRequestFailed(e)) map[m].fail++;
-    if (e.duration) map[m].dur += e.duration;
-  }
-  const sorted = Object.keys(map).sort((a,b) => map[b].total - map[a].total).slice(0,8);
-  el.innerHTML = sorted.length ? '<span style="color:#64748b;margin-right:4px">📊 模型:</span>'
-    + sorted.map(m => {
-      const s = map[m];
-      const avg = s.total > 0 ? Math.round(s.dur / s.total) : 0;
-      const failPct = s.total > 0 ? Math.round(s.fail / s.total * 100) : 0;
-      return '<span class="log-model-tag">'+esc(m)+' ('+s.total+')'
-        + (s.fail > 0 ? ' <span class="fail">✕'+s.fail+'</span>' : '')
-        + ' <span style="color:#64748b">'+fmtDur(avg)+'</span></span>';
-    }).join("") : '';
-}
-function renderLogErrorCluster(){
-  const body = document.getElementById("logErrorBody");
-  const map = {};
-  const reqs = logAllEntries.filter(e => e.type !== "event");
-  for (const e of reqs) {
-    const st = e.status || 0;
-    if (logRequestFailed(e)) {
-      const key = e.streamOutcome === "failed" ? "流中断" : (st === 0 ? "超时" : String(st));
-      map[key] = (map[key] || 0) + 1;
-    }
-  }
-  const sorted = Object.keys(map).sort((a,b) => map[b] - map[a]);
-  const el = document.getElementById("logErrorCluster");
-  const head = el.querySelector(".head");
-  const totalErr = sorted.reduce((s,k) => s+map[k], 0);
-  head.textContent = "⚠ 错误分布 ("+totalErr+" 次)";
-  body.innerHTML = sorted.length
-    ? sorted.map(k => '<span class="log-error-code">'+k+' x'+map[k]+'</span>').join("")
-    : '<span style="color:#22c55e">无错误</span>';
-}
-function toggleErrorCluster(){
-  document.getElementById("logErrorBody").classList.toggle("open");
-}
-let logSortField = "time";
-let logSortAsc = false;
-function logSortBy(field){
-  if (logSortField === field) logSortAsc = !logSortAsc;
-  else { logSortField = field; logSortAsc = field === "time" ? false : true; }
-  // Update sort icons
-  ["","_idx","_model","_status","_dur"].forEach(sfx => {
-    const el = document.getElementById("logSortIcon"+sfx);
-    if (el) el.textContent = (field === (sfx.replace("_","") || "time")) ? (logSortAsc ? "▲" : "▼") : "";
-  });
-  logAllEntries.sort((a,b) => {
-    if (a.type === "event" && b.type !== "event") return 1;
-    if (a.type !== "event" && b.type === "event") return -1;
-    let va, vb;
-    switch(field){
-      case "idx": va=a.idx||0; vb=b.idx||0; break;
-      case "model": va=(a.overrideModel||a.reqModel||""); vb=(b.overrideModel||b.reqModel||""); return logSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-      case "status": va=a.status||0; vb=b.status||0; break;
-      case "dur": va=a.duration||0; vb=b.duration||0; break;
-      default: va=a.time||0; vb=b.time||0;
-    }
-    return logSortAsc ? va - vb : vb - va;
-  });
-  _logSparkVersion++;
-  renderLogs();
-}
-function toggleLogDetail(tr, idx){
-  const expandRow = document.getElementById("logDetail_"+idx);
-  if (!expandRow) return;
-  const isOpen = expandRow.classList.contains("open");
-  // Close all other details
-  document.querySelectorAll(".log-row-expand.open").forEach(el => el.classList.remove("open"));
-  if (isOpen) return;
-  expandRow.classList.add("open");
-  const e = logAllEntries[idx];
-  if (!e) return;
-  const content = document.getElementById("logDetailContent_"+idx);
-  if (e.type === "event") {
-    const lines = ["事件: "+(e.eventType||""), "消息: "+(e.message||""), "URL: "+(e.url||"")];
-    if (e.eventType === "stream_terminal") {
-      lines.push("流 ID: "+(e.streamId||""));
-      lines.push("结果: "+(e.streamOutcome||""));
-      lines.push("原因: "+(e.streamReason||""));
-      lines.push("收到 [DONE]: "+(e.streamSawDone === true ? "是" : "否"));
-    }
-    content.textContent = lines.join("\\n");
-  } else {
-    const lines = [
-      "时间: "+new Date(e.time).toISOString(),
-      "Key #: "+(e.idx||""),
-      "方法: "+e.method,
-      "路径: "+e.path,
-      "上游URL: "+(e.url||""),
-      "模型: "+(e.reqModel||""),
-      "覆盖模型: "+(e.overrideModel||""),
-      "状态码: "+e.status,
-      "上行: "+fmtBytes(e.inputBytes||0),
-      "下行: "+fmtBytes(e.outputBytes||0),
-      "耗时: "+fmtDur(e.duration||0),
-      "首字节: "+(e.ttfb?fmtDur(e.ttfb):"-"),
-      "协议转换: "+(e.conversion?"是":"否"),
-      "流 ID: "+(e.streamId||""),
-      "流结果: "+(e.streamOutcome||""),
-      "流终态原因: "+(e.streamReason||""),
-      "收到 [DONE]: "+(e.streamSawDone === true ? "是" : "否"),
-    ];
-    content.textContent = lines.join("\\n");
-  }
 }
 function closeLogKeyPopup(){
   document.getElementById("logKeyPopup").style.display="none";
@@ -4977,6 +5640,466 @@ document.addEventListener("click", function(e){
     popup.style.display = "none";
   }
 });
+
+// The log viewer keeps only the visible page in the DOM. Historical scans run in
+// the server worker; the dashboard never asks the main proxy process to count a file.
+const LOG_FAST_PAGE_SIZE = 50;
+const LOG_HISTORY_PAGE_SIZE = 100;
+let logCursorStack = [""];
+let logHasMore = false;
+let logQueryMode = "recent";
+let logQueryTruncated = false;
+let logRecentSource = "memory";
+let logRecentHistoryChecked = false;
+let logRecentHistoryUnavailable = false;
+let logRecentHistoryFilesAvailable = 0;
+let logRecentHistoryFilesScanned = 0;
+let logHistoryFilesAvailable = 0;
+let logHistoryFilesScanned = 0;
+let logForceHistory = false;
+let logOverview = null;
+let logAbortController = null;
+let logRequestSerial = 0;
+let logLivePending = [];
+let logLiveFlushTimer = null;
+let logOverviewRefreshTimer = null;
+let logOperations = { incidents: [], groupPauses: [], summaryRebuild: { phase: "idle" } };
+let logSubscriptionEnabled = false;
+let logIncidentRefreshInFlight = false;
+let logIncidentRefreshStatus = "";
+
+function isLogModalOpen(){
+  const modal=document.getElementById("logModal");
+  return !!modal&&modal.classList.contains("on");
+}
+
+function setLogSubscription(enabled){
+  const next=enabled===true;
+  if(ws&&ws.readyState===1&&logSubscriptionEnabled!==next){
+    try{ws.send(JSON.stringify({type:"log_subscribe",enabled:next}));}catch(e){}
+  }
+  logSubscriptionEnabled=next;
+  const badge=document.getElementById("logRealTimeBadge");
+  if(!badge)return;
+  if(!isLogModalOpen()||enabled!==true){badge.textContent="● 未订阅";badge.style.color="#64748b";return;}
+  badge.textContent=logQueryMode==="recent"?"● 实时订阅":"● 实时已订阅（历史筛选）";
+  badge.style.color="#4ade80";
+}
+
+function buildLogFilterQuery(){
+  const p=new URLSearchParams();
+  const add=(id,name)=>{const el=document.getElementById(id);const value=el&&el.value?el.value.trim():"";if(value)p.set(name,value);};
+  add("logKeyFilter","key");
+  add("logStatusFilter","status");
+  add("logModelFilter","model");
+  add("logUpstreamFilter","upstream");
+  add("logPathFilter","path");
+  add("logGroupFilter","group");
+  add("logSearch","q");
+  const time=document.getElementById("logTimeFilter")?.value;
+  if(time==="custom"){
+    const start=document.getElementById("logStartTime")?.value;
+    const end=document.getElementById("logEndTime")?.value;
+    const since=start?new Date(start).getTime():NaN;
+    const until=end?new Date(end).getTime():NaN;
+    if(Number.isFinite(since))p.set("since",String(since));
+    if(Number.isFinite(until))p.set("until",String(until));
+  }else if(time){
+    const ranges={"5m":3e5,"15m":9e5,"1h":36e5,"24h":864e5,"7d":6048e5,"30d":2592e6};
+    if(ranges[time])p.set("since",String(Date.now()-ranges[time]));
+  }
+  return p;
+}
+
+function logQueryHasFilters(query){
+  return ["key","status","model","upstream","path","group","q","since","until"].some(name=>query.has(name));
+}
+
+function closeLogs(){
+  const modal=document.getElementById("logModal");
+  if(modal)modal.classList.remove("on");
+  if(logAbortController){logAbortController.abort();logAbortController=null;}
+  if(logLiveFlushTimer){clearTimeout(logLiveFlushTimer);logLiveFlushTimer=null;}
+  if(logOverviewRefreshTimer){clearTimeout(logOverviewRefreshTimer);logOverviewRefreshTimer=null;}
+  logLivePending=[];
+  setLogSubscription(false);
+}
+
+async function openLogs(){
+  document.getElementById("logModal").classList.add("on");
+  logForceHistory=false;
+  logCursorStack=[""];
+  logCurrentPage=1;
+  logHasMore=false;
+  logQueryTruncated=false;
+  logIncidentRefreshStatus="";
+  setLogSubscription(true);
+  refreshLogOperations();
+  await loadLogs({reset:true});
+}
+
+async function loadLogs(options){
+  const opts=options&&typeof options==="object"?options:{};
+  const query=buildLogFilterQuery();
+  const requestedMode=(logForceHistory||logQueryHasFilters(query))?"history":"recent";
+  if(opts.reset||requestedMode!==logQueryMode){
+    logCursorStack=[""];
+    logCurrentPage=1;
+    logHasMore=false;
+    logQueryTruncated=false;
+  }
+  const pageIndex=requestedMode==="history"?Math.max(0,Number.isInteger(opts.pageIndex)?opts.pageIndex:logCurrentPage-1):0;
+  if(requestedMode==="history"&&pageIndex>0&&!logCursorStack[pageIndex])return;
+  query.set("mode",requestedMode);
+  query.set("limit",String(requestedMode==="history"?LOG_HISTORY_PAGE_SIZE:LOG_FAST_PAGE_SIZE));
+  if(requestedMode==="history"&&logCursorStack[pageIndex])query.set("cursor",logCursorStack[pageIndex]);
+  if(logAbortController)logAbortController.abort();
+  const controller=new AbortController();
+  logAbortController=controller;
+  const serial=++logRequestSerial;
+  const hint=document.getElementById("logQueryHint");
+  if(hint)hint.textContent=requestedMode==="history"?"正在读取历史日志...":"正在读取最新日志...";
+  try{
+    const response=await fetch("/__logs?"+query.toString(),{cache:"no-store",signal:controller.signal});
+    const payload=await response.json();
+    if(serial!==logRequestSerial||controller.signal.aborted)return;
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"日志查询失败");
+    logAllEntries=Array.isArray(payload.entries)?payload.entries:[];
+    logLastStats=payload.stats||null;
+    logOverview=payload.overview||logOverview;
+    logQueryMode=payload.mode||requestedMode;
+    logQueryTruncated=payload.truncated===true;
+    if(logQueryMode==="recent"){
+      logRecentSource=payload.source==="history"?"history":"memory";
+      logRecentHistoryChecked=payload.historyChecked===true;
+      logRecentHistoryUnavailable=payload.historyUnavailable===true;
+      logRecentHistoryFilesAvailable=Math.max(0,Math.floor(Number(payload.historyFilesAvailable)||0));
+      logRecentHistoryFilesScanned=Math.max(0,Math.floor(Number(payload.historyFilesScanned)||0));
+    }else{
+      logHistoryFilesAvailable=Math.max(0,Math.floor(Number(payload.filesAvailable)||0));
+      logHistoryFilesScanned=Math.max(0,Math.floor(Number(payload.filesScanned)||0));
+    }
+    if(logQueryMode==="history"){
+      logCurrentPage=pageIndex+1;
+      logHasMore=payload.hasMore===true&&!!payload.nextCursor;
+      if(logHasMore)logCursorStack[pageIndex+1]=payload.nextCursor;
+      else logCursorStack=logCursorStack.slice(0,pageIndex+1);
+    }else{
+      logCurrentPage=1;
+      logHasMore=false;
+      logCursorStack=[""];
+    }
+    if(payload.overview)applyLogIncidentData({incidents:payload.overview.incidents||[],groupPauses:payload.overview.groupPauses||[]});
+    renderLogs();
+  }catch(error){
+    if(error&&error.name==="AbortError")return;
+    if(serial!==logRequestSerial)return;
+    if(hint)hint.textContent="日志查询失败："+(error&&error.message?error.message:"未知错误");
+  }finally{
+    if(logAbortController===controller)logAbortController=null;
+  }
+}
+
+function reloadLogs(){loadLogs({reset:true});}
+
+function toggleLogHistory(){
+  if(logQueryHasFilters(buildLogFilterQuery()))return;
+  logForceHistory=!logForceHistory;
+  loadLogs({reset:true});
+}
+
+function logPage(delta){
+  if(logQueryMode!=="history")return;
+  const currentIndex=logCurrentPage-1;
+  if(delta<0&&currentIndex>0)loadLogs({pageIndex:currentIndex-1});
+  if(delta>0&&logHasMore)loadLogs({pageIndex:currentIndex+1});
+}
+
+function renderLogStats(){
+  const stats=(logOverview&&logOverview.stats)||logLastStats;
+  if(!stats)return;
+  const set=(id,value)=>{const el=document.getElementById(id);if(el)el.textContent=value;};
+  set("lsTotal",stats.total||0);
+  set("lsSuccess",stats.total>0?stats.successRate+"%":"-");
+  const success=document.getElementById("lsSuccess");
+  if(success)success.style.color=stats.successRate>=95?"#22c55e":stats.successRate>=80?"#f59e0b":"#ef4444";
+  set("lsAvgDur",stats.avgDuration?fmtDur(stats.avgDuration):"-");
+  set("lsP95",stats.p95?fmtDur(stats.p95):"-");
+  set("lsP99",stats.p99?fmtDur(stats.p99):"-");
+  set("ls4xx",stats.error4xx||0);
+  set("ls5xx",stats.error5xx||0);
+  set("lsTimeout",stats.errorTimeout||0);
+  const four=document.getElementById("ls4xx");
+  const five=document.getElementById("ls5xx");
+  if(four)four.style.color=stats.error4xx>0?"#f59e0b":"#94a3b8";
+  if(five)five.style.color=stats.error5xx>0?"#ef4444":"#94a3b8";
+}
+
+function renderLogs(){
+  const tbody=document.getElementById("logBody");
+  if(!tbody)return;
+  tbody.innerHTML=logAllEntries.length
+    ?logAllEntries.map((entry,index)=>'<tr class="'+logRowClass(entry)+'" data-log-index="'+index+'" onclick="toggleLogDetail(this,'+index+')">'+makeLogRow(entry,index+1)+"</tr>").join("")
+    :'<tr><td colspan="12" style="text-align:center;color:#64748b;padding:20px">暂无记录</td></tr>';
+  const previous=document.getElementById("logPrevBtn");
+  const next=document.getElementById("logNextBtn");
+  const hasLogFilters=logQueryHasFilters(buildLogFilterQuery());
+  if(previous){previous.disabled=logQueryMode!=="history"||logCurrentPage<=1;previous.title=logQueryMode!=="history"?"默认视图仅显示最新记录；点击“浏览历史”后可分页":"已是最早可返回的历史页";}
+  if(next){next.disabled=logQueryMode!=="history"||!logHasMore;next.title=logQueryMode!=="history"?"默认视图仅显示最新记录；点击“浏览历史”后可分页":logHasMore?"查看更早的历史记录":"没有更早的历史记录";}
+  const browseHistory=document.getElementById("logBrowseHistoryBtn");
+  if(browseHistory){
+    browseHistory.style.display=hasLogFilters?"none":"";
+    browseHistory.textContent=logQueryMode==="history"&&logForceHistory?"最新视图":"浏览历史";
+    browseHistory.title=logQueryMode==="history"&&logForceHistory?"返回仅显示最新记录的即时视图":"切换为可分页的历史日志视图";
+  }
+  const pageInfo=document.getElementById("logPageInfo");
+  if(pageInfo)pageInfo.textContent=logQueryMode==="history"?"历史第 "+logCurrentPage+" 页":"最新 "+LOG_FAST_PAGE_SIZE+" 条"+(logRecentSource==="history"?"（历史尾部）":"");
+  const hint=document.getElementById("logQueryHint");
+  const historyFileHint=(available,scanned)=>available>0?"发现 "+available+" 个保存日志文件，已扫描 "+Math.min(available,scanned)+" 个":"未发现符合格式的保存日志文件";
+  if(hint)hint.textContent=logQueryMode==="history"?(logQueryTruncated?"历史查询已达到本页扫描边界":"历史查询 · "+historyFileHint(logHistoryFilesAvailable,logHistoryFilesScanned)+" · 游标翻页"):(logRecentSource==="history"?"已载入保存日志尾部（"+historyFileHint(logRecentHistoryFilesAvailable,logRecentHistoryFilesScanned)+"）· 实时订阅":logRecentHistoryUnavailable?"保存日志暂不可读取 · 显示内存记录 · 实时订阅":logRecentHistoryChecked?"已检查保存日志（"+historyFileHint(logRecentHistoryFilesAvailable,logRecentHistoryFilesScanned)+"），未找到可读记录 · 实时订阅":"内存尾部 · 实时订阅");
+  setLogSubscription(isLogModalOpen());
+  renderLogStats();
+  renderLogSparkline();
+  renderLogModelDist();
+  renderLogErrorCluster();
+  renderLogOperations();
+}
+
+function renderLogSparkline(){
+  const wrap=document.getElementById("logSparklineWrap");
+  if(!wrap)return;
+  const timeline=logOverview&&Array.isArray(logOverview.timeline)?logOverview.timeline:[];
+  const max=Math.max(1,...timeline.map(item=>Number(item.total)||0));
+  wrap.innerHTML=timeline.map(item=>{
+    const total=Number(item.total)||0;
+    const errors=Number(item.errors)||0;
+    const height=Math.max(1,Math.round(total/max*24));
+    const color=errors>0?"#ef4444":total>0?"#3b82f6":"#334155";
+    const tip=new Date(item.time).toTimeString().slice(0,5)+" - 请求:"+total+" 错误:"+errors;
+    return '<div class="log-spark-bar" style="height:'+height+'px;background:'+color+'" title="'+esc(tip)+'"></div>';
+  }).join("");
+}
+
+function renderLogModelDist(){
+  const target=document.getElementById("logModelDist");
+  if(!target)return;
+  const models=logOverview&&logOverview.dimensions&&Array.isArray(logOverview.dimensions.model)?logOverview.dimensions.model:[];
+  target.innerHTML=models.length?'<span style="color:#64748b;margin-right:4px">模型:</span>'+models.slice(0,8).map(item=>{
+    const failures=(item.error4xx||0)+(item.error5xx||0)+(item.errorTimeout||0)+(item.errorStream||0);
+    return '<span class="log-model-tag">'+esc(item.value||"(未知)")+" ("+(item.total||0)+")"+(failures?' <span class="fail">x'+failures+"</span>":"")+' <span style="color:#64748b">'+(item.avgDuration?fmtDur(item.avgDuration):"-")+"</span></span>";
+  }).join(""):"";
+}
+
+function renderLogErrorCluster(){
+  const body=document.getElementById("logErrorBody");
+  const panel=document.getElementById("logErrorCluster");
+  if(!body||!panel)return;
+  const stats=(logOverview&&logOverview.stats)||logLastStats||{};
+  const groups=[["4xx",stats.error4xx],["5xx",stats.error5xx],["超时",stats.errorTimeout],["流中断",stats.errorStream]].filter(item=>Number(item[1])>0);
+  const head=panel.querySelector(".head");
+  const total=groups.reduce((sum,item)=>sum+(Number(item[1])||0),0);
+  if(head)head.textContent="错误分布 ("+total+" 次)";
+  body.innerHTML=groups.length?groups.map(item=>'<span class="log-error-code">'+item[0]+" x"+item[1]+"</span>").join(""):'<span style="color:#22c55e">无错误</span>';
+}
+
+function toggleErrorCluster(){
+  const body=document.getElementById("logErrorBody");
+  if(body)body.classList.toggle("open");
+}
+
+function logSortBy(field){
+  if(logSortField===field)logSortAsc=!logSortAsc;
+  else{logSortField=field;logSortAsc=field!=="time";}
+  ["","_idx","_model","_status","_dur"].forEach(suffix=>{
+    const icon=document.getElementById("logSortIcon"+suffix);
+    if(icon)icon.textContent=(field===(suffix.replace("_","")||"time"))?(logSortAsc?"▲":"▼"):"";
+  });
+  logAllEntries.sort((a,b)=>{
+    let left,right;
+    if(field==="idx"){left=a.idx||0;right=b.idx||0;}
+    else if(field==="model"){left=a.overrideModel||a.reqModel||"";right=b.overrideModel||b.reqModel||"";return logSortAsc?left.localeCompare(right):right.localeCompare(left);}
+    else if(field==="status"){left=a.status||0;right=b.status||0;}
+    else if(field==="dur"){left=a.duration||0;right=b.duration||0;}
+    else{left=a.time||0;right=b.time||0;}
+    return logSortAsc?left-right:right-left;
+  });
+  renderLogs();
+}
+
+function logDetailText(entry){
+  if(entry.type==="event"){
+    const lines=["事件: "+(entry.eventType||""),"消息: "+(entry.message||""),"URL: "+(entry.url||"")];
+    if(entry.eventType==="stream_terminal")lines.push("流 ID: "+(entry.streamId||""),"结果: "+(entry.streamOutcome||""),"原因: "+(entry.streamReason||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否"));
+    return lines.join("\\n");
+  }
+  return [
+    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
+  ].join("\\n");
+}
+
+function toggleLogDetail(row,index){
+  const existing=row.nextElementSibling;
+  if(existing&&existing.classList.contains("log-row-expand")){existing.remove();return;}
+  document.querySelectorAll("#logBody .log-row-expand").forEach(item=>item.remove());
+  const entry=logAllEntries[index];
+  if(!entry)return;
+  const detail=document.createElement("tr");
+  detail.className="log-row-expand open";
+  const cell=document.createElement("td");
+  cell.colSpan=12;
+  cell.textContent=logDetailText(entry);
+  detail.appendChild(cell);
+  row.after(detail);
+}
+
+function enqueueLiveLog(entry){
+  if(!entry||!isLogModalOpen())return;
+  logLivePending.push(entry);
+  if(logLiveFlushTimer)return;
+  logLiveFlushTimer=setTimeout(()=>{
+    logLiveFlushTimer=null;
+    const batch=logLivePending.splice(0).sort((a,b)=>(b.time||0)-(a.time||0));
+    if(!batch.length||!isLogModalOpen())return;
+    if(logQueryMode==="recent"){
+      logAllEntries=batch.concat(logAllEntries).slice(0,LOG_FAST_PAGE_SIZE);
+      renderLogs();
+    }
+    scheduleLogOverviewRefresh();
+  },350);
+}
+
+function scheduleLogOverviewRefresh(){
+  if(logOverviewRefreshTimer||!isLogModalOpen())return;
+  logOverviewRefreshTimer=setTimeout(async()=>{
+    logOverviewRefreshTimer=null;
+    const filters=buildLogFilterQuery();
+    const params=new URLSearchParams();
+    if(filters.has("since"))params.set("since",filters.get("since"));
+    if(filters.has("until"))params.set("until",filters.get("until"));
+    try{
+      const response=await fetch("/__log-overview"+(params.toString()?"?"+params.toString():""),{cache:"no-store"});
+      const payload=await response.json();
+      if(!response.ok||!isLogModalOpen())return;
+      logOverview=payload.overview||logOverview;
+      applyLogIncidentData({incidents:(payload.overview&&payload.overview.incidents)||[],groupPauses:(payload.overview&&payload.overview.groupPauses)||[],summaryRebuild:payload.summaryRebuild});
+      renderLogStats();renderLogSparkline();renderLogModelDist();renderLogErrorCluster();
+    }catch(e){}
+  },1800);
+}
+
+function applyLogIncidentData(payload){
+  logOperations={
+    incidents:Array.isArray(payload.incidents)?payload.incidents:logOperations.incidents,
+    groupPauses:Array.isArray(payload.groupPauses)?payload.groupPauses:logOperations.groupPauses,
+    summaryRebuild:payload.summaryRebuild||logOperations.summaryRebuild||{phase:"idle"}
+  };
+  if(isLogModalOpen())renderLogOperations();
+}
+
+function renderLogOperations(){
+  const panel=document.getElementById("logIncidentPanel");
+  const list=document.getElementById("logIncidentList");
+  const pauses=document.getElementById("logGroupPauseList");
+  const status=document.getElementById("logIncidentStatus");
+  const refreshStatus=document.getElementById("logIncidentRefreshStatus");
+  const rebuild=document.getElementById("logRebuildBtn");
+  const refresh=document.getElementById("logIncidentRefreshBtn");
+  if(!panel||!list||!pauses)return;
+  panel.style.display="block";
+  const state=logOperations.summaryRebuild||{};
+  if(status){
+    status.style.color="#94a3b8";
+    if(state.phase==="running")status.textContent="汇总重建中";
+    else if(state.phase==="failed"){status.textContent="汇总重建失败";status.style.color="#f87171";}
+    else if(state.phase==="completed")status.textContent="已重建 "+(state.rebuiltDays||0)+" 天";
+    else{status.textContent=logIncidentRefreshStatus;if(logIncidentRefreshStatus.startsWith("刷新失败"))status.style.color="#f87171";}
+  }
+  if(rebuild){rebuild.disabled=state.phase==="running";rebuild.textContent=state.phase==="running"?"重建中...":"重建汇总";}
+  if(refresh){refresh.disabled=logIncidentRefreshInFlight;refresh.textContent=logIncidentRefreshInFlight?"刷新中...":"刷新事件";}
+  if(refreshStatus){
+    refreshStatus.textContent=logIncidentRefreshStatus;
+    refreshStatus.style.color=logIncidentRefreshInFlight?"#60a5fa":logIncidentRefreshStatus.startsWith("刷新失败")?"#f87171":logIncidentRefreshStatus?"#4ade80":"#94a3b8";
+  }
+  list.textContent="";
+  const incidents=(logOperations.incidents||[]).slice(0,12);
+  if(!incidents.length){
+    const empty=document.createElement("div");
+    empty.style.cssText="color:#94a3b8;font-size:11px;padding:3px 0";
+    empty.textContent="当前没有运行事件";
+    list.appendChild(empty);
+  }
+  for(const incident of incidents){
+    const row=document.createElement("div");
+    row.style.cssText="display:flex;gap:7px;align-items:center;justify-content:space-between;flex-wrap:wrap;border-left:3px solid "+(incident.severity==="critical"?"#ef4444":"#f59e0b")+";background:#0f172a;padding:5px 7px;font-size:11px";
+    const text=document.createElement("span");
+    const scope=incident.scope&&incident.scope.value?" · "+incident.scope.value:"";
+    const metrics=incident.metrics||{};
+    const failureInfo=metrics.failures!=null?" · 失败 "+metrics.failures+"/"+(metrics.total||0):"";
+    text.textContent=(incident.status==="resolved"?"已恢复":"["+(incident.status||"open")+"]")+" "+(incident.title||"日志事件")+scope+failureInfo;
+    text.style.color=incident.status==="resolved"?"#94a3b8":"#e2e8f0";
+    row.appendChild(text);
+    const actions=document.createElement("span");
+    actions.style.cssText="display:flex;gap:4px;align-items:center";
+    if(incident.status!=="resolved"){
+      const ack=document.createElement("button");ack.className="btn";ack.style.cssText="font-size:10px;padding:2px 6px";ack.textContent="确认";ack.onclick=()=>runLogIncidentAction(incident.id,"acknowledge");actions.appendChild(ack);
+      const snooze=document.createElement("button");snooze.className="btn";snooze.style.cssText="font-size:10px;padding:2px 6px";snooze.textContent="静默";snooze.onclick=()=>runLogIncidentAction(incident.id,"snooze");actions.appendChild(snooze);
+      if(incident.scope&&incident.scope.type==="group"){
+        const pause=document.createElement("button");pause.className="btn btn-d";pause.style.cssText="font-size:10px;padding:2px 6px";pause.textContent="暂停分组";pause.onclick=()=>runLogIncidentAction(incident.id,"pause_group",{group:incident.scope.value,minutes:5});actions.appendChild(pause);
+      }
+    }
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+  pauses.textContent="";
+  for(const pause of logOperations.groupPauses||[]){
+    const wrap=document.createElement("span");
+    wrap.style.cssText="display:inline-flex;gap:5px;align-items:center;border:1px solid #ef4444;background:#3b1f1e;color:#fecaca;padding:3px 5px;font-size:10px";
+    const seconds=Math.max(0,Math.ceil((Number(pause.expiresAt)-Date.now())/1000));
+    const text=document.createElement("span");text.textContent="分组 "+pause.group+" 已暂停 "+(seconds<60?seconds+" 秒":Math.ceil(seconds/60)+" 分钟");wrap.appendChild(text);
+    const resume=document.createElement("button");resume.className="btn";resume.style.cssText="font-size:10px;padding:1px 5px";resume.textContent="恢复";resume.onclick=()=>runLogIncidentAction(pause.incidentId,"resume_group",{group:pause.group});wrap.appendChild(resume);
+    pauses.appendChild(wrap);
+  }
+}
+
+async function refreshLogOperations(options){
+  const opts=options&&typeof options==="object"?options:{};
+  if(logIncidentRefreshInFlight)return;
+  logIncidentRefreshInFlight=true;
+  if(opts.interactive)logIncidentRefreshStatus="正在刷新事件...";
+  if(isLogModalOpen())renderLogOperations();
+  try{
+    const response=await fetch("/__incidents",{cache:"no-store"});
+    const payload=await response.json();
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"刷新失败");
+    logIncidentRefreshStatus="已刷新 "+new Date().toTimeString().slice(0,8);
+    applyLogIncidentData(payload||{});
+  }catch(e){
+    logIncidentRefreshStatus="刷新失败";
+  }finally{
+    logIncidentRefreshInFlight=false;
+    if(isLogModalOpen())renderLogOperations();
+  }
+}
+
+async function runLogIncidentAction(id,action,extra){
+  if(action==="pause_group"&&!confirm("暂停该分组会立即拒绝新的代理请求，确认继续？"))return;
+  try{
+    const response=await fetch("/__incident-action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(Object.assign({id,action},extra||{}))});
+    const payload=await response.json();
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"处置失败");
+    await refreshLogOperations();
+  }catch(error){alert("日志事件处置失败："+(error&&error.message?error.message:"未知错误"));}
+}
+
+async function rebuildLogSummary(){
+  try{
+    const response=await fetch("/__logs/rebuild-summary",{method:"POST",cache:"no-store"});
+    const payload=await response.json();
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"无法开始重建");
+    applyLogIncidentData({summaryRebuild:payload});
+  }catch(error){alert("日志汇总重建失败："+(error&&error.message?error.message:"未知错误"));}
+}
+
 function logRowClass(e){
   if (e.type === "event") {
     if (e.eventType === "conversion") return "log-row-conversion";
@@ -5051,7 +6174,10 @@ function toggleLogCustomRange(){
 }
 function exportLogs(){
   const q=buildLogFilterQuery();
-  window.open("http://localhost:3456/__logs?"+q.toString()+"&format=csv");
+  q.set("mode","history");
+  q.set("limit","2000");
+  q.set("format","csv");
+  window.open("http://localhost:3456/__logs?"+q.toString());
 }
 
 function openConfig(){renderUpdateInfo();loadConfigUI();document.getElementById("configModal").classList.add("on")}
@@ -5087,6 +6213,20 @@ async function saveConfig(){
     logFile:document.getElementById("cfgLogFile").checked,
     logRetentionDays:parseInt(document.getElementById("cfgLogRetention").value)||7,
     logDetail:document.getElementById("cfgLogDetail").value,
+    logIncidents:{
+      enabled:document.getElementById("cfgLogIncidentEnabled").checked,
+      notify:document.getElementById("cfgLogIncidentNotify").checked,
+      windowMinutes:parseInt(document.getElementById("cfgLogIncidentWindow").value)||5,
+      minRequests:parseInt(document.getElementById("cfgLogIncidentMinRequests").value)||8,
+      errorBurst:parseInt(document.getElementById("cfgLogIncidentErrorBurst").value)||5,
+      errorRatePercent:parseFloat(document.getElementById("cfgLogIncidentErrorRate").value)||60,
+      streamFailureBurst:parseInt(document.getElementById("cfgLogIncidentStreamBurst").value)||3,
+      defaultSnoozeMinutes:parseInt(document.getElementById("cfgLogIncidentSnooze").value)||15,
+      resolveAfterMinutes:parseInt(document.getElementById("cfgLogIncidentResolve").value)||5,
+      latencyEnabled:document.getElementById("cfgLogIncidentLatency").checked,
+      p95Ms:parseInt(document.getElementById("cfgLogIncidentP95").value)||120000,
+      p95TtfbMs:parseInt(document.getElementById("cfgLogIncidentP95Ttfb").value)||20000
+    },
     autoResume:document.getElementById("cfgAutoResume").checked,
     autoResumeIdleMinutes:parseInt(document.getElementById("cfgAutoResumeIdle").value)||10,
     autoResumeDebounceMinutes:parseInt(document.getElementById("cfgAutoResumeDebounce").value)||3,
@@ -6055,6 +7195,13 @@ function createGroupServer(groupName, port) {
   }
   if (!pathname.startsWith("/__") && pathname !== "/" && pathname !== "/dashboard" && pathname !== "/metrics") {
     lastRequestTime = Date.now();
+    const pause = getGroupPause(groupName);
+    if (pause) {
+      const retryAfter = Math.max(1, Math.ceil((pause.expiresAt - Date.now()) / 1000));
+      res.writeHead(503, { "content-type": "application/json", "retry-after": String(retryAfter) });
+      res.end(JSON.stringify({ error: `group ${groupName} is temporarily paused by an incident action`, retryAfter, resumeAt: pause.expiresAt }));
+      return;
+    }
   }
 
   if (req.method === "OPTIONS") {
@@ -6505,235 +7652,268 @@ function createGroupServer(groupName, port) {
     return;
   }
 
-  if (pathname === "/__logs") {
-    if (req.method === "GET") {
-      const u = new URL(req.url, "http://x");
-      const limit = Math.min(parseInt(u.searchParams.get("limit") || "200", 10), MAX_LOG);
-      const key = u.searchParams.get("key");
-      const status = u.searchParams.get("status");
-      const model = u.searchParams.get("model");
-      const since = u.searchParams.get("since");
-      const until = u.searchParams.get("until");
-      const q = u.searchParams.get("q") || "";
-      const offset = parseInt(u.searchParams.get("offset") || "0", 10);
-      const format = u.searchParams.get("format");
-
-      // Cache check for repeated requests
-      const cacheKey = req.url;
-      if (Date.now() - _logCache.time < _logCache.ttl && _logCache.key === cacheKey && _logCache.result) {
-        res.writeHead(200, cors);
-        res.end(_logCache.result);
-        return;
-      }
-
-      let entries;
-      if (since || until) {
-        const sTime = since ? parseInt(since, 10) : 0;
-        const uTime = until ? parseInt(until, 10) : 9e15;
-        const maxNeeded = (limit + offset) || 500;
-        const fileEntries = [];
-        try {
-          if (fs.existsSync(LOG_DIR)) {
-            let files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
-            files.sort().reverse();
-            for (const f of files) {
-              if (fileEntries.length >= maxNeeded) break;
-              const dateStr = f.replace(".jsonl", "");
-              const fd = new Date(dateStr + "T00:00:00");
-              const fdEnd = fd.getTime() + 86400000;
-              if (fdEnd < sTime || fd.getTime() > uTime) continue;
-              const filePath = path.join(LOG_DIR, f);
-              const stat = fs.statSync(filePath);
-              if (stat.size === 0) continue;
-              const fdFile = fs.openSync(filePath, "r");
-              let pos = stat.size;
-              let leftover = "";
-              const chunkSize = 32768;
-              while (fileEntries.length < maxNeeded && pos > 0) {
-                const readLen = Math.min(chunkSize, pos);
-                pos -= readLen;
-                const buf = Buffer.alloc(readLen);
-                fs.readSync(fdFile, buf, 0, readLen, pos);
-                const chunk = buf.toString("utf-8");
-                const data = chunk + leftover;
-                const parts = data.split("\n");
-                leftover = parts[0];
-                for (let i = parts.length - 1; i > 0 && fileEntries.length < maxNeeded; i--) {
-                  const line = parts[i].trim();
-                  if (!line) continue;
-                  try {
-                    const e = JSON.parse(line);
-                    if (e.time >= sTime && e.time <= uTime) fileEntries.push(e);
-                  } catch (e2) {}
-                }
-              }
-              fs.closeSync(fdFile);
-              if (fileEntries.length < maxNeeded && leftover.trim()) {
-                try {
-                  const e = JSON.parse(leftover.trim());
-                  if (e.time >= sTime && e.time <= uTime) fileEntries.push(e);
-                } catch (e2) {}
-              }
-            }
-          }
-        } catch (e) { /* fail silently */ }
-        const seen = new Set();
-        const merged = [];
-        for (const e of fileEntries) {
-          const k = requestLogDedupeKey(e);
-          if (!seen.has(k)) { seen.add(k); merged.push(e); }
-        }
-        for (const e of requestLog) {
-          if (e.time >= sTime && e.time <= uTime) {
-            const k = requestLogDedupeKey(e);
-            if (!seen.has(k)) { seen.add(k); merged.push(e); }
-          }
-        }
-        entries = merged;
-      } else {
-        // No time filter: read from newest files backwards + merge with requestLog
-        const maxNeeded = (limit + offset) || 500;
-        const fileEntries = [];
-        try {
-          if (fs.existsSync(LOG_DIR)) {
-            let files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl"));
-            files.sort().reverse();
-            for (const f of files) {
-              if (fileEntries.length >= maxNeeded) break;
-              const filePath = path.join(LOG_DIR, f);
-              const stat = fs.statSync(filePath);
-              if (stat.size === 0) continue;
-              const fdFile = fs.openSync(filePath, "r");
-              let pos = stat.size;
-              let leftover = "";
-              const chunkSize = 32768;
-              while (fileEntries.length < maxNeeded && pos > 0) {
-                const readLen = Math.min(chunkSize, pos);
-                pos -= readLen;
-                const buf = Buffer.alloc(readLen);
-                fs.readSync(fdFile, buf, 0, readLen, pos);
-                const chunk = buf.toString("utf-8");
-                const data = chunk + leftover;
-                const parts = data.split("\n");
-                leftover = parts[0];
-                for (let i = parts.length - 1; i > 0 && fileEntries.length < maxNeeded; i--) {
-                  const line = parts[i].trim();
-                  if (!line) continue;
-                  try { fileEntries.push(JSON.parse(line)); } catch (e2) {}
-                }
-              }
-              fs.closeSync(fdFile);
-              if (fileEntries.length < maxNeeded && leftover.trim()) {
-                try { fileEntries.push(JSON.parse(leftover.trim())); } catch (e2) {}
-              }
-            }
-          }
-        } catch (e) { /* fail silently */ }
-        const seen = new Set();
-        const merged = [];
-        for (const e of fileEntries) {
-          const k = requestLogDedupeKey(e);
-          if (!seen.has(k)) { seen.add(k); merged.push(e); }
-        }
-        for (const e of requestLog) {
-          const k = requestLogDedupeKey(e);
-          if (!seen.has(k)) { seen.add(k); merged.push(e); }
-        }
-        entries = merged;
-        entries.sort((a, b) => b.time - a.time);
-      }
-
-      // Apply filters
-      if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length) entries = entries.filter(e => keys.includes(e.idx)); }
-      if (status) { entries = entries.filter(e => { const s = e.status || 0; if (status.endsWith("xx")) { const prefix = parseInt(status, 10); return !isNaN(prefix) && Math.floor(s / 100) === prefix; } return String(s) === status; }); }
-      if (model) { const ml = model.toLowerCase(); entries = entries.filter(e => (e.reqModel||"").toLowerCase().includes(ml) || (e.overrideModel||"").toLowerCase().includes(ml)); }
-      if (q) { const ql = q.toLowerCase(); entries = entries.filter(e => (e.message||"").toLowerCase().includes(ql) || (e.url||"").toLowerCase().includes(ql) || (e.reqModel||"").toLowerCase().includes(ql) || (e.overrideModel||"").toLowerCase().includes(ql) || (e.method||"").toLowerCase().includes(ql) || (e.path||"").toLowerCase().includes(ql) || (e.eventType||"").toLowerCase().includes(ql) || (e.streamId||"").toLowerCase().includes(ql) || (e.streamOutcome||"").toLowerCase().includes(ql) || (e.streamReason||"").toLowerCase().includes(ql)); }
-      if (since || until || q) entries.sort((a, b) => b.time - a.time);
-
-      // Compute stats
-      const stats = { total: 0, successRate: 0, p95: 0, p99: 0, avgDuration: 0, error4xx: 0, error5xx: 0, errorTimeout: 0, errorStream: 0 };
-      stats.total = entries.length;
-      stats.totalAll = countAllEntries(since, until);
-      if (offset === 0) {
-        const durs = entries.filter(e => e.duration != null && e.type !== "event").map(e => e.duration).sort((a, b) => a - b);
-        if (durs.length) {
-          stats.avgDuration = Math.round(durs.reduce((a, b) => a + b, 0) / durs.length);
-          stats.p95 = durs[Math.floor(durs.length * 0.95)] || durs[durs.length - 1];
-          stats.p99 = durs[Math.floor(durs.length * 0.99)] || durs[durs.length - 1];
-        }
-        const reqs = entries.filter(e => e.type !== "event");
-        const success = reqs.filter(e => e.status >= 200 && e.status < 300 && !isRequestLogFailure(e)).length;
-        stats.successRate = reqs.length ? Math.round(success / reqs.length * 10000) / 100 : 0;
-        stats.error4xx = reqs.filter(e => e.status >= 400 && e.status < 500).length;
-        stats.error5xx = reqs.filter(e => e.status >= 500 && e.status < 600).length;
-        stats.errorTimeout = reqs.filter(e => e.status === 0 || e.status == null).length;
-        stats.errorStream = reqs.filter(e => e.streamOutcome === "failed").length;
-      }
-      entries = entries.slice(offset, offset + limit);
-      if (format === "csv") {
-        const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,url,type,eventType,message,streamId,streamOutcome,streamReason,streamSawDone";
-        const escCsv = v => `"${String(v).replace(/"/g, '""')}"`;
-        const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", escCsv(e.reqModel||""), escCsv(e.overrideModel||""), escCsv(e.url||""), e.type||"request", e.eventType||"", escCsv(e.message||""), escCsv(e.streamId||""), e.streamOutcome||"", e.streamReason||"", e.streamSawDone === true ? "true" : "false"].join(","));
-        res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
-        res.end(header + "\n" + rows.join("\n"));
-        return;
-      }
-      const body = JSON.stringify({ entries, stats });
-      _logCache.key = cacheKey;
-      _logCache.result = body;
-      _logCache.time = Date.now();
-      res.writeHead(200, cors);
-      res.end(body);
+  if (pathname === "/__log-overview") {
+    if (req.method !== "GET") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
       return;
     }
-    res.writeHead(405, cors);
-    res.end(JSON.stringify({ error: "method not allowed" }));
+    const url = new URL(req.url, "http://localhost");
+    const query = parseLogQuery(url);
+    const overview = buildLogOverview({ since: query.since, until: query.until });
+    res.writeHead(200, { ...cors, "cache-control": "no-store" });
+    res.end(JSON.stringify({ ok: true, overview, summaryRebuild: logSummaryRebuildState }));
+    return;
+  }
+
+  if (pathname === "/__incidents") {
+    if (req.method !== "GET") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    res.writeHead(200, { ...cors, "cache-control": "no-store" });
+    res.end(JSON.stringify({
+      ok: true,
+      incidents: listLogIncidents(),
+      groupPauses: listActiveGroupPauses(),
+      summaryReady: logSummaryLoaded,
+      summaryRebuild: logSummaryRebuildState,
+    }));
+    return;
+  }
+
+  if (pathname === "/__incident-action") {
+    if (req.method !== "POST") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    const bodyChunks = [];
+    let bodyLength = 0;
+    let bodyTooLarge = false;
+    req.on("data", chunk => {
+      bodyLength += chunk.length;
+      if (bodyLength > 64 * 1024) bodyTooLarge = true;
+      else bodyChunks.push(chunk);
+    });
+    req.on("end", () => {
+      try {
+        if (bodyTooLarge) throw new Error("request body is too large");
+        const body = JSON.parse(Buffer.concat(bodyChunks).toString("utf8"));
+        const result = handleLogIncidentAction(body);
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        res.writeHead(400, cors);
+        res.end(JSON.stringify({ error: String(error.message || error).slice(0, 240) }));
+      }
+    });
+    return;
+  }
+
+  if (pathname === "/__logs/rebuild-summary") {
+    if (req.method !== "POST") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    const result = startLogSummaryRebuild();
+    res.writeHead(result.ok ? 202 : 409, { ...cors, "cache-control": "no-store" });
+    res.end(JSON.stringify(result));
+    return;
+  }
+
+  if (pathname === "/__logs") {
+    if (req.method !== "GET") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    const url = new URL(req.url, "http://localhost");
+    const format = url.searchParams.get("format") || "";
+    if (format && format !== "csv") {
+      res.writeHead(400, cors);
+      res.end(JSON.stringify({ error: "unsupported log format" }));
+      return;
+    }
+    const query = parseLogQuery(url, format);
+    const overview = () => buildLogOverview({ since: query.since, until: query.until });
+    if (query.mode === "recent") {
+      const memoryEntries = getRecentLogEntries(query);
+      const sendRecentResponse = (entries, source, history = {}) => {
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify({
+          entries,
+          stats: summarizeLogEntries(entries),
+          overview: overview(),
+          mode: "recent",
+          source,
+          historyChecked: history.checked === true,
+          historyUnavailable: history.unavailable === true,
+          historyFilesAvailable: Math.max(0, Math.floor(Number(history.filesAvailable) || 0)),
+          historyFilesScanned: Math.max(0, Math.floor(Number(history.filesScanned) || 0)),
+          hasMore: false,
+          nextCursor: "",
+          truncated: false,
+        }));
+      };
+      if (memoryEntries.length >= query.limit) {
+        sendRecentResponse(memoryEntries, "memory");
+        return;
+      }
+
+      // Saved logs remain queryable even if writing new file logs is disabled.
+      // Read only a bounded tail in the Worker so opening the log panel never
+      // synchronously scans files in the proxy process.
+      const fallbackQuery = { ...query, mode: "history", cursor: null, limit: LOG_HISTORY_MAX_LIMIT };
+      const task = startHistoricalLogQuery(fallbackQuery, { maxLimit: LOG_HISTORY_MAX_LIMIT });
+      let detached = false;
+      const cancelIfDetached = () => {
+        if (!res.writableEnded) {
+          detached = true;
+          task.cancel();
+        }
+      };
+      req.once("aborted", cancelIfDetached);
+      res.once("close", cancelIfDetached);
+      const clearRequestListeners = () => {
+        req.removeListener("aborted", cancelIfDetached);
+        res.removeListener("close", cancelIfDetached);
+      };
+      task.promise.then(result => {
+        clearRequestListeners();
+        if (detached || res.destroyed || res.writableEnded) return;
+        const historicalEntries = Array.isArray(result.entries) ? result.entries : [];
+        const entries = mergeRecentLogEntries(memoryEntries, historicalEntries, query.limit);
+        const source = entries.length > memoryEntries.length ? "history" : "memory";
+        sendRecentResponse(entries, source, {
+          checked: true,
+          filesAvailable: result.filesAvailable,
+          filesScanned: result.filesScanned,
+        });
+      }).catch(() => {
+        clearRequestListeners();
+        if (detached || res.destroyed || res.writableEnded) return;
+        // History lookup is an enhancement. A busy or unavailable Worker must
+        // not make the basic in-memory log view fail.
+        sendRecentResponse(memoryEntries, "memory", { unavailable: true });
+      });
+      return;
+    }
+
+    const task = startHistoricalLogQuery(query, { maxLimit: format === "csv" ? LOG_EXPORT_MAX_LIMIT : LOG_HISTORY_MAX_LIMIT });
+    let detached = false;
+    const cancelIfDetached = () => {
+      if (!res.writableEnded) {
+        detached = true;
+        task.cancel();
+      }
+    };
+    req.once("aborted", cancelIfDetached);
+    res.once("close", cancelIfDetached);
+    const clearRequestListeners = () => {
+      req.removeListener("aborted", cancelIfDetached);
+      res.removeListener("close", cancelIfDetached);
+    };
+    task.promise.then(result => {
+      clearRequestListeners();
+      if (detached || res.destroyed) return;
+      const entries = Array.isArray(result.entries) ? result.entries : [];
+      if (format === "csv") {
+        res.writeHead(200, { ...cors, "content-type": "text/csv; charset=utf-8", "content-disposition": "attachment; filename=proxy-logs.csv", "cache-control": "no-store" });
+        res.end(formatLogCsv(entries));
+        return;
+      }
+      res.writeHead(200, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({
+        entries,
+        stats: logMetricsToStats(result.stats || createLogAggregate()),
+        overview: overview(),
+        mode: "history",
+        hasMore: result.hasMore === true,
+        nextCursor: encodeLogCursor(result.nextCursor),
+        truncated: result.truncated === true,
+        scannedBytes: Number(result.scannedBytes) || 0,
+        filesAvailable: Math.max(0, Math.floor(Number(result.filesAvailable) || 0)),
+        filesScanned: Math.max(0, Math.floor(Number(result.filesScanned) || 0)),
+      }));
+    }).catch(error => {
+      clearRequestListeners();
+      if (detached || res.destroyed) return;
+      const message = String(error && error.message ? error.message : error).slice(0, 240);
+      const status = /timed out/i.test(message) ? 504 : /busy/i.test(message) ? 503 : 500;
+      res.writeHead(status, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({ error: message }));
+    });
     return;
   }
 
   if (pathname === "/__export-logs") {
-    if (req.method === "GET") {
-      const u = new URL(req.url, "http://x");
-      const date = u.searchParams.get("date");
-      const key = u.searchParams.get("key");
-      const status = u.searchParams.get("status");
-      const model = u.searchParams.get("model");
-      const format = u.searchParams.get("format") || "csv";
-      const entries = [];
-      function filterEntry(e) {
-        if (key) { const keys = key.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)); if (keys.length && !keys.includes(e.idx)) return false; }
-        if (status) { const s = e.status || 0; if (status.endsWith("xx")) { const p = parseInt(status, 10); if (isNaN(p) || Math.floor(s / 100) !== p) return false; } else if (String(s) !== status) return false; }
-        if (model) { const ml = model.toLowerCase(); if (!(e.reqModel||"").toLowerCase().includes(ml) && !(e.overrideModel||"").toLowerCase().includes(ml)) return false; }
-        return true;
-      }
-      if (date) {
-        const filePath = path.join(LOG_DIR, date + ".jsonl");
-        try {
-          if (fs.existsSync(filePath)) {
-            const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n");
-            for (const line of lines) {
-              if (!line) continue;
-              try { const e = JSON.parse(line); if (filterEntry(e)) entries.push(e); } catch(e2) {}
-            }
-          }
-        } catch(e) { /* file not found */ }
-      } else {
-        for (const e of requestLog) { if (filterEntry(e)) entries.push(e); }
-      }
-      if (format === "jsonl") {
-        res.writeHead(200, { ...cors, "content-type": "application/x-ndjson", "content-disposition": "attachment; filename=proxy-logs.jsonl" });
-        res.end(entries.map(e => JSON.stringify(e)).join("\n"));
-        return;
-      }
-      const header = "time,idx,method,path,status,inputBytes,outputBytes,duration,ttfb,reqModel,overrideModel,streamId,streamOutcome,streamReason,streamSawDone";
-      const esc = v => `"${String(v).replace(/"/g, '""')}"`;
-      const rows = entries.map(e => [e.time, e.idx, e.method, e.path, e.status||0, e.inputBytes||0, e.outputBytes||0, e.duration||0, e.ttfb||"", esc(e.reqModel||""), esc(e.overrideModel||""), esc(e.streamId||""), e.streamOutcome||"", e.streamReason||"", e.streamSawDone === true ? "true" : "false"].join(","));
-      res.writeHead(200, { ...cors, "content-type": "text/csv", "content-disposition": "attachment; filename=proxy-logs.csv" });
-      res.end(header + "\n" + rows.join("\n"));
+    if (req.method !== "GET") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
       return;
     }
-    res.writeHead(405, cors);
-    res.end(JSON.stringify({ error: "method not allowed" }));
+    const url = new URL(req.url, "http://localhost");
+    const format = url.searchParams.get("format") || "csv";
+    if (!["csv", "jsonl"].includes(format)) {
+      res.writeHead(400, cors);
+      res.end(JSON.stringify({ error: "unsupported export format" }));
+      return;
+    }
+    const query = parseLogQuery(url, format);
+    const date = String(url.searchParams.get("date") || "");
+    if (date) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.writeHead(400, cors);
+        res.end(JSON.stringify({ error: "date must be YYYY-MM-DD" }));
+        return;
+      }
+      const start = Date.parse(`${date}T00:00:00.000Z`);
+      if (!Number.isFinite(start)) {
+        res.writeHead(400, cors);
+        res.end(JSON.stringify({ error: "invalid date" }));
+        return;
+      }
+      query.since = start;
+      query.until = start + 86400000 - 1;
+    }
+    query.mode = "history";
+    query.limit = Math.min(LOG_EXPORT_MAX_LIMIT, query.limit || LOG_EXPORT_MAX_LIMIT);
+    const task = startHistoricalLogQuery(query, { maxLimit: LOG_EXPORT_MAX_LIMIT });
+    let detached = false;
+    const cancelIfDetached = () => {
+      if (!res.writableEnded) {
+        detached = true;
+        task.cancel();
+      }
+    };
+    req.once("aborted", cancelIfDetached);
+    res.once("close", cancelIfDetached);
+    const clearRequestListeners = () => {
+      req.removeListener("aborted", cancelIfDetached);
+      res.removeListener("close", cancelIfDetached);
+    };
+    task.promise.then(result => {
+      clearRequestListeners();
+      if (detached || res.destroyed) return;
+      const entries = Array.isArray(result.entries) ? result.entries : [];
+      if (format === "jsonl") {
+        res.writeHead(200, { ...cors, "content-type": "application/x-ndjson; charset=utf-8", "content-disposition": "attachment; filename=proxy-logs.jsonl", "cache-control": "no-store" });
+        res.end(entries.map(entry => JSON.stringify(entry)).join("\n"));
+        return;
+      }
+      res.writeHead(200, { ...cors, "content-type": "text/csv; charset=utf-8", "content-disposition": "attachment; filename=proxy-logs.csv", "cache-control": "no-store" });
+      res.end(formatLogCsv(entries));
+    }).catch(error => {
+      clearRequestListeners();
+      if (detached || res.destroyed) return;
+      const message = String(error && error.message ? error.message : error).slice(0, 240);
+      const status = /timed out/i.test(message) ? 504 : /busy/i.test(message) ? 503 : 500;
+      res.writeHead(status, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({ error: message }));
+    });
     return;
   }
 
@@ -7226,4 +8406,6 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 loadConfig();
 refreshLocalBuildProvenance();
 cleanOldLogs();
+loadLogSummary();
+loadLogIncidents();
 initServers();

@@ -249,7 +249,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="modal" id="logModal">
 <div class="mcontent">
 <div class="mtitle"><span>实时请求日志</span><button class="btn" onclick="closeLogs()">✕</button></div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">最近 500 条请求记录，实时推送</div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">最新 50 条请求记录</div>
 <div style="overflow-x:auto"><table class="log-table"><thead><tr>
 <th>时间</th><th>#</th><th>方法</th><th>路径</th><th>状态</th><th>↑B</th><th>↓B</th><th>耗时</th><th>首字节</th>
 </tr></thead><tbody id="logBody"></tbody></table></div>
@@ -293,15 +293,18 @@ async function httpLoad(){
 function connectWS(){
   wsFailed=false;
   ws=new WebSocket("ws://localhost:3456");
+  ws.onopen=function(){if(document.getElementById("logModal").classList.contains("on"))subscribeFallbackLogs(true)};
   ws.onmessage=function(e){
     try{
       const msg=JSON.parse(e.data);
       if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;render()}
       if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
+      if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on"))enqueueFallbackLog(msg.data);
     }catch(e){}
   };
   ws.onclose=function(){
     wsFailed=true;
+    fallbackLogSubscribed=false;
     if(pollTimer)clearInterval(pollTimer);
     pollTimer=setInterval(httpLoad,5000);
     httpLoad();
@@ -840,7 +843,7 @@ function importKeys(){
     const parts=line.trim().split(/\s+/);
     if(!parts[0]||!parts[0].startsWith("sk-"))continue;
     const key=parts[0];
-    const url=parts[1]||"https://api.fenno.ai";
+    const url=parts[1]||"https://api.example.com";
     const resetMap={"daily":"每日","weekly":"每周","never":"永久","hourly":"每N小时","每日":"daily","每周":"weekly","永久":"never","每N小时":"hourly"};
     const reset=resetMap[parts[2]]||"weekly";
     const remark=parts.slice(3).join(" ")||"";
@@ -919,26 +922,47 @@ async function batchTestResetPassed(){
 }
 function exportCSV(){window.open("http://localhost:3456/__export")}
 
+let fallbackLogEntries=[];
+let fallbackLogFlushTimer=null;
+let fallbackLogSubscribed=false;
+function subscribeFallbackLogs(enabled){
+  const next=enabled===true;
+  if(ws&&ws.readyState===1&&fallbackLogSubscribed!==next){try{ws.send(JSON.stringify({type:"log_subscribe",enabled:next}));}catch(e){}}
+  fallbackLogSubscribed=next;
+}
 async function openLogs(){
   document.getElementById("logModal").classList.add("on");
+  subscribeFallbackLogs(true);
   await loadLogs();
 }
 function closeLogs(){
   document.getElementById("logModal").classList.remove("on");
+  subscribeFallbackLogs(false);
+}
+function enqueueFallbackLog(entry){
+  if(!entry)return;
+  fallbackLogEntries.unshift(entry);
+  fallbackLogEntries=fallbackLogEntries.slice(0,50);
+  if(fallbackLogFlushTimer)return;
+  fallbackLogFlushTimer=setTimeout(()=>{fallbackLogFlushTimer=null;renderFallbackLogs();},350);
+}
+function renderFallbackLogs(){
+  const tbody=document.getElementById("logBody");
+  tbody.innerHTML=fallbackLogEntries.map(e=>{
+    const s=e.status||0;
+    const sc="log-s"+s;
+    const tm=new Date(e.time);
+    const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
+    return '<tr><td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td><td>'+esc(e.method||e.eventType||"")+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path||e.message||"")+'</td><td class="log-status '+sc+'">'+s+'</td><td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td><td class="log-dur">'+fmtDur(e.duration||0)+'</td><td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td></tr>';
+  }).join("")||'<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">暂无请求记录</td></tr>';
 }
 async function loadLogs(){
   try{
-    const r=await fetch("http://localhost:3456/__logs?limit=200");
+    const r=await fetch("http://localhost:3456/__logs?limit=50");
     if(!r.ok)return;
-    const logs=await r.json();
-    const tbody=document.getElementById("logBody");
-    tbody.innerHTML=logs.slice().reverse().map(e=>{
-      const s=e.status||0;
-      const sc="log-s"+s;
-      const tm=new Date(e.time);
-      const ts=String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
-      return '<tr><td class="log-time">'+ts+'</td><td>#'+e.idx+'</td><td>'+e.method+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td><td class="log-status '+sc+'">'+s+'</td><td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td><td class="log-dur">'+fmtDur(e.duration||0)+'</td><td class="log-dur">'+(e.ttfb?fmtDur(e.ttfb):"-")+'</td></tr>';
-    }).join("")||'<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">暂无请求记录</td></tr>';
+    const payload=await r.json();
+    fallbackLogEntries=Array.isArray(payload)?payload:(payload.entries||[]);
+    renderFallbackLogs();
   }catch(e){}
 }
 
