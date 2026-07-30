@@ -1,8 +1,26 @@
-node_modules/
-.env
+# Runtime-sensitive local data. Keep public examples in *.example.json only.
+keys*.json
+!keys.example.json
+keys*.json.bak
+config*.json
+!config.example.json
+config*.json.bak
+state*.json
+!state.example.json
+state*.json.bak
+.auto-resume-runtime.json
+logs/
 *.log
-proxy.pid
-state.json
+*.pid
+tmp/
+
+# Local dependencies and release output.
+node_modules/
+dist/
 build-info.json
 release-manifest.json
-dist/
+
+# Local environment files.
+.env
+.env.*
+!.env.example

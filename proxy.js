@@ -4095,6 +4095,20 @@ function formatUpdatePublishedAt(value){
   if(isNaN(d.getTime()))return "";
   return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
 }
+function formatIdle(ms){
+  if(ms<0)ms=0;
+  const totalSec=ms/1000;
+  const d=Math.floor(totalSec/86400);
+  const h=Math.floor((totalSec%86400)/3600);
+  const m=Math.floor((totalSec%3600)/60);
+  const s=totalSec%60;
+  let parts=[];
+  if(d>0)parts.push(d+"d");
+  if(h>0)parts.push(h+"h");
+  if(m>0||d>0||h>0)parts.push(m+"m");
+  parts.push(s.toFixed(2)+"s");
+  return parts.join(" ");
+}
 function renderUpdateInfo(){
   const current=updateInfo&&updateInfo.current;
   const latest=updateInfo&&updateInfo.latest;
@@ -4397,9 +4411,9 @@ function updateAutoCountdown(){
   const resumeEl=document.getElementById("cfgAutoResumeStatus");
   if(resumeEl){
     if(typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
-      const idleMin=Math.round((Date.now()-lastKeyUseTime)/60000);
+      const idleMs=Date.now()-lastKeyUseTime;
       const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
-      resumeEl.textContent="🧬 闲置恢复: Key 闲置 "+idleMin+"m"+(sinceResume!==null?"，上次触发 "+sinceResume+"m 前":"，等待阈值");
+      resumeEl.textContent="🧬 闲置恢复: Key 闲置 "+formatIdle(idleMs)+(sinceResume!==null?"，上次触发 "+sinceResume+"m 前":"，等待阈值");
     }else{
       resumeEl.textContent="🧬 闲置恢复: 等待中";
     }
@@ -4750,10 +4764,9 @@ function render(){
   if(shieldedCount>0)document.getElementById("filterCount").textContent+="，屏蔽 "+shieldedCount+" 个";
   const dashResume=document.getElementById("dashResumeStatus");
   if(dashResume&&typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
-    const idleMin=Math.round((Date.now()-lastKeyUseTime)/60000);
     const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
-    if(sinceResume!==null)dashResume.textContent="🧬Key闲置"+idleMin+"m/恢复"+sinceResume+"m前";
-    else dashResume.textContent="🧬Key闲置"+idleMin+"m";
+    if(sinceResume!==null)dashResume.textContent="🧬Key闲置 "+formatIdle(now-lastKeyUseTime)+"/恢复"+sinceResume+"m前";
+    else dashResume.textContent="🧬Key闲置 "+formatIdle(now-lastKeyUseTime);
   }
   const actKeys=data.filter(x=>x.active);
   if(!window._tickerInit){
@@ -4766,6 +4779,28 @@ function render(){
         const d=el.querySelector(".t-dur");if(d)d.textContent=dur;
       });
     },1000);
+  }
+  if(!window._idleTicker){
+    window._idleTicker=true;
+    setInterval(()=>{
+      const de=document.getElementById("dashResumeStatus");
+      const re=document.getElementById("cfgAutoResumeStatus");
+      if(!de&&!re)return;
+      const anyActive=data&&data.some(k=>(k.actives||[]).length>0);
+      if(typeof lastKeyUseTime==='number'&&lastKeyUseTime>0&&!anyActive){
+        const idleMs=Date.now()-lastKeyUseTime;
+        const idleStr=formatIdle(idleMs);
+        const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
+        if(de)de.textContent="🧬Key闲置 "+idleStr+(sinceResume!==null?"/恢复"+sinceResume+"m前":"");
+        if(re)re.textContent="🧬 闲置恢复: Key 闲置 "+idleStr+(sinceResume!==null?"，上次触发 "+sinceResume+"m 前":"，等待阈值");
+      }else if(anyActive){
+        if(de)de.textContent="🧬Key闲置 0.00s";
+        if(re)re.textContent="🧬 闲置恢复: Key 使用中";
+      }else{
+        if(de)de.textContent="🧬Key闲置 --";
+        if(re)re.textContent="🧬 闲置恢复: 等待中";
+      }
+    },100);
   }
   const curSet=new Set();
   actKeys.forEach(k=>{(k.actives||[]).forEach(r=>{curSet.add(k.idx+"#"+r.since);});});
