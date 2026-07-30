@@ -4411,7 +4411,7 @@ function updateAutoCountdown(){
   const resumeEl=document.getElementById("cfgAutoResumeStatus");
   if(resumeEl){
     if(typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
-      const idleMs=Date.now()-lastKeyUseTime;
+      const idleMs=Date.now()-(window._idleFrom||lastKeyUseTime);
       const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
       resumeEl.textContent="🧬 闲置恢复: Key 闲置 "+formatIdle(idleMs)+(sinceResume!==null?"，上次触发 "+sinceResume+"m 前":"，等待阈值");
     }else{
@@ -4765,8 +4765,8 @@ function render(){
   const dashResume=document.getElementById("dashResumeStatus");
   if(dashResume&&typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
     const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
-    if(sinceResume!==null)dashResume.textContent="🧬Key闲置 "+formatIdle(now-lastKeyUseTime)+"/恢复"+sinceResume+"m前";
-    else dashResume.textContent="🧬Key闲置 "+formatIdle(now-lastKeyUseTime);
+    if(sinceResume!==null)dashResume.textContent="🧬Key闲置 "+formatIdle(now-(window._idleFrom||lastKeyUseTime))+"/恢复"+sinceResume+"m前";
+    else dashResume.textContent="🧬Key闲置 "+formatIdle(now-(window._idleFrom||lastKeyUseTime));
   }
   const actKeys=data.filter(x=>x.active);
   if(!window._tickerInit){
@@ -4782,13 +4782,20 @@ function render(){
   }
   if(!window._idleTicker){
     window._idleTicker=true;
+    let wasActive=false;
     setInterval(()=>{
       const de=document.getElementById("dashResumeStatus");
       const re=document.getElementById("cfgAutoResumeStatus");
       if(!de&&!re)return;
       const anyActive=data&&data.some(k=>(k.actives||[]).length>0);
+      if(!anyActive&&wasActive){
+        wasActive=false;
+        window._idleFrom=Date.now();
+      }else if(anyActive){
+        wasActive=true;
+      }
       if(typeof lastKeyUseTime==='number'&&lastKeyUseTime>0&&!anyActive){
-        const idleMs=Date.now()-lastKeyUseTime;
+        const idleMs=Date.now()-(window._idleFrom||lastKeyUseTime);
         const idleStr=formatIdle(idleMs);
         const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
         if(de)de.textContent="🧬Key闲置 "+idleStr+(sinceResume!==null?"/恢复"+sinceResume+"m前":"");
