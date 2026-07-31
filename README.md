@@ -469,7 +469,7 @@ codex
 | 📈 次数 | 按请求数显示次数趋势 |
 | 💚 健康 | 堆叠柱状图，分色显示 200（绿）/ 4xx（黄）/ 5xx（红）/ 失败（灰），反映上游 HTTP 状态码分布 |
 | 🔺 上游 | 堆叠柱状图，按 Key 的上游域名归集显示各上游使用次数，悬停查看域名 + #Key 列表及次数，最多显示前 8 个域名，其余归入「其他」 |
-| 🔻 下游 | 堆叠柱状图，反映流终态分布：完成/客户端断开/超时/容量不足/配额不足/上游错误，悬停按 Key 列出各上游（#序号 + 域名）的终态次数 |
+| 🔻 下游 | 堆叠柱状图，按下游应用客户端（请求 User-Agent）归集显示各应用请求数，悬停查看各应用及次数，最多显示前 8 个应用，其余归入「其他」；流终态细节请查看日志/CSV 的流结果字段 |
 | 💰 费用 | 按小时预估费用（USD），悬停查看精确值 |
 | ⏱ 延迟 | 按小时平均延迟，悬停查看具体值及请求数 |
 
@@ -582,7 +582,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 每个转换请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone`、`streamId` 和 `streamErrorMsg`，并额外写入一条带 `url`（上游地址）与 `streamErrorMsg` 的 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_close`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`client_disconnect`、`model_at_capacity`、`insufficient_quota`、`upstream_api_error`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
 
-上游在 SSE 流内或非 2xx HTTP 错误体内返回的错误对象（例如 `Selected model is at capacity. Please try a different model.`、`You exceeded your current quota` 等）不再被静默丢弃：代理会把限长并脱敏后的错误信息记入 `streamErrorMsg`，同时按内容归类为 `model_at_capacity` / `insufficient_quota` / `upstream_api_error`。SSE 错误会向 Codex CLI 输出 `response.failed`；如果一个请求的所有可用 Key 均失败且最终返回 `502`，代理还会写入 `downstream_terminal` 事件。自动切换到其他 Key 后成功不会产生该事件，也不会算作下游失败。日志列表、全文检索和 CSV 可查看错误分类、信息及来源；趋势图「🔻 下游」按小时展示持久化的流终态与最终下游失败，悬停可定位是哪个上游（#序号 + 域名）出现容量、配额或上游错误。代理只能记录实际经过代理的 HTTP/SSE 内容，无法读取 Codex CLI 本地终端中未经过代理的提示。
+上游在 SSE 流内或非 2xx HTTP 错误体内返回的错误对象（例如 `Selected model is at capacity. Please try a different model.`、`You exceeded your current quota` 等）不再被静默丢弃：代理会把限长并脱敏后的错误信息记入 `streamErrorMsg`，同时按内容归类为 `model_at_capacity` / `insufficient_quota` / `upstream_api_error`。SSE 错误会向 Codex CLI 输出 `response.failed`；如果一个请求的所有可用 Key 均失败且最终返回 `502`，代理还会写入 `downstream_terminal` 事件。自动切换到其他 Key 后成功不会产生该事件，也不会算作下游失败。日志列表、全文检索和 CSV 可查看错误分类、信息及来源；趋势图「🔻 下游」已改为按下游应用（请求 User-Agent）归集的请求数堆叠图，不再展示流终态，流终态细节请通过日志/CSV 的「流结果/流终态原因」字段查看。代理只能记录实际经过代理的 HTTP/SSE 内容，无法读取 Codex CLI 本地终端中未经过代理的提示。
 
 出现 Codex CLI 的 `stream disconnected before completion` 后，先检查工作区和日志，确认是否已有部分文件修改、命令执行或工具调用结果；不要盲目重放整个编码任务。此类改动在代理重启后生效，应等待所有在途 CLI 任务结束，再在维护窗口重启。
 
@@ -1341,9 +1341,11 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-07-31 修复下游归集崩溃循环**：修复重启后代理反复 `ReferenceError: client is not defined` 崩溃并被 watchdog 重启的问题（`forwardRequest` 中新增 `client` 变量声明并透传给 5 处 `recordRequest` 调用，日志条目复用同一值）。新增回归测试：运行时断言 `recordRequest` 正确累计 `clients` 且未定义客户端被忽略、源契约断言 `forwardRequest` 必须先声明 `client` 再调用 `recordRequest`。
+- **2026-07-31 下游趋势图按应用归集**：趋势图「🔻 下游」由「流终态分布」改为「按下游应用客户端（请求 User-Agent）归集请求数」的堆叠柱状图（Codex CLI / Claude Code / Cursor / Chatbox / Cherry Studio / NextChat / LobeChat / OpenAI SDK / Vercel AI SDK / curl 等，最多显示前 8 个应用，其余归入「其他」，悬停查看各应用次数）。请求记录新增 `client` 维度：`recordRequest` 同时累加小时/日桶的 `clients`，日志全文检索与 CSV 新增客户端列，日志详情显示「客户端」。流终态不再显示于趋势图，改由日志/CSV 的「流结果/流终态原因」与 `stream_terminal` 事件承载。
 - **2026-07-31 趋势图上游归集与健康恢复**：趋势图新增「🔺 上游」模式，按 Key 的上游域名归集显示各上游使用次数（最多前 8 个域名，其余归入「其他」，悬停查看域名 + #Key 列表 + 次数）；原状态码分布恢复为「💚 健康」标签，两种上游/下游语义不再混用，标签顺序为 模型/流量/次数/健康/上游/下游/费用/延迟。
 - **2026-07-31 运行时数据治理**：新增 `state.json` 小时/日统计裁剪、容量上限与原子备份恢复；请求 JSONL 按天分段并同时受保留期和总容量限制；`.log-summary.json` 有界；WSL watchdog 新增 `proxy-log-rotator.js` 控制台日志轮转及旧大文件迁移。保存系统配置后立即执行清理，缺失轮转器时不再回退到无限追加 `proxy.log`。
-- **2026-07-31 上游错误捕获与下游流终态趋势**：Responses→Chat 转换不再静默丢弃上游 SSE 或非 2xx HTTP 错误体；错误信息会限长脱敏，记录为 `streamErrorMsg` 并按内容归类为 `model_at_capacity`（容量不足）、`insufficient_quota`（配额不足）、`upstream_api_error`（其他上游错误）。SSE 错误明确输出 `response.failed`；全部候选 Key 最终失败并返回 `502` 时新增 `downstream_terminal`，自动回退成功不误报为下游失败。日志、CSV 和历史全文检索新增错误分类/来源字段；趋势图「🔻 下游」按小时展示持久化的流终态与最终下游失败，悬停定位具体上游。后端补充 HTTP 错误体脱敏、容量分类、历史检索和回退语义回归测试。
+- **2026-07-31 上游错误捕获与下游流终态趋势**：Responses→Chat 转换不再静默丢弃上游 SSE 或非 2xx HTTP 错误体；错误信息会限长脱敏，记录为 `streamErrorMsg` 并按内容归类为 `model_at_capacity`（容量不足）、`insufficient_quota`（配额不足）、`upstream_api_error`（其他上游错误）。SSE 错误明确输出 `response.failed`；全部候选 Key 最终失败并返回 `502` 时新增 `downstream_terminal`，自动回退成功不误报为下游失败。日志、CSV 和历史全文检索新增错误分类/来源字段；流终态记录保持在日志/CSV 的「流结果/流终态原因」字段与 `stream_terminal` 事件范畴。后端补充 HTTP 错误体脱敏、容量分类、历史检索和回退语义回归测试。
 - **2026-07-30 日志查询与事件处置**：默认日志视图优先使用内存尾部 50 条；代理重启后内存不足时由受限 Worker 补齐已保存的日志尾部，避免误以为历史日志被清空。修复未填写时间范围被误解析为 Unix 时间 0、导致历史与内存日志同时被筛空的问题。历史筛选、游标分页和导出同样由 Worker 反向扫描 JSONL，取消主线程全量计数/读取。新增分钟与日汇总、首次缺失时后台重建、按需 WebSocket 订阅及 350ms 批量刷新。新增按上游/模型/路径/分组的日志事件中心，可确认、静默、发送通知，并可人工临时暂停或恢复分组；不会自动修改 Key 或重启代理。
 - **2026-07-29 Release 运行时精简**：构建产物不再包含构建器或任何回归测试；Release 内的 `package.json` 移除源码专用脚本，测试和构建固定在 GitHub 源码仓库完成。
 - **2026-07-28 可取消与强制重启控制**：安全重启排空阶段新增取消控制，恢复新请求接入但不虚假恢复已拒绝的排队请求；排空满 30 秒后才允许二次确认强制重启。强制重启明确记录和提示会中断活跃流，新增重启生命周期回归测试，并同步独立备用面板。

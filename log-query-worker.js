@@ -164,7 +164,7 @@ function matchesQuery(entry, query) {
   if (query.group && String(entry.group || "A").toUpperCase() !== query.group.toUpperCase()) return false;
   if (query.q) {
     const needle = query.q.toLowerCase();
-    const haystack = [entry.message, entry.url, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource]
+    const haystack = [entry.message, entry.url, entry.client, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource]
       .map(value => String(value || "").toLowerCase()).join("\n");
     if (!haystack.includes(needle)) return false;
   }

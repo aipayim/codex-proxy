@@ -1574,7 +1574,7 @@ function serializeBoundedLogEntry(entry) {
   let line = JSON.stringify(entry) + "\n";
   if (Buffer.byteLength(line, "utf8") <= LOG_ENTRY_MAX_BYTES) return line;
   const compact = { logTruncated: true };
-  for (const field of ["time", "type", "eventType", "idx", "status", "path", "group", "reqModel", "overrideModel", "streamOutcome", "streamReason", "upstreamErrorReason", "terminalSource", "streamId", "message", "streamErrorMsg", "url"]) {
+  for (const field of ["time", "type", "eventType", "idx", "status", "path", "group", "client", "reqModel", "overrideModel", "streamOutcome", "streamReason", "upstreamErrorReason", "terminalSource", "streamId", "message", "streamErrorMsg", "url"]) {
     const value = entry && entry[field];
     if (value === undefined || value === null) continue;
     compact[field] = typeof value === "string" ? value.slice(0, 512) : value;
@@ -2117,7 +2117,7 @@ function logEntryMatchesQuery(entry, query) {
   if (query.path && !String(entry.path || "").toLowerCase().includes(query.path.toLowerCase())) return false;
   if (query.group && String(entry.group || "A").toUpperCase() !== query.group) return false;
   if (query.q) {
-    const haystack = [entry.message, entry.url, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource].map(value => String(value || "").toLowerCase()).join("\n");
+    const haystack = [entry.message, entry.url, entry.client, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource].map(value => String(value || "").toLowerCase()).join("\n");
     if (!haystack.includes(query.q.toLowerCase())) return false;
   }
   return true;
@@ -2183,11 +2183,12 @@ function escapeLogCsvCell(value) {
 }
 
 function formatLogCsv(entries) {
-  const header = ["time", "idx", "group", "method", "path", "status", "inputBytes", "outputBytes", "duration", "ttfb", "reqModel", "overrideModel", "url", "type", "eventType", "message", "streamId", "streamOutcome", "streamReason", "streamSawDone", "upstreamErrorReason", "streamErrorMsg", "terminalSource"];
+  const header = ["time", "idx", "group", "client", "method", "path", "status", "inputBytes", "outputBytes", "duration", "ttfb", "reqModel", "overrideModel", "url", "type", "eventType", "message", "streamId", "streamOutcome", "streamReason", "streamSawDone", "upstreamErrorReason", "streamErrorMsg", "terminalSource"];
   const rows = entries.map(entry => [
     entry.time,
     entry.idx,
     entry.group,
+    entry.client || "",
     entry.method,
     entry.path,
     entry.status || 0,
@@ -3071,7 +3072,43 @@ function getKeyState(idx) {
   return ks;
 }
 
-function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, model, statusCode) {
+function classifyClientApp(ua) {
+  if (!ua) return "(未知)";
+  const s = String(ua).slice(0, 200);
+  const lower = s.toLowerCase();
+  const rules = [
+    ["codex", "Codex CLI"],
+    ["claude", "Claude Code"],
+    ["cursor", "Cursor"],
+    ["chatbox", "Chatbox"],
+    ["cherry studio", "Cherry Studio"],
+    ["cherry", "Cherry Studio"],
+    ["nextchat", "NextChat"],
+    ["chatgpt-next-web", "NextChat"],
+    ["lobe", "LobeChat"],
+    ["openai-python", "OpenAI SDK (Python)"],
+    ["openai/python", "OpenAI SDK (Python)"],
+    ["openai/node", "OpenAI SDK (Node)"],
+    ["openai-node", "OpenAI SDK (Node)"],
+    ["openai/typescript", "OpenAI SDK (TS)"],
+    ["openai-typescript", "OpenAI SDK (TS)"],
+    ["openai/ts", "OpenAI SDK (TS)"],
+    ["openai", "OpenAI SDK"],
+    ["vercel-ai", "Vercel AI SDK"],
+    ["ai sdk", "Vercel AI SDK"],
+    ["python-requests", "Python 脚本"],
+    ["curl", "curl"],
+    ["wget", "wget"],
+    ["postman", "Postman"],
+    ["node", "Node.js"],
+  ];
+  for (const [keyword, label] of rules) {
+    if (lower.includes(keyword)) return label;
+  }
+  return (s.split(" ")[0] || "").slice(0, 40) || "(未知)";
+}
+
+function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, model, statusCode, client) {
   const ks = getKeyState(idx);
   const s = ks.stats;
   const cost = estimateCost(inputBytes || 0, outputBytes || 0);
@@ -3129,6 +3166,12 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
     s.hourly[hk].statusCodes[scKey] = (s.hourly[hk].statusCodes[scKey] || 0) + 1;
     if (!s.daily[d].statusCodes) s.daily[d].statusCodes = {};
     s.daily[d].statusCodes[scKey] = (s.daily[d].statusCodes[scKey] || 0) + 1;
+  }
+  if (client) {
+    if (!s.hourly[hk].clients) s.hourly[hk].clients = {};
+    s.hourly[hk].clients[client] = (s.hourly[hk].clients[client] || 0) + 1;
+    if (!s.daily[d].clients) s.daily[d].clients = {};
+    s.daily[d].clients[client] = (s.daily[d].clients[client] || 0) + 1;
   }
 
   state.activeKey = idx;
@@ -3648,6 +3691,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   activeRequests[idx].push({ start: Date.now(), model: resolvedModel || "?" });
   const reqStart = Date.now();
   let ttfb = null;
+  const client = classifyClientApp(headers["user-agent"]);
 
   const targetUrl = new URL(acct.url);
   const mod = HTTP_MOD[targetUrl.protocol] || https;
@@ -3667,7 +3711,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     timeout: TIMEOUT,
   };
 
-  const logEntry = { time: Date.now(), idx: idx + 1, group: (acct.group || "A").toUpperCase(), method, path: pathname, url: acct.url };
+  const logEntry = { time: Date.now(), idx: idx + 1, group: (acct.group || "A").toUpperCase(), method, path: pathname, url: acct.url, client };
   if (lifecycle) logEntry.streamId = lifecycle.responseId;
   if (body && LOG_DETAIL !== "basic") {
     try { const p = JSON.parse(body.toString()); logEntry.reqModel = p.model || null; } catch(e) {}
@@ -3692,7 +3736,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
           : (statusCode === 402 ? "insufficient_quota" : "upstream_api_error");
         activeDecr(idx);
         markFailure(idx, statusCode);
-        recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode);
+        recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode, client);
         recordPath(pathname, method, 0, 0, dur);
         Object.assign(logEntry, {
           status: statusCode,
@@ -3751,7 +3795,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       if (!lifecycle) {
-        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode);
+        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode, client);
       }
       if (lifecycle && lifecycle.terminalReason) {
         recordStreamOutcome(idx, lifecycle.terminalReason, true);
@@ -3763,7 +3807,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       lifecycle._metricsCallback = (success) => {
         const dur = Date.now() - reqStart;
         const accBytes = transform.accBytes || 0;
-        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel, success ? (apiRes.statusCode || 200) : 0);
+        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel, success ? (apiRes.statusCode || 200) : 0, client);
         if (!success && !clientCancelled) markFailure(idx, 0);
       };
       lifecycle._onTerminal = completedLifecycle => {
@@ -3846,7 +3890,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     console.error(`[proxy] #${idx + 1} Error: ${err.message}`);
     const errorMessage = sanitizeUpstreamErrorMessage(err && err.message);
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0);
+    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null, upstreamErrorReason: "upstream_error", streamErrorMsg: errorMessage, terminalSource: "upstream_transport_error" });
     addLog(logEntry);
     const _ks3=getKeyState(idx);_ks3.lastStatus=0;_ks3.lastTime=Date.now();_ks3.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
@@ -3868,7 +3912,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     proxyReq.destroy();
     markFailure(idx, 0);
     if (!lifecycle) {
-      recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0);
+    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client);
     }
     recordPath(pathname, method, 0, 0, dur);
     const errorMessage = "Upstream request timed out";
@@ -5338,10 +5382,11 @@ function renderTrend(){
   for(let i=hours-1;i>=0;i--){
     const d=new Date(now-i*3600000);
     const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0"),hh=String(d.getHours()).padStart(2,"0");
-    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,totalCost:0,totalDuration:0,keys:{},models:{},status:{},streams:{},streamsByKey:{},urls:{},urlsKeys:{}};
+    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,totalCost:0,totalDuration:0,keys:{},models:{},status:{},urls:{},urlsKeys:{},clients:{}};
   }
   const allModels={};
   const allUrls={};
+  const allClients={};
   for(const a of data){
     if(!a.hourly)continue;
     const ai=a.idx;
@@ -5378,12 +5423,12 @@ function renderTrend(){
           h.status[scKey]+=scVal;
         }
       }
-      if(v.streamOutcomes){
-        for(const [soKey,soVal] of Object.entries(v.streamOutcomes)){
-          if(!h.streams[soKey])h.streams[soKey]=0;
-          h.streams[soKey]+=soVal;
-          if(!h.streamsByKey[ai])h.streamsByKey[ai]={};
-          h.streamsByKey[ai][soKey]=(h.streamsByKey[ai][soKey]||0)+soVal;
+      if(v.clients){
+        for(const [ck,cv] of Object.entries(v.clients)){
+          if(!h.clients[ck])h.clients[ck]=0;
+          h.clients[ck]+=cv;
+          if(!allClients[ck])allClients[ck]=0;
+          allClients[ck]+=cv;
         }
       }
     }
@@ -5408,7 +5453,7 @@ function renderTrend(){
     vals=keys.map(k=>{const u=hMap[k].urls||{};return Object.values(u).reduce((s,n)=>s+n,0);});
     max=Math.max(...vals,1);
   }else if(trendMode==="downstream"){
-    vals=keys.map(k=>{const st=hMap[k].streams||{};return Object.values(st).reduce((s,n)=>s+n,0);});
+    vals=keys.map(k=>{const c=hMap[k].clients||{};return Object.values(c).reduce((s,n)=>s+n,0);});
     max=Math.max(...vals,1);
   }else if(trendMode==="latency"){
     vals=keys.map(k=>{const h=hMap[k];return h.req>0?Math.round(h.totalDuration/h.req):0;});
@@ -5561,62 +5606,50 @@ function renderTrend(){
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML=legendUrls.map(u=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+urlColorMap[u]+'"></span>'+esc(u)+' ('+allUrls[u]+')</span>').join("");
   }else if(trendMode==="downstream"){
-    const dColors={upstream_done:"#22c55e",client_disconnect:"#60a5fa",upstream_idle_timeout:"#eab308",stream_lifetime_timeout:"#eab308",model_at_capacity:"#f97316",insufficient_quota:"#f97316",upstream_api_error:"#ef4444",upstream_error:"#ef4444",upstream_close:"#ef4444",upstream_eof_without_done:"#ef4444"};
-    const dLabels={upstream_done:"完成",client_disconnect:"客户端断开",upstream_idle_timeout:"超时",stream_lifetime_timeout:"超时",model_at_capacity:"容量不足",insufficient_quota:"配额不足",upstream_api_error:"上游错误",upstream_error:"上游错误",upstream_close:"上游关闭",upstream_eof_without_done:"上游未完成"};
-    const dOrder=["upstream_done","client_disconnect","upstream_idle_timeout","stream_lifetime_timeout","model_at_capacity","insufficient_quota","upstream_api_error","upstream_error","upstream_close","upstream_eof_without_done"];
+    const sortedClients=Object.keys(allClients).sort((a,b)=>allClients[b]-allClients[a]);
+    const topClients=sortedClients.slice(0,8);
+    const clientColorMap={};
+    topClients.forEach((c,i)=>{clientColorMap[c]=modelColors[i%modelColors.length];});
+    if(sortedClients.length>8)clientColorMap["(其他)"]="#6b7280";
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
-      const st=h.streams||{};
-      const total=Object.values(st).reduce((s,n)=>s+n,0);
+      const total=h.req||0;
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
       lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("流终态: "+total+"次");
-      for(const [soKey,soVal] of Object.entries(st)){
-        lines.push("  "+(dLabels[soKey]||soKey)+": "+soVal+"次");
-      }
-      const bk=h.streamsByKey||{};
-      const bkKeys=Object.keys(bk).sort((a,b)=>{
-        const na=Object.values(bk[a]).reduce((s,n)=>s+n,0),nb=Object.values(bk[b]).reduce((s,n)=>s+n,0);
-        return nb-na;
-      });
-      for(const ki of bkKeys){
-        const kk=bk[ki];
-        const kdata=data.find(item=>String(item&&item.idx)===String(ki));
-        let hostLabel="#"+ki;
-        if(kdata&&kdata.url){
-          try{hostLabel+=" ("+new URL(kdata.url).hostname+")";}catch(e){hostLabel+=" ("+kdata.url+")";}
-        }
-        const kc=[];
-        for(const [soKey,soVal] of Object.entries(kk)){
-          if(soVal>0)kc.push((dLabels[soKey]||soKey)+" "+soVal);
-        }
-        if(kc.length)lines.push("  "+hostLabel+": "+kc.join(", "));
-      }
+      lines.push("合计: "+total+"次");
       const segments=[];
-      for(const soKey of dOrder){
-        const soVal=st[soKey];
-        if(soVal>0){
-          const pct=total?soVal/total*100:0;
-          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+(dColors[soKey]||"#6b7280")+'"></div>');
+      for(const c of topClients){
+        const cv=h.clients[c]||0;
+        if(cv>0){
+          const pct=total?cv/total*100:0;
+          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+clientColorMap[c]+'"></div>');
+          lines.push("  "+c+": "+cv+"次");
         }
       }
-      for(const [soKey,soVal] of Object.entries(st)){
-        if(!dOrder.includes(soKey)){
-          const pct=total?soVal/total*100:0;
+      if(sortedClients.length>8){
+        let otherTotal=0;
+        for(const [cc,ccVal] of Object.entries(h.clients)){
+          if(!topClients.includes(cc))otherTotal+=ccVal;
+        }
+        if(otherTotal>0){
+          const pct=total?otherTotal/total*100:0;
           segments.push('<div class="trend-seg" style="height:'+pct+'%;background:#6b7280"></div>');
+          lines.push("  (其他): "+otherTotal+"次");
         }
       }
       const barH=Math.max(2,vals[i]/max*80);
       return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'">'+segments.join("")+'</div>';
     }).join("");
+    const legendClients=topClients.slice();
+    if(sortedClients.length>8){
+      let otherTotal=0;
+      for(const c of sortedClients){if(!topClients.includes(c))otherTotal+=allClients[c]||0;}
+      allClients["(其他)"]=otherTotal;
+      legendClients.push("(其他)");
+    }
     const legendEl=document.getElementById("trendLegend");
-    if(legendEl)legendEl.innerHTML=
-      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#22c55e"></span>完成</span>'+
-      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#60a5fa"></span>客户端断开</span>'+
-      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#eab308"></span>超时</span>'+
-      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#f97316"></span>容量/配额</span>'+
-      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#ef4444"></span>上游错误</span>';
+    if(legendEl)legendEl.innerHTML=legendClients.map(c=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+clientColorMap[c]+'"></span>'+esc(c)+' ('+allClients[c]+')</span>').join("");
   }else{
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
@@ -6928,7 +6961,7 @@ function logDetailText(entry){
     return lines.join("\\n");
   }
   return [
-    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"上游错误分类: "+(entry.upstreamErrorReason||""),"错误信息: "+(entry.streamErrorMsg||"无"),"错误来源: "+(entry.terminalSource||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
+    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"客户端: "+(entry.client||""),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"上游错误分类: "+(entry.upstreamErrorReason||""),"错误信息: "+(entry.streamErrorMsg||"无"),"错误来源: "+(entry.terminalSource||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
   ].join("\\n");
 }
 

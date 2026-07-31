@@ -189,7 +189,7 @@ function testSourceContracts() {
   assert.doesNotMatch(source, /countAllEntries/);
   assert.doesNotMatch(source, /logWrittenCount/);
   assert.match(source, /data-mode="health" onclick="setTrendMode\('health'\)">💚 健康<\/span><span class="trend-tab" data-mode="upstream" onclick="setTrendMode\('upstream'\)">🔺 上游<\/span><span class="trend-tab" data-mode="downstream"/);
-  assert.match(source, /urls:\{\},urlsKeys:\{\}\};\n  \}\n  const allModels=\{\};\n  const allUrls=\{\};/);
+  assert.match(source, /urls:\{\},urlsKeys:\{\},clients:\{\}\};\n  \}\n  const allModels=\{\};\n  const allUrls=\{\};\n  const allClients=\{\};/);
   assert.match(source, /try\{ uKey=new URL\(a\.url\)\.hostname; \}catch\(e\)\{ uKey=a\.url; \}/);
   assert.match(source, /h\.urls\[uKey\]=\s*\(h\.urls\[uKey\]\|\|0\)/);
   assert.match(source, /}else if\(trendMode==="health"\)\{\n    vals=keys\.map\(k=>\{const s=hMap\[k\]\.status;return\(s\.ok\|\|0\)/);
@@ -200,6 +200,102 @@ function testSourceContracts() {
   assert.match(source, /lines\.push\("  "\+u\+" \(#"\+uk\.join\(",#"\)\+"\): "\+uv\+"次"\);/);
   assert.match(source, /allUrls\["\(其他\)"\]=otherTotal;/);
   assert.match(source, /trendLegend/);
+  assert.match(source, /function classifyClientApp\(ua\)/);
+  const fwdStart = source.indexOf("function forwardRequest(");
+  const fwdEnd = source.indexOf("function forwardWithPriority(", fwdStart);
+  const fwdBody = source.slice(fwdStart, fwdEnd);
+  assert.ok(fwdStart >= 0 && fwdEnd > fwdStart, "forwardRequest must be present before forwardWithPriority");
+  assert.match(fwdBody, /const client = classifyClientApp\(headers\["user-agent"\]\);/);
+  assert.ok(fwdBody.indexOf("const client =") < fwdBody.indexOf("recordRequest("), "forwardRequest must declare client before any recordRequest call");
+  assert.ok((fwdBody.match(/recordRequest\(/g) || []).length >= 5, "forwardRequest must forward client to every recordRequest call site");
+  assert.match(source, /url: acct\.url, client \};/);
+  assert.match(source, /if \(client\) \{/);
+  assert.match(source, /s\.hourly\[hk\]\.clients\[client\]\s*=\s*\(s\.hourly\[hk\]\.clients\[client\]\s*\|\|\s*0\)\s*\+\s*1;/);
+  assert.match(source, /s\.daily\[d\]\.clients\[client\]\s*=\s*\(s\.daily\[d\]\.clients\[client\]\s*\|\|\s*0\)\s*\+\s*1;/);
+  assert.match(source, /if\(v\.clients\)\{/);
+  assert.match(source, /}else if\(trendMode==="downstream"\)\{\n    vals=keys\.map\(k=>\{const c=hMap\[k\]\.clients\|\|\{\};return Object\.values\(c\)\.reduce\(\(s,n\)=>s\+n,0\);\}\);/);
+  assert.match(source, /}else if\(trendMode==="downstream"\)\{\n    const sortedClients=Object\.keys\(allClients\)\.sort\(\(a,b\)=>allClients\[b\]-allClients\[a\]\);/);
+  assert.match(source, /const topClients=sortedClients\.slice\(0,8\);/);
+  assert.match(source, /clientColorMap\["\(其他\)"\]="#6b7280";/);
+  assert.match(source, /allClients\["\(其他\)"\]=otherTotal;/);
+  assert.match(source, /lines\.push\("  "\+c\+": "\+cv\+"次"\);/);
+  assert.match(source, /legendClients\.map\(c=>'<span class="trend-legend-item"/);
+  assert.match(source, /"group", "client", "method", "path", "status"/);
+  assert.match(source, /entry\.url, entry\.client, entry\.reqModel/);
+  assert.match(source, /"客户端: "\+\(entry\.client\|\|""\)/);
+  assert.doesNotMatch(source, /if\(!h\.streams\[soKey\]\)/);
+  assert.doesNotMatch(source, /const dColors=\{upstream_done/);
+}
+
+function testClassifyClientApp() {
+  const source = fs.readFileSync(path.join(ROOT, "proxy.js"), "utf8");
+  const start = source.indexOf("function classifyClientApp(");
+  const end = source.indexOf("\nfunction recordRequest(", start);
+  assert.ok(start >= 0 && end > start, "classifyClientApp definition must be found");
+  const classifyClientApp = new Function(source.slice(start, end) + "; return classifyClientApp;")();
+
+  const cases = [
+    ["Codex/1.0", "Codex CLI"],
+    ["Claude-Code/2.0.0 cli/2.0.0", "Claude Code"],
+    ["Cursor/0.45.0 (Cursor AI)", "Cursor"],
+    ["Chatbox/1.0.0", "Chatbox"],
+    ["Cherry Studio/1.2.3", "Cherry Studio"],
+    ["NextChat/2.15.0", "NextChat"],
+    ["LobeChat/1.0.0", "LobeChat"],
+    ["OpenAI/Python 1.30.0", "OpenAI SDK (Python)"],
+    ["openai-node/4.60.0", "OpenAI SDK (Node)"],
+    ["openai-typescript/4.50.0", "OpenAI SDK (TS)"],
+    ["openai/v0.9.0", "OpenAI SDK"],
+    ["vercel-ai/3.2.0", "Vercel AI SDK"],
+    ["python-requests/2.31.0", "Python 脚本"],
+    ["curl/8.5.0", "curl"],
+    ["Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36", "Mozilla/5.0"],
+    ["", "(未知)"],
+    [undefined, "(未知)"],
+  ];
+  for (const [ua, expected] of cases) {
+    assert.strictEqual(classifyClientApp(ua), expected, `classifyClientApp(${JSON.stringify(ua)})`);
+  }
+  assert.ok(classifyClientApp("some-very-long-custom-client-agent-string-that-exceeds-the-limit").length <= 40, "fallback label must be truncated to 40 chars");
+  assert.strictEqual(classifyClientApp("foo/1.0"), "foo/1.0");
+}
+
+function testRecordRequestClientAccumulation() {
+  const source = fs.readFileSync(path.join(ROOT, "proxy.js"), "utf8");
+  const start = source.indexOf("function recordRequest(");
+  const end = source.indexOf("\nfunction recordStreamOutcome(", start);
+  assert.ok(start >= 0 && end > start, "recordRequest must be present");
+  const stats = { hourly: {}, daily: {}, totalRequests: 0, successRequests: 0, failRequests: 0 };
+  const state = { activeKey: null };
+  const config = { rateLimit: false };
+  const recordRequest = new Function(
+    "getKeyState", "today", "saveState", "broadcastStatus", "recordSliding", "state", "config",
+    `let estimateCost = (i, o) => 0;
+     let stateBucketAddsSinceCompaction = 0;
+     const invalidateStateStatusBucketCache = () => {};
+     const STATE_HOURLY_MODEL_LIMIT = 12;
+     const STATE_HOURLY_MODEL_NAME_MAX_CHARS = 160;
+     const STATE_HOURLY_OTHER_MODEL = "(其他)";
+     ${source.slice(start, end)}
+     return recordRequest;`
+  )(
+    () => ({ stats }),
+    () => "2026-07-31",
+    () => {},
+    () => {},
+    () => {},
+    state,
+    config
+  );
+  const hk = "2026-07-31-" + String(new Date().getHours()).padStart(2, "0");
+  recordRequest(0, true, 100, 200, 500, 100, "gpt-test", 200, "Codex CLI");
+  recordRequest(0, false, 0, 0, 50, null, "gpt-test", 429, "Codex CLI");
+  recordRequest(0, true, 10, 20, 30, 5, "gpt-test", 200, "curl/8.0");
+  assert.deepStrictEqual(stats.hourly[hk].clients, { "Codex CLI": 2, "curl/8.0": 1 });
+  assert.deepStrictEqual(stats.daily["2026-07-31"].clients, { "Codex CLI": 2, "curl/8.0": 1 });
+  recordRequest(0, true, 1, 1, 1, 1, "gpt-test", 200, undefined);
+  assert.strictEqual(stats.hourly[hk].clients["Codex CLI"], 2, "undefined client must not be recorded");
+  assert.strictEqual(stats.hourly[hk].requests, 4);
 }
 
 async function main() {
@@ -211,6 +307,8 @@ async function main() {
     await testPersistedErrorMessageSearch(tempDir);
     testRecentMemoryHistoryMerge();
     testUnfilteredLogQueryTimeBounds();
+    testClassifyClientApp();
+    testRecordRequestClientAccumulation();
     testSourceContracts();
     console.log("log query, summary, and incident lifecycle: PASS");
   } finally {

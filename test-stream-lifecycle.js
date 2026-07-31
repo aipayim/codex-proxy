@@ -287,10 +287,15 @@ function testRecordStreamOutcomeAggregation() {
   assert.strictEqual(broadcasts, 2);
 }
 
-function testDownstreamTrendUsesDisplayedKeyIndex(proxyDir) {
+function testDownstreamTrendByClientApp(proxyDir) {
   const source = fs.readFileSync(path.join(proxyDir, "proxy.js"), "utf8");
-  assert.match(source, /const kdata=data\.find\(item=>String\(item&&item\.idx\)===String\(ki\)\);/);
-  assert.doesNotMatch(source, /const kdata=data\[ki\];/);
+  assert.match(source, /const sortedClients=Object\.keys\(allClients\)\.sort\(\(a,b\)=>allClients\[b\]-allClients\[a\]\);/);
+  assert.match(source, /clientColorMap\[c\]=modelColors\[i%modelColors\.length\];/);
+  assert.match(source, /const topClients=sortedClients\.slice\(0,8\);/);
+  assert.match(source, /lines\.push\("  "\+c\+": "\+cv\+"次"\);/);
+  assert.match(source, /for\(const c of sortedClients\)\{if\(!topClients\.includes\(c\)\)otherTotal\+=allClients\[c\]\|\|0;\}/);
+  assert.doesNotMatch(source, /const kdata=data\.find\(item=>String\(item&&item\.idx\)===String\(ki\)\);/);
+  assert.doesNotMatch(source, /const dOrder=\[/);
 }
 
 async function main() {
@@ -309,7 +314,7 @@ async function main() {
   await testHttpErrorCapture(harness);
   testFinalDownstreamFailureOnly(__dirname);
   testRecordStreamOutcomeAggregation();
-  testDownstreamTrendUsesDisplayedKeyIndex(__dirname);
+  testDownstreamTrendByClientApp(__dirname);
   console.log("stream lifecycle: PASS");
 }
 
