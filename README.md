@@ -507,16 +507,25 @@ codex
 | `logs/YYYY-MM-DD*.jsonl` | 按天保留 7 天、所有分段合计 256 MiB、单段 16 MiB | 同日超限生成编号分段；按天清理和总容量清理同时生效。`logRetentionDays=0` 只关闭按天删除，容量上限仍生效。单条日志超过 512 KiB 会被截断为有限诊断字段或丢弃。 |
 | `logs/.log-summary.json` | 8 MiB | 只保留最近汇总桶；它是统计加速缓存，缺失时可由 Worker 重建，不是原始日志。 |
 | WSL `proxy.log` | 当前段 10 MiB，另保留 5 个归档 | `proxy-log-rotator.js` 通过管道写入并轮转为 `proxy.log.1` 等文件，配置每 10 秒重新读取。旧的超大单文件首次启动时会迁移为有界尾部。systemd 部署使用 journald，不使用该文件。 |
+| Codex `logs*.sqlite`（可选） | 默认关闭；达到 2048 MiB 后保留最近 12 小时 | 只允许当前代理用户 `~/.codex/` 下的主 `.sqlite` 文件。检查主库与 `-wal` 合计容量；每轮最多 5 个 1000 行短事务，数据库忙时 1 秒内让步并在下个周期重试。 |
 
 点击「系统配置」保存后会立即执行一次状态压缩和请求日志清理；WSL 控制台日志的新容量值最迟约 10 秒生效。轮转器是 WSL watchdog 的必需运行文件，缺失时 watchdog 会拒绝以无界方式启动代理，而不会把输出重新追加到无限增长的 `proxy.log`。
 
 这些操作不等同于重启代理。若正在运行的实例尚未加载本次源码变更，需在合适的维护窗口人工重启后才会使用新代码；重启本身仍可能中断活跃流，不能用来安全“暂停并恢复”任意 Codex CLI 任务。
 
+#### Codex SQLite 日志维护
+
+在「系统配置」启用后，代理会先检测数据库路径、常规文件属性和 `logs(id, ts)` 结构；检测失败时不能保存启用配置。路径框示例为 `/root/.codex/logs_2.sqlite`。粘贴 Windows Explorer 路径 `\\wsl.localhost\Ubuntu\root\.codex\logs_2.sqlite` 或 `\\wsl$\Ubuntu\root\.codex\logs_2.sqlite` 时，面板和服务端会转换为 `/root/.codex/logs_2.sqlite` 后再校验；其他 Windows 路径、符号链接、`-wal` / `-shm` 辅助文件和 `~/.codex/` 外的文件会被拒绝。
+
+达到设置的「主库 + WAL」容量阈值后，后台独立进程仅删除 `ts` 早于保留期的记录。它依赖 Python 3 自带的 `sqlite3`，不需要新增 npm 原生依赖；缺少 Python 3 时启用保存会明确失败。启用保存时若数据库正忙，会拒绝该次保存并提示稍后重试，避免未验证配置生效；已保存的后台任务遇到忙状态则显示“数据库忙，已跳过”，等待下一周期，不会强抢写锁。它不重启/暂停代理、watchdog 或正在运行的 Codex CLI；点击「立即检查」只使用已经保存并验证过的配置。
+
+SQLite 删除行后通常只会把页留给后续写入复用，物理文件不保证立刻变小。为避免长写锁，系统**不会主动执行 `VACUUM`、checkpoint 或删除 WAL/SHM 文件**；确需物理压缩时，应在人工维护窗口确认 Codex CLI 已停止后单独处理。
+
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -530,6 +539,8 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__keys` | PUT | 写入 keys.json（自动重载；自动清除因 reset/resetDay 变更导致的过期 failCode） |
 | `/__config` | GET | 读取 config.json |
 | `/__config` | PUT | 写入 config.json（自动重载） |
+| `/__codex-log-maintenance/check` | POST | 检测候选 Codex SQLite 路径和 `logs(id, ts)` 结构；不写配置、不删除日志。请求体为 `{"codexLogMaintenance":{"dbPath":"/root/.codex/logs_2.sqlite"}}` |
+| `/__codex-log-maintenance/run` | POST | 立即按已保存且已启用的 Codex SQLite 维护配置检查/清理；不接受任意路径，不重启代理或 Codex CLI |
 | `/__reset-key` | POST | 重置指定 Key 的冷却/废弃状态（`{"idx": 1}`） |
 | `/__apply-test-result` | POST | 应用批量测试结果：`{"idx":1, "failCode":429}` → markFailure；`failCode=null/200` → 清空冷却（`{"idx":1, "failCode":null}`） |
 | `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`），返回 `model`（逗号分隔可用模型列表）和 `modelCount`（模型数量） |
@@ -750,6 +761,10 @@ npm run build:release -- --tag v1.2.3 --out ./dist
   "webhookUrl": "https://hooks.example.com/webhook?key=your_key_here",
   "prices": { "inputPer1M": 5, "outputPer1M": 15 },
   "bytesPerToken": 3,
+  "modelPricing": [
+    { "model": "gpt-5.6-sol", "inputPer1M": 5, "outputPer1M": 15, "bytesPerToken": 3 },
+    { "model": "gpt-5.6-luna", "inputPer1M": 1, "outputPer1M": 3, "bytesPerToken": 4 }
+  ],
   "notifications": { "sound": true, "desktop": true },
   "autoRecover": true,
   "autoRecoverInterval": 1,
@@ -786,6 +801,13 @@ npm run build:release -- --tag v1.2.3 --out ./dist
   "stateMaxMiB": 32,
   "proxyLogMaxMiB": 10,
   "proxyLogKeepFiles": 5,
+  "codexLogMaintenance": {
+    "enabled": false,
+    "dbPath": "/root/.codex/logs_2.sqlite",
+    "thresholdMiB": 2048,
+    "retainHours": 12,
+    "checkIntervalMinutes": 15
+  },
   "logDetail": "full",
   "logIncidents": {
     "enabled": true,
@@ -813,9 +835,10 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | 字段 | 说明 |
 |---|---|
 | `webhookUrl` | 全部 Key 失效时 POST JSON 告警（兼容企业微信/钉钉/Telegram） |
-| `prices.inputPer1M` | 输入价格（$/百万 token） |
-| `prices.outputPer1M` | 输出价格（$/百万 token） |
-| `bytesPerToken` | 每 token 近似字节数（默认 3，中文约 1.5-2，英文约 4） |
+| `prices.inputPer1M` | 默认输入价格（$/百万 token），未命中 `modelPricing` 时使用 |
+| `prices.outputPer1M` | 默认输出价格（$/百万 token），未命中 `modelPricing` 时使用 |
+| `bytesPerToken` | 默认每 token 近似字节数（默认 3，中文约 1.5-2，英文约 4），未命中 `modelPricing` 时使用 |
+| `modelPricing` | 可选的按模型定价规则数组，默认 `[]`；命中规则时覆盖以上三项全局价格/估算参数，未命中时仍使用全局值 |
 | `notifications.sound` | 是否播放声音提醒 |
 | `notifications.desktop` | 是否发送桌面通知 |
 | `autoRecover` | 是否启用自动恢复冷却 Key |
@@ -853,6 +876,11 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `stateMaxMiB` | `state.json` 容量上限（默认 32 MiB，范围 4–256）。超限时按完整时间桶删除最旧统计，并通过临时文件原子替换 |
 | `proxyLogMaxMiB` | WSL watchdog 当前 `proxy.log` 分段上限（默认 10 MiB，范围 1–100） |
 | `proxyLogKeepFiles` | WSL watchdog 保留的 `proxy.log.N` 归档数（默认 5，范围 1–20）；总量约为当前段加这些归档 |
+| `codexLogMaintenance.enabled` | 是否启用 Codex SQLite 日志维护（默认 `false`）。启用保存时必须通过路径与 SQLite 结构检测。 |
+| `codexLogMaintenance.dbPath` | 当前代理运行用户 `~/.codex/` 下的 `logs*.sqlite` 主文件，例如 `/root/.codex/logs_2.sqlite`。支持从 `\\wsl.localhost\发行版\...` / `\\wsl$\发行版\...` 自动转换；不接受普通 Windows 路径、符号链接、`-wal` 或 `-shm`。 |
+| `codexLogMaintenance.thresholdMiB` | 主库与 WAL 合计达到该容量后才维护，默认 2048 MiB，范围 64–102400。 |
+| `codexLogMaintenance.retainHours` | 只删除早于该时长的 `logs.ts` 记录，默认 12 小时，范围 1–8760。 |
+| `codexLogMaintenance.checkIntervalMinutes` | 后台检查周期，默认 15 分钟，范围 5–1440。每轮最多 5 x 1000 行短事务；SQLite 忙时跳过并等待下一周期。 |
 | `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
 | `logIncidents` | 日志事件规则对象。可配置是否启用/通知、观察窗口、最低请求数、失败次数及失败率、流失败次数、可选 P95 请求/首字节阈值、自动恢复时间和默认静默分钟数；默认只告警，不会自动暂停分组、重启或变更 Key |
 | `updateBaselineTag` | 高级可选项。定制构建的已人工确认上游稳定 Release Tag，格式 `vX.Y.Z` 或 `X.Y.Z`。官方发布资产和干净官方 Git Tag 自动识别，无需填写；来源未知的定制构建留空时只显示 Release 信息，不比较更新 |
@@ -1164,12 +1192,28 @@ shell 命令中的单引号自动转义，确保安全执行。
 
 ## 费用估算
 
+全局 `prices` 与 `bytesPerToken` 是兼容旧配置的兜底值。若不同模型的输入/输出价格或 token 密度不同，可在 `modelPricing` 填写规则；每个规则必须同时包含 `model`、`inputPer1M`、`outputPer1M`、`bytesPerToken`：
+
+```json
+{
+  "modelPricing": [
+    { "model": "gpt-5.6-sol", "inputPer1M": 5, "outputPer1M": 15, "bytesPerToken": 3 },
+    { "model": "gpt-5.6-luna", "inputPer1M": 1, "outputPer1M": 3, "bytesPerToken": 4 }
+  ]
+}
+```
+
+- 默认值是 `[]`，因此不配置时行为与旧版本完全一致。
+- `model` 按最终转发并记录的模型名精确匹配（保存和请求名首尾空白会被忽略）；大小写不同、别名、前缀或包含关系都不会匹配。例如 `gpt-5.6-sol` 不会匹配 `gpt-5.6-sol-preview`，未命中则回退全局 `prices` / `bytesPerToken`。
+- 同一个模型只能有一条规则，最多 50 条；模型名最长 80 个字符。输入/输出单价必须为 0–1,000,000，`bytesPerToken` 必须为 0.1–100。
+- 单价单位仍为“美元 / 百万 token”。规则内的 `bytesPerToken` 只控制该模型的费用字节→token 估算，并非上游返回的精确用量；分钟 token 限速（`maxTokensPerMin` / `maxTokPerMin`）仍使用全局 `bytesPerToken`。
+
 ```
 tokens ≈ bytes / bytesPerToken
 费用 = (inputTokens / 1_000_000) × inputPer1M + (outputTokens / 1_000_000) × outputPer1M
 ```
 
-> ⚠️ 精确 token 追踪不可用（上游中转不返回 `usage` 字段），此为字节->token 估算。
+> ⚠️ 精确 token 追踪不可用（上游中转不返回 `usage` 字段），此为字节->token 估算。每个请求在开始转发时冻结当时匹配的价格规则；之后保存的新规则只影响新请求，不会改写进行中的长流或已写入 `state.json` 的总费用、小时/日趋势及历史日志。因此同一历史时间段可能包含当时不同价格规则下的估算结果。
 
 ## Webhook 告警格式
 
@@ -1261,7 +1305,7 @@ watchdog 99.9% 时间处于 `sleep 10` 阻塞态，**CPU 占用为 0**，内存�
 |------|------|------|
 | 1 | `npm install` | 安装 `ws` 依赖 |
 | 2 | 创建 `config.json` / `state.json` / `keys.json` | 仅文件不存在时创建（不覆盖已有配置） |
-| 3 | 检查 Node.js ≥ 16 | 版本不足时退出 |
+| 3 | 检查 Node.js ≥ 16，提示 Python 3 SQLite 支持 | Node 版本不足时退出；Python 3 仅为可选 Codex SQLite 日志维护所需，缺失不阻止安装 |
 | 4 | 安装系统服务 | **WSL2**：创建 watchdog 引导脚本 + `/etc/wsl.conf`；**systemd**：安装 systemd service 并 `enable` `start` |
 | 5 | 创建 `codex` 包装脚本 | 自动检测 `CODEX_BIN` 路径，写入 `~/bin/codex`；确保 `~/bin` 加入 `~/.bashrc` PATH；确保登录 shell 加载 `.bashrc` |
 | 6 | 输出摘要 + 下一步指引 | 显示环境信息、文件位置、后续操作提示 |
@@ -1311,7 +1355,7 @@ A: 前端删除是软删除（设 `status="deleted"`），Key 仍在 keys.json�
 A: 管理弹窗找到 🔒 锁死的 Key，点击 🔓 解锁按钮，或手动调用 `POST /__reset-key {"idx": N}`。可在配置中关闭自动锁死（取消勾选「启用自动锁死」）或调整阈值 `lockAfterFailCount`。
 
 **Q: 费用估算不准？**
-A: 调整 `config.json` 中 `bytesPerToken` 和 `prices`。不同模型 token 密度不同。
+A: 先调整全局 `bytesPerToken` 和 `prices`；不同模型 token 密度不同，可用 `modelPricing` 为模型设置精确名称的单独单价和 `bytesPerToken`。这仍是字节估算，改价不会回算历史费用。
 
 **Q: 面板显示「加载中」？**
 A: 检查浏览器控制台（F12）是否有 JS 错误。打开 `http://localhost:3456/` 而非 `file://`。如代理刚重启，等待几秒后刷新。
@@ -1341,6 +1385,8 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-07-31 模型级费用估算**：系统配置新增 `modelPricing` 规则数组，可按最终转发的精确模型名分别设置输入/输出单价和 `bytesPerToken`；未命中模型继续回退全局价格。每个请求在开始转发时冻结规则，后续变更不回算进行中或既有统计、趋势及历史日志费用。
+- **2026-07-31 Codex SQLite 日志维护**：系统配置新增可选的 Codex SQLite 日志维护开关、数据库路径检测、容量阈值、保留时长、检查周期和立即检查状态。启用保存前服务端会复验当前用户 `~/.codex/` 下的常规 `logs*.sqlite` 文件及 `logs(id, ts)` 结构；支持将 `\\wsl.localhost\发行版\...` / `\\wsl$\发行版\...` 自动转换为 WSL 内部路径。后台通过 Python 标准库的 SQLite 短事务限量删除过期行，忙时让步、不重启代理/watchdog/Codex CLI，且不主动执行 `VACUUM`、checkpoint 或操作 WAL/SHM。新增 SQLite 维护回归测试，Release 包包含运行 helper、继续排除所有测试源码。
 - **2026-07-31 修复下游归集崩溃循环**：修复重启后代理反复 `ReferenceError: client is not defined` 崩溃并被 watchdog 重启的问题（`forwardRequest` 中新增 `client` 变量声明并透传给 5 处 `recordRequest` 调用，日志条目复用同一值）。新增回归测试：运行时断言 `recordRequest` 正确累计 `clients` 且未定义客户端被忽略、源契约断言 `forwardRequest` 必须先声明 `client` 再调用 `recordRequest`。
 - **2026-07-31 下游趋势图按应用归集**：趋势图「🔻 下游」由「流终态分布」改为「按下游应用客户端（请求 User-Agent）归集请求数」的堆叠柱状图（Codex CLI / Claude Code / Cursor / Chatbox / Cherry Studio / NextChat / LobeChat / OpenAI SDK / Vercel AI SDK / curl 等，最多显示前 8 个应用，其余归入「其他」，悬停查看各应用次数）。请求记录新增 `client` 维度：`recordRequest` 同时累加小时/日桶的 `clients`，日志全文检索与 CSV 新增客户端列，日志详情显示「客户端」。流终态不再显示于趋势图，改由日志/CSV 的「流结果/流终态原因」与 `stream_terminal` 事件承载。
 - **2026-07-31 趋势图上游归集与健康恢复**：趋势图新增「🔺 上游」模式，按 Key 的上游域名归集显示各上游使用次数（最多前 8 个域名，其余归入「其他」，悬停查看域名 + #Key 列表 + 次数）；原状态码分布恢复为「💚 健康」标签，两种上游/下游语义不再混用，标签顺序为 模型/流量/次数/健康/上游/下游/费用/延迟。

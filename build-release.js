@@ -22,6 +22,7 @@ const RELEASE_CONTENT_FILES = [
   "codex-proxy.service",
   "log-query-worker.js",
   "proxy-log-rotator.js",
+  "codex-sqlite-log-maintainer.py",
 ];
 const RELEASE_INTEGRITY_FILES = [
   "proxy.js",
@@ -36,8 +37,9 @@ const RELEASE_INTEGRITY_FILES = [
   "codex-proxy.service",
   "log-query-worker.js",
   "proxy-log-rotator.js",
+  "codex-sqlite-log-maintainer.py",
 ];
-const REQUIRED_INTEGRITY_FILES = ["proxy.js", "package.json", "log-query-worker.js", "proxy-log-rotator.js"];
+const REQUIRED_INTEGRITY_FILES = ["proxy.js", "package.json", "log-query-worker.js", "proxy-log-rotator.js", "codex-sqlite-log-maintainer.py"];
 
 function fail(message) {
   throw new Error(message);

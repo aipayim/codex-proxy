@@ -212,12 +212,18 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div class="mtitle"><span>系统配置</span><button class="btn" onclick="closeConfig()">✕</button></div>
 <div style="font-size:11px;color:#94a3b8;margin-bottom:12px" id="configStatus">修改后自动保存</div>
 <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;font-size:12px">
-  <div style="color:#94a3b8;padding:4px 0">💰 输入价格（每百万token）</div>
-  <div><input id="cfgPriceIn" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0"></div>
-  <div style="color:#94a3b8;padding:4px 0">💰 输出价格（每百万token）</div>
-  <div><input id="cfgPriceOut" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0"></div>
-  <div style="color:#94a3b8;padding:4px 0">🔤 每 token 字节数</div>
-  <div><input id="cfgBpt" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" value="3" placeholder="3"></div>
+  <div style="color:#94a3b8;padding:4px 0">💰 默认输入价格（每百万 token）</div>
+  <div><input id="cfgPriceIn" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" title="未匹配模型时使用"></div>
+  <div style="color:#94a3b8;padding:4px 0">💰 默认输出价格（每百万 token）</div>
+  <div><input id="cfgPriceOut" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" title="未匹配模型时使用"></div>
+  <div style="color:#94a3b8;padding:4px 0">🔤 默认每 token 字节数</div>
+  <div><input id="cfgBpt" type="number" min="0.1" max="100" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" value="3" placeholder="3" title="未匹配模型时使用"></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">🧮 按模型计费覆盖</div>
+  <div style="grid-column:1/-1">
+    <div style="font-size:10px;color:#64748b;margin:0 0 6px">按请求实际模型名精确匹配；未配置或未知模型使用上方默认规则。费用是基于传输字节 ÷ 每 token 字节数的估算值，不等同于上游账单 token。</div>
+    <div id="cfgModelPricingArea"></div>
+    <button class="btn" type="button" style="font-size:10px;padding:2px 8px;margin-top:6px" onclick="addModelPricingRule()">＋ 添加模型规则</button>
+  </div>
   <div style="color:#94a3b8;padding:4px 0">🔔 桌面通知</div>
   <div><label><input type="checkbox" id="cfgDesktop"> 全部 Key 失效时通知</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔊 声音提醒</div>
@@ -249,6 +255,15 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgStateMaxMiB" type="number" min="4" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超限时删除最旧统计桶）</div>
   <div style="color:#94a3b8;padding:4px 0">WSL proxy.log</div>
   <div><input id="cfgProxyLogMaxMiB" type="number" min="1" max="100" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgProxyLogKeepFiles" type="number" min="1" max="20" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 个归档（systemd 使用 journald）</div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">🗄 Codex SQLite 日志维护</div>
+  <div style="color:#94a3b8;padding:4px 0">启用数据库维护</div>
+  <div><label><input type="checkbox" id="cfgCodexLogMaintenanceEnabled" onchange="toggleCodexLogMaintenanceControls()"> 达到容量阈值后短批次删除保留期外的 Codex 日志</label></div>
+  <div style="color:#94a3b8;padding:4px 0">数据库路径</div>
+  <div><input id="cfgCodexLogMaintenancePath" style="width:min(100%,420px);background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="/root/.codex/logs_2.sqlite" title="填写 WSL 内部绝对路径，例如 /root/.codex/logs_2.sqlite；也可直接粘贴 WSL 网络路径，检测时会自动转换；不要填写 -wal/-shm 文件。"><button class="btn" id="cfgCodexLogMaintenanceCheckBtn" type="button" style="font-size:10px;padding:2px 7px;margin-left:6px" onclick="checkCodexLogMaintenancePath()">检测路径</button><span id="cfgCodexLogMaintenanceCheck" style="font-size:10px;color:#64748b;margin-left:6px"></span></div>
+  <div style="color:#94a3b8;padding:4px 0">触发容量 / 保留时长</div>
+  <div><input id="cfgCodexLogMaintenanceThreshold" data-codex-log-maintenance-control type="number" min="64" max="102400" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgCodexLogMaintenanceRetain" data-codex-log-maintenance-control type="number" min="1" max="8760" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 小时</div>
+  <div style="color:#94a3b8;padding:4px 0">检查间隔</div>
+  <div><input id="cfgCodexLogMaintenanceInterval" data-codex-log-maintenance-control type="number" min="5" max="1440" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟　<button class="btn" id="cfgCodexLogMaintenanceRunBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px" onclick="runCodexLogMaintenanceNow()">立即检查</button></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 分钟级限速</div>
   <div style="color:#94a3b8;padding:4px 0">每分钟请求上限</div>
   <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
@@ -258,6 +273,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgCodexLogMaintenanceRuntime">🗄 Codex SQLite 日志维护: --</div>
 <div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
@@ -346,6 +362,7 @@ async function loadConfigUI(){
     document.getElementById("cfgPriceIn").value=c.prices?.inputPer1M||"";
     document.getElementById("cfgPriceOut").value=c.prices?.outputPer1M||"";
     document.getElementById("cfgBpt").value=c.bytesPerToken||3;
+    renderModelPricingRules(c.modelPricing);
     document.getElementById("cfgWebhook").value=c.webhookUrl||"";
     document.getElementById("cfgDesktop").checked=c.notifications?.desktop!==false;
     document.getElementById("cfgSound").checked=c.notifications?.sound!==false;
@@ -362,6 +379,14 @@ async function loadConfigUI(){
     document.getElementById("cfgStateMaxMiB").value=c.stateMaxMiB??32;
     document.getElementById("cfgProxyLogMaxMiB").value=c.proxyLogMaxMiB??10;
     document.getElementById("cfgProxyLogKeepFiles").value=c.proxyLogKeepFiles??5;
+    const codexLogMaintenance=c.codexLogMaintenance||{};
+    document.getElementById("cfgCodexLogMaintenanceEnabled").checked=codexLogMaintenance.enabled===true;
+    document.getElementById("cfgCodexLogMaintenancePath").value=codexLogMaintenance.dbPath||"/root/.codex/logs_2.sqlite";
+    document.getElementById("cfgCodexLogMaintenanceThreshold").value=codexLogMaintenance.thresholdMiB??2048;
+    document.getElementById("cfgCodexLogMaintenanceRetain").value=codexLogMaintenance.retainHours??12;
+    document.getElementById("cfgCodexLogMaintenanceInterval").value=codexLogMaintenance.checkIntervalMinutes??15;
+    toggleCodexLogMaintenanceControls();
+    renderCodexLogMaintenanceRuntime(c.codexLogMaintenanceRuntime||{});
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
     try{
@@ -377,6 +402,102 @@ async function loadConfigUI(){
     window.autoCountTimer=setInterval(updateAutoCountdown,1000);
     updateAutoCountdown();
   }catch(e){}
+}
+function normalizeCodexLogMaintenancePathInput(){
+  const input=document.getElementById("cfgCodexLogMaintenancePath");
+  const raw=(input&&input.value||"").trim();
+  const backslash=String.fromCharCode(92);
+  const lower=raw.toLowerCase();
+  const prefixes=[backslash+backslash+"wsl.localhost"+backslash,backslash+backslash+"wsl$"+backslash];
+  const prefix=prefixes.find(candidate=>lower.startsWith(candidate));
+  if(!prefix)return raw;
+  const withoutHost=raw.slice(prefix.length);
+  const distributionEnd=withoutHost.indexOf(backslash);
+  if(distributionEnd<=0)return raw;
+  const innerPath=withoutHost.slice(distributionEnd+1).split(backslash).join("/").split("/").filter(Boolean).join("/");
+  const normalized=innerPath?"/"+innerPath:raw;
+  if(input&&normalized!==raw)input.value=normalized;
+  return normalized;
+}
+function codexLogMaintenanceConfigFromForm(){
+  return {
+    enabled:document.getElementById("cfgCodexLogMaintenanceEnabled").checked,
+    dbPath:normalizeCodexLogMaintenancePathInput(),
+    thresholdMiB:configInteger("cfgCodexLogMaintenanceThreshold",2048),
+    retainHours:configInteger("cfgCodexLogMaintenanceRetain",12),
+    checkIntervalMinutes:configInteger("cfgCodexLogMaintenanceInterval",15)
+  };
+}
+function toggleCodexLogMaintenanceControls(){
+  const checkbox=document.getElementById("cfgCodexLogMaintenanceEnabled");
+  const enabled=!!(checkbox&&checkbox.checked);
+  document.querySelectorAll("[data-codex-log-maintenance-control]").forEach(el=>{el.disabled=!enabled;});
+  if(!enabled)renderCodexLogMaintenanceRuntime({phase:"disabled"});
+}
+function codexLogMaintenanceBytes(value){
+  const bytes=Math.max(0,Number(value)||0);
+  if(bytes>=1024*1024*1024)return (bytes/(1024*1024*1024)).toFixed(2)+" GiB";
+  if(bytes>=1024*1024)return (bytes/(1024*1024)).toFixed(1)+" MiB";
+  if(bytes>=1024)return (bytes/1024).toFixed(1)+" KiB";
+  return String(Math.round(bytes))+" B";
+}
+function setCodexLogMaintenanceCheck(text,color){
+  const el=document.getElementById("cfgCodexLogMaintenanceCheck");
+  if(!el)return;
+  el.textContent=text||"";
+  el.style.color=color||"#64748b";
+}
+function renderCodexLogMaintenanceRuntime(runtime){
+  const el=document.getElementById("cfgCodexLogMaintenanceRuntime");
+  const checkbox=document.getElementById("cfgCodexLogMaintenanceEnabled");
+  if(!el)return;
+  if(!(checkbox&&checkbox.checked)){el.textContent="🗄 Codex SQLite 日志维护: 未启用";el.style.color="#64748b";return;}
+  const state=runtime&&typeof runtime==="object"?runtime:{};
+  const total=codexLogMaintenanceBytes(state.totalBytes||0);
+  let text="🗄 Codex SQLite 日志维护: ";
+  let color="#94a3b8";
+  if(state.inFlight||state.phase==="checking"){text+="正在检查数据库…";color="#fbbf24";}
+  else if(state.phase==="error"){text+=(state.lastError||"上次检查失败");color="#f87171";}
+  else if(state.lastResult==="cleaned"){text+="已删除 "+(state.deletedRows||0)+" 条过期记录；当前 "+total;color="#4ade80";}
+  else if(state.lastResult==="retention_satisfied"){text+="已满足保留期；当前 "+total+"（物理空间将在 SQLite 后续复用）";}
+  else if(state.lastResult==="skipped_busy"){text+="数据库忙，已跳过并等待下次检查；当前 "+total;color="#fbbf24";}
+  else if(state.lastResult==="below_threshold"){text+="当前 "+total+"，未达到触发阈值";}
+  else if(state.nextCheckAt&&state.nextCheckAt>Date.now()){text+="已计划检查；当前 "+total;}
+  else{text+="等待首次检查";}
+  el.textContent=text;
+  el.style.color=color;
+}
+async function checkCodexLogMaintenancePath(){
+  const button=document.getElementById("cfgCodexLogMaintenanceCheckBtn");
+  if(button)button.disabled=true;
+  setCodexLogMaintenanceCheck("检测中…","#fbbf24");
+  try{
+    const r=await fetch("/__codex-log-maintenance/check",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({codexLogMaintenance:codexLogMaintenanceConfigFromForm()})});
+    const j=await r.json();
+    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"路径或数据库无效"),"#f87171");return false;}
+    const check=j.check||{};
+    setCodexLogMaintenanceCheck("✓ 有效：主库 "+codexLogMaintenanceBytes(check.databaseBytes)+"，WAL "+codexLogMaintenanceBytes(check.walBytes),"#4ade80");
+    return true;
+  }catch(e){setCodexLogMaintenanceCheck("✕ 检测失败: "+e.message,"#f87171");return false;}
+  finally{if(button)button.disabled=false;}
+}
+async function runCodexLogMaintenanceNow(){
+  if(!document.getElementById("cfgCodexLogMaintenanceEnabled").checked){setCodexLogMaintenanceCheck("请先启用并保存配置","#fbbf24");return;}
+  const button=document.getElementById("cfgCodexLogMaintenanceRunBtn");
+  if(button)button.disabled=true;
+  setCodexLogMaintenanceCheck("正在检查已保存的数据库配置…","#fbbf24");
+  try{
+    const r=await fetch("/__codex-log-maintenance/run",{method:"POST"});
+    const j=await r.json();
+    renderCodexLogMaintenanceRuntime(j.runtime||{});
+    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"执行失败"),"#f87171");return;}
+    const result=j.result||{};
+    if(result.result==="skipped_busy")setCodexLogMaintenanceCheck("数据库忙，已跳过；下个周期会重试","#fbbf24");
+    else if(result.result==="below_threshold")setCodexLogMaintenanceCheck("当前容量未达到阈值，未删除记录","#94a3b8");
+    else if(result.result==="retention_satisfied")setCodexLogMaintenanceCheck("没有超过保留期的记录；不会自动 VACUUM","#94a3b8");
+    else setCodexLogMaintenanceCheck("✓ 已完成，删除 "+(result.deletedRows||0)+" 条过期记录","#4ade80");
+  }catch(e){setCodexLogMaintenanceCheck("✕ 执行失败: "+e.message,"#f87171");}
+  finally{toggleCodexLogMaintenanceControls();}
 }
 function updateAutoCountdown(){
   const el=document.getElementById("cfgAutoCountdown");
@@ -514,7 +635,7 @@ function render(){
   const allBytes=data.reduce((s,x)=>s+(x.inputBytes||0)+(x.outputBytes||0),0);
   const allReq=data.reduce((s,x)=>s+(x.totalRequests||0),0);
   const avgScore=tot>0?Math.round(data.reduce((s,x)=>s+(x.healthScore||100),0)/tot):100;
-  const totalCost=data.reduce((s,x)=>s+(x.totalCost||0),0);
+  const totalCost=data.reduce((s,x)=>s+(Number(x.totalCost)||0),0);
 
   document.getElementById("sub").textContent="最后更新: "+new Date().toLocaleString("zh-CN")+" | 实时推送";
 
@@ -992,10 +1113,94 @@ async function loadLogs(){
 function openConfig(){loadConfigUI();document.getElementById("configModal").classList.add("on")}
 function closeConfig(){document.getElementById("configModal").classList.remove("on")}
 function configInteger(id,fallback){const value=parseInt(document.getElementById(id).value,10);return Number.isFinite(value)?value:fallback}
+function renderModelPricingRules(modelPricing){
+  const area=document.getElementById("cfgModelPricingArea");
+  if(!area)return;
+  const rules=Array.isArray(modelPricing)?modelPricing:(modelPricing&&Array.isArray(modelPricing.rules)?modelPricing.rules:[]);
+  area.innerHTML='<div id="cfgModelPricingRows" style="display:flex;flex-direction:column;gap:4px"></div><div id="cfgModelPricingEmpty" style="font-size:10px;color:#64748b;padding:4px 0">暂无模型覆盖规则</div>';
+  rules.slice(0,50).forEach(rule=>addModelPricingRule(rule));
+  updateModelPricingEmptyState();
+}
+function modelPricingField(value){return value===undefined||value===null||value===""?"":String(value)}
+function addModelPricingRule(rule){
+  const rows=document.getElementById("cfgModelPricingRows");
+  if(!rows||rows.children.length>=50)return;
+  const row=document.createElement("div");
+  row.className="cfg-model-pricing-row";
+  row.style.cssText="display:grid;grid-template-columns:minmax(110px,1.5fr) repeat(3,minmax(78px,1fr)) 28px;gap:4px;align-items:center";
+  row.innerHTML='<input class="cfg-model-pricing-model" placeholder="模型名，例如 gpt-5" maxlength="80" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<input class="cfg-model-pricing-input" type="number" min="0" max="1000000" step="any" placeholder="输入 / 1M" title="输入价格（每百万 token）" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<input class="cfg-model-pricing-output" type="number" min="0" max="1000000" step="any" placeholder="输出 / 1M" title="输出价格（每百万 token）" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<input class="cfg-model-pricing-bpt" type="number" min="0.1" max="100" step="any" placeholder="字节/token" title="每 token 字节数" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<button class="btn" type="button" title="删除模型规则" style="padding:1px 5px;color:#f87171" onclick="removeModelPricingRule(this)">✕</button>';
+  const value=rule&&typeof rule==="object"?rule:{};
+  row.querySelector(".cfg-model-pricing-model").value=modelPricingField(value.model);
+  row.querySelector(".cfg-model-pricing-input").value=modelPricingField(value.inputPer1M);
+  row.querySelector(".cfg-model-pricing-output").value=modelPricingField(value.outputPer1M);
+  row.querySelector(".cfg-model-pricing-bpt").value=modelPricingField(value.bytesPerToken);
+  rows.appendChild(row);
+  updateModelPricingEmptyState();
+}
+function removeModelPricingRule(button){
+  const row=button&&button.closest(".cfg-model-pricing-row");
+  if(row)row.remove();
+  updateModelPricingEmptyState();
+}
+function updateModelPricingEmptyState(){
+  const rows=document.getElementById("cfgModelPricingRows");
+  const empty=document.getElementById("cfgModelPricingEmpty");
+  if(empty)empty.style.display=rows&&rows.children.length?"none":"block";
+}
+function readModelPricingNumber(value,label,minimum,maximum){
+  if(value==="")throw new Error(label+"不能为空");
+  const number=Number(value);
+  if(!Number.isFinite(number)||number<minimum||number>maximum)throw new Error(label+"必须在 "+minimum+"–"+maximum+" 之间");
+  return number;
+}
+function readDefaultPricingNumber(id,label,fallback,minimum,maximum){
+  const value=document.getElementById(id).value.trim();
+  return value===""?fallback:readModelPricingNumber(value,label,minimum,maximum);
+}
+function collectDefaultPricingRule(){
+  return {
+    prices:{
+      inputPer1M:readDefaultPricingNumber("cfgPriceIn","默认输入价格",0,0,1000000),
+      outputPer1M:readDefaultPricingNumber("cfgPriceOut","默认输出价格",0,0,1000000)
+    },
+    bytesPerToken:readDefaultPricingNumber("cfgBpt","默认每 token 字节数",3,0.1,100)
+  };
+}
+function collectModelPricingRules(){
+  const result=[];
+  const seen=new Set();
+  const rows=document.querySelectorAll("#cfgModelPricingRows .cfg-model-pricing-row");
+  for(const row of rows){
+    const model=row.querySelector(".cfg-model-pricing-model").value.trim();
+    const inputRaw=row.querySelector(".cfg-model-pricing-input").value.trim();
+    const outputRaw=row.querySelector(".cfg-model-pricing-output").value.trim();
+    const bptRaw=row.querySelector(".cfg-model-pricing-bpt").value.trim();
+    if(!model&&!inputRaw&&!outputRaw&&!bptRaw)continue;
+    if(!model)throw new Error("模型规则缺少模型名");
+    if(model.length>80||/[\u0000-\u001f\u007f]/.test(model))throw new Error("模型名无效: "+model);
+    if(seen.has(model))throw new Error("模型规则重复: "+model);
+    seen.add(model);
+    result.push({
+      model,
+      inputPer1M:readModelPricingNumber(inputRaw,"模型 "+model+" 的输入价格",0,1000000),
+      outputPer1M:readModelPricingNumber(outputRaw,"模型 "+model+" 的输出价格",0,1000000),
+      bytesPerToken:readModelPricingNumber(bptRaw,"模型 "+model+" 的每 token 字节数",0.1,100)
+    });
+  }
+  return result;
+}
 async function saveConfig(){
+  let modelPricing,defaultPricing;
+  try{modelPricing=collectModelPricingRules();defaultPricing=collectDefaultPricingRule();}
+  catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message;return;}
   const c={
-    prices:{inputPer1M:parseFloat(document.getElementById("cfgPriceIn").value)||0,outputPer1M:parseFloat(document.getElementById("cfgPriceOut").value)||0},
-    bytesPerToken:parseInt(document.getElementById("cfgBpt").value)||3,
+    prices:defaultPricing.prices,
+    bytesPerToken:defaultPricing.bytesPerToken,
+    modelPricing,
     webhookUrl:document.getElementById("cfgWebhook").value.trim(),
     notifications:{desktop:document.getElementById("cfgDesktop").checked,sound:document.getElementById("cfgSound").checked},
     autoRecover:document.getElementById("cfgAutoRecover").checked,
@@ -1011,9 +1216,14 @@ async function saveConfig(){
     stateMaxMiB:configInteger("cfgStateMaxMiB",32),
     proxyLogMaxMiB:configInteger("cfgProxyLogMaxMiB",10),
     proxyLogKeepFiles:configInteger("cfgProxyLogKeepFiles",5),
+    codexLogMaintenance:codexLogMaintenanceConfigFromForm(),
     maxRequestsPerMin:parseInt(document.getElementById("cfgMaxReqPerMin").value)||10,
     maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0
   };
+  if(c.codexLogMaintenance.enabled&&!(await checkCodexLogMaintenancePath())){
+    document.getElementById("configStatus").textContent="保存失败: Codex SQLite 数据库路径或结构未通过检测";
+    return;
+  }
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
     const j=await r.json();

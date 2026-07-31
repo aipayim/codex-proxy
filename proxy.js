@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { URL } = require("url");
 const { Transform } = require("stream");
@@ -17,6 +18,7 @@ const CONFIG_FILE = path.join(__dirname, "config.json");
 const RESUME_SCRIPT = path.join(__dirname, "resume-codex.sh");
 const AUTO_RESUME_RUNTIME_FILE = path.join(__dirname, ".auto-resume-runtime.json");
 const WATCHDOG_RELOAD_FILE = path.join(__dirname, ".watchdog-reload");
+const CODEX_SQLITE_LOG_MAINTAINER_FILE = path.join(__dirname, "codex-sqlite-log-maintainer.py");
 const TIMEOUT = 1500000;
 const PRIORITY = { daily: 0, weekly: 1, never: 2, hourly: 0 };
 const HTTP_MOD = { "http:": http, "https:": https };
@@ -54,8 +56,9 @@ const RELEASE_INTEGRITY_FILES = new Set([
   "codex-proxy.service",
   "log-query-worker.js",
   "proxy-log-rotator.js",
+  "codex-sqlite-log-maintainer.py",
 ]);
-const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json", "log-query-worker.js", "proxy-log-rotator.js"]);
+const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json", "log-query-worker.js", "proxy-log-rotator.js", "codex-sqlite-log-maintainer.py"]);
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_CHECK_MIN_REFRESH_MS = 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 8000;
@@ -107,6 +110,30 @@ const LOG_SEGMENT_MAX_MIB_LIMIT = 256;
 const LOG_SUMMARY_MAX_BYTES = 8 * 1024 * 1024;
 const LOG_SUMMARY_MEASURE_INTERVAL = 30;
 const LOG_ENTRY_MAX_BYTES = 512 * 1024;
+const MODEL_PRICING_MAX_RULES = 50;
+const MODEL_PRICING_MODEL_MAX_CHARS = 80;
+const MODEL_PRICING_PRICE_MAX = 1000000;
+const MODEL_PRICING_BPT_MIN = 0.1;
+const MODEL_PRICING_BPT_MAX = 100;
+const DEFAULT_CODEX_LOG_MAINTENANCE = Object.freeze({
+  enabled: false,
+  dbPath: path.join(os.homedir(), ".codex", "logs_2.sqlite"),
+  thresholdMiB: 2048,
+  retainHours: 12,
+  checkIntervalMinutes: 15,
+});
+const CODEX_LOG_MAINTENANCE_THRESHOLD_MIN_MIB = 64;
+const CODEX_LOG_MAINTENANCE_THRESHOLD_MAX_MIB = 102400;
+const CODEX_LOG_MAINTENANCE_RETAIN_HOURS_MIN = 1;
+const CODEX_LOG_MAINTENANCE_RETAIN_HOURS_MAX = 8760;
+const CODEX_LOG_MAINTENANCE_INTERVAL_MINUTES_MIN = 5;
+const CODEX_LOG_MAINTENANCE_INTERVAL_MINUTES_MAX = 1440;
+const CODEX_LOG_MAINTENANCE_INITIAL_DELAY_MS = 5000;
+const CODEX_LOG_MAINTENANCE_BUSY_TIMEOUT_MS = 1000;
+const CODEX_LOG_MAINTENANCE_BATCH_ROWS = 1000;
+const CODEX_LOG_MAINTENANCE_MAX_BATCHES = 5;
+const CODEX_LOG_MAINTAINER_TIMEOUT_MS = 30000;
+const CODEX_LOG_MAINTAINER_MAX_OUTPUT_BYTES = 32 * 1024;
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
 let LOG_DETAIL = "full";
@@ -164,7 +191,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {} };
+let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE } };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -179,6 +206,25 @@ let lastRequestTime = Date.now();
 let lastKeyUseTime = 0;
 let lastResumeTime = 0;
 let autoResumeTimer = null;
+let codexLogMaintenanceTimer = null;
+let codexLogMaintenanceInFlight = null;
+let codexLogMaintenanceRuntime = {
+  phase: "disabled",
+  lastCheckAt: 0,
+  lastCompletedAt: 0,
+  nextCheckAt: 0,
+  lastResult: "not_configured",
+  lastError: "",
+  databaseBytes: 0,
+  walBytes: 0,
+  totalBytes: 0,
+  totalMiB: 0,
+  deletedRows: 0,
+  batches: 0,
+  physicalBytesBefore: 0,
+  physicalBytesAfter: 0,
+  physicalBytesDelta: 0,
+};
 const logMinuteBuckets = new Map();
 const logDailySummaries = new Map();
 const logSummaryPendingEntries = [];
@@ -724,8 +770,10 @@ function loadConfig() {
     const c = JSON.parse(raw);
     normalizeRuntimeStorageConfig(c);
     if (c.webhookUrl) config.webhookUrl = c.webhookUrl;
-    if (c.prices) { config.prices.inputPer1M = c.prices.inputPer1M || 0; config.prices.outputPer1M = c.prices.outputPer1M || 0; }
-    if (c.bytesPerToken) config.bytesPerToken = c.bytesPerToken;
+    const defaultPricing = normalizeDefaultPricing(c.prices, c.bytesPerToken);
+    config.prices = defaultPricing.prices;
+    config.bytesPerToken = defaultPricing.bytesPerToken;
+    config.modelPricing = normalizeModelPricing(c.modelPricing);
     if (c.notifications) { config.notifications.sound = c.notifications.sound !== false; config.notifications.desktop = c.notifications.desktop !== false; }
     config.autoRecover = c.autoRecover !== false;
     config.autoRecoverInterval = Math.max(0.5, c.autoRecoverInterval || 1);
@@ -764,6 +812,7 @@ function loadConfig() {
     config.stateMaxMiB = c.stateMaxMiB;
     config.proxyLogMaxMiB = c.proxyLogMaxMiB;
     config.proxyLogKeepFiles = c.proxyLogKeepFiles;
+    config.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(c.codexLogMaintenance);
     config.logIncidents = normalizeLogIncidentConfig(c.logIncidents);
     STREAM_LIFETIME = Math.min(7200000, Math.max(60000, parseInt(c.streamLifetime) || 1800000));
     config.streamLifetime = STREAM_LIFETIME;
@@ -783,6 +832,7 @@ function loadConfig() {
     if (!config.groups["A"]) config.groups["A"] = 3456;
   } catch { /* defaults */ }
   config.logIncidents = normalizeLogIncidentConfig(config.logIncidents);
+  config.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(config.codexLogMaintenance);
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
     const ms = config.autoRecoverInterval * 3600000;
@@ -814,12 +864,81 @@ function loadConfig() {
     }
   }
   configureAutoResumeTimer();
+  configureCodexLogMaintenanceTimer();
 }
 
 function clampConfigInteger(value, fallback, min, max) {
   const parsed = parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeDefaultPricing(pricesValue, bytesPerTokenValue, strict = false, changed = {}) {
+  const prices = pricesValue && typeof pricesValue === "object" && !Array.isArray(pricesValue) ? pricesValue : null;
+  const inputPer1M = Number(prices && prices.inputPer1M);
+  const outputPer1M = Number(prices && prices.outputPer1M);
+  const bytesPerToken = Number(bytesPerTokenValue);
+  const pricesValid = prices && Number.isFinite(inputPer1M) && inputPer1M >= 0 && inputPer1M <= MODEL_PRICING_PRICE_MAX &&
+    Number.isFinite(outputPer1M) && outputPer1M >= 0 && outputPer1M <= MODEL_PRICING_PRICE_MAX;
+  const bytesPerTokenValid = Number.isFinite(bytesPerToken) && bytesPerToken >= MODEL_PRICING_BPT_MIN && bytesPerToken <= MODEL_PRICING_BPT_MAX;
+  if (strict && changed.prices && (!prices || typeof prices.inputPer1M !== "number" || typeof prices.outputPer1M !== "number" || !pricesValid)) {
+    throw new Error("prices requires finite input/output values between 0 and 1000000");
+  }
+  if (strict && changed.bytesPerToken && (typeof bytesPerTokenValue !== "number" || !bytesPerTokenValid)) {
+    throw new Error("bytesPerToken must be a finite value between 0.1 and 100");
+  }
+  return {
+    prices: {
+      inputPer1M: pricesValid ? inputPer1M : 0,
+      outputPer1M: pricesValid ? outputPer1M : 0,
+    },
+    bytesPerToken: bytesPerTokenValid ? bytesPerToken : 3,
+  };
+}
+
+function normalizeModelPricing(value, strict = false) {
+  // The early draft used { rules: [...] }; accept it on read, but persist the
+  // compact array form so the dashboard and release config have one schema.
+  let rules = value;
+  if (rules && typeof rules === "object" && !Array.isArray(rules) && Array.isArray(rules.rules)) rules = rules.rules;
+  if (rules == null) return [];
+  if (!Array.isArray(rules)) {
+    if (strict) throw new Error("modelPricing must be an array of model pricing rules");
+    return [];
+  }
+  if (rules.length > MODEL_PRICING_MAX_RULES) {
+    if (strict) throw new Error(`modelPricing supports at most ${MODEL_PRICING_MAX_RULES} rules`);
+    rules = rules.slice(0, MODEL_PRICING_MAX_RULES);
+  }
+  const normalized = [];
+  const seen = new Set();
+  for (const rule of rules) {
+    if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+      if (strict) throw new Error("each modelPricing rule must be an object");
+      continue;
+    }
+    const model = String(rule.model == null ? "" : rule.model).trim();
+    const inputPer1M = Number(rule.inputPer1M);
+    const outputPer1M = Number(rule.outputPer1M);
+    const bytesPerToken = Number(rule.bytesPerToken);
+    const hasRequiredFields = ["model", "inputPer1M", "outputPer1M", "bytesPerToken"]
+      .every(field => Object.prototype.hasOwnProperty.call(rule, field));
+    const strictTypesValid = !strict || (typeof rule.model === "string" &&
+      typeof rule.inputPer1M === "number" && typeof rule.outputPer1M === "number" && typeof rule.bytesPerToken === "number");
+    const valid = hasRequiredFields && strictTypesValid && model.length > 0 && model.length <= MODEL_PRICING_MODEL_MAX_CHARS &&
+      !/[\u0000-\u001f\u007f]/.test(model) &&
+      Number.isFinite(inputPer1M) && inputPer1M >= 0 && inputPer1M <= MODEL_PRICING_PRICE_MAX &&
+      Number.isFinite(outputPer1M) && outputPer1M >= 0 && outputPer1M <= MODEL_PRICING_PRICE_MAX &&
+      Number.isFinite(bytesPerToken) && bytesPerToken >= MODEL_PRICING_BPT_MIN && bytesPerToken <= MODEL_PRICING_BPT_MAX &&
+      !seen.has(model);
+    if (!valid) {
+      if (strict) throw new Error("modelPricing rules require a unique model name, non-negative input/output price, and bytesPerToken between 0.1 and 100");
+      continue;
+    }
+    seen.add(model);
+    normalized.push({ model, inputPer1M, outputPer1M, bytesPerToken });
+  }
+  return normalized;
 }
 
 function normalizeRuntimeStorageConfig(value) {
@@ -834,6 +953,237 @@ function normalizeRuntimeStorageConfig(value) {
   configValue.proxyLogMaxMiB = clampConfigInteger(configValue.proxyLogMaxMiB, DEFAULT_PROXY_LOG_MAX_MIB, 1, PROXY_LOG_MAX_MIB_LIMIT);
   configValue.proxyLogKeepFiles = clampConfigInteger(configValue.proxyLogKeepFiles, DEFAULT_PROXY_LOG_KEEP_FILES, 1, PROXY_LOG_KEEP_FILES_LIMIT);
   return configValue;
+}
+
+let configSaveQueue = Promise.resolve();
+
+function enqueueConfigSave(work) {
+  const run = configSaveQueue.then(work, work);
+  // A rejected save must report to its caller without blocking later saves.
+  configSaveQueue = run.catch(() => {});
+  return run;
+}
+
+function writeConfigAtomically(value) {
+  const temporaryFile = path.join(__dirname, `.${path.basename(CONFIG_FILE)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  const serialized = `${JSON.stringify(value, null, 2)}\n`;
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(temporaryFile, "wx", 0o600);
+    fs.writeFileSync(descriptor, serialized, "utf8");
+    // Some mounted filesystems do not support fsync; rename still prevents a
+    // partially written JSON file from replacing the active configuration.
+    try { fs.fsyncSync(descriptor); } catch {}
+    fs.closeSync(descriptor);
+    descriptor = null;
+    fs.renameSync(temporaryFile, CONFIG_FILE);
+  } finally {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+    try { fs.unlinkSync(temporaryFile); } catch {}
+  }
+}
+
+function normalizeCodexLogMaintenancePath(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return raw;
+  const backslash = String.fromCharCode(92);
+  const lower = raw.toLowerCase();
+  const prefixes = [
+    backslash + backslash + "wsl.localhost" + backslash,
+    backslash + backslash + "wsl$" + backslash,
+  ];
+  const prefix = prefixes.find(candidate => lower.startsWith(candidate));
+  if (!prefix) return raw;
+  const withoutHost = raw.slice(prefix.length);
+  const distributionEnd = withoutHost.indexOf(backslash);
+  if (distributionEnd <= 0) return raw;
+  const innerPath = withoutHost.slice(distributionEnd + 1).split(backslash).join("/").split("/").filter(Boolean).join("/");
+  return innerPath ? "/" + innerPath : raw;
+}
+
+function normalizeCodexLogMaintenanceConfig(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const rawDbPath = Object.prototype.hasOwnProperty.call(raw, "dbPath")
+    ? String(raw.dbPath == null ? "" : raw.dbPath).trim()
+    : DEFAULT_CODEX_LOG_MAINTENANCE.dbPath;
+  const dbPath = normalizeCodexLogMaintenancePath(rawDbPath || (raw.enabled === true ? "" : DEFAULT_CODEX_LOG_MAINTENANCE.dbPath));
+  return {
+    enabled: raw.enabled === true,
+    dbPath,
+    thresholdMiB: clampConfigInteger(raw.thresholdMiB, DEFAULT_CODEX_LOG_MAINTENANCE.thresholdMiB, CODEX_LOG_MAINTENANCE_THRESHOLD_MIN_MIB, CODEX_LOG_MAINTENANCE_THRESHOLD_MAX_MIB),
+    retainHours: clampConfigInteger(raw.retainHours, DEFAULT_CODEX_LOG_MAINTENANCE.retainHours, CODEX_LOG_MAINTENANCE_RETAIN_HOURS_MIN, CODEX_LOG_MAINTENANCE_RETAIN_HOURS_MAX),
+    checkIntervalMinutes: clampConfigInteger(raw.checkIntervalMinutes, DEFAULT_CODEX_LOG_MAINTENANCE.checkIntervalMinutes, CODEX_LOG_MAINTENANCE_INTERVAL_MINUTES_MIN, CODEX_LOG_MAINTENANCE_INTERVAL_MINUTES_MAX),
+  };
+}
+
+function formatCodexLogMaintenanceError(result) {
+  const code = String(result && result.errorCode || "");
+  const messages = {
+    missing_path: "请填写 Codex SQLite 数据库路径",
+    invalid_path: "数据库路径无效。请填写当前 WSL 用户 ~/.codex 下的 logs*.sqlite 主文件",
+    not_found: "数据库文件不存在",
+    unavailable: "无法访问数据库文件",
+    invalid_sidecar: "数据库或其 SQLite 辅助文件不是常规文件",
+    invalid_schema: "该 SQLite 文件不是受支持的 Codex 日志数据库（需要 logs.id 和 Unix 秒 logs.ts）",
+    invalid_sqlite: "无法以只读方式安全打开该 SQLite 数据库",
+    database_busy: "数据库正忙，请稍后重试",
+    invalid_option: "数据库维护参数无效",
+    helper_unavailable: "未找到 Python 3 或数据库维护 helper；请安装 Python 3 后重试",
+    helper_timeout: "数据库检测/维护超时，未继续占用数据库",
+    cleanup_failed: "数据库维护未能安全完成",
+  };
+  const fallback = result && result.error ? String(result.error).slice(0, 240) : "数据库检测失败";
+  return messages[code] || fallback;
+}
+
+function getCodexLogMaintenanceRuntimeStatus() {
+  return {
+    ...codexLogMaintenanceRuntime,
+    inFlight: !!codexLogMaintenanceInFlight,
+  };
+}
+
+function invokeCodexLogMaintainer(command, maintenanceConfig) {
+  const cfg = normalizeCodexLogMaintenanceConfig(maintenanceConfig);
+  const args = [CODEX_SQLITE_LOG_MAINTAINER_FILE, command, "--path", cfg.dbPath, "--busy-timeout-ms", String(CODEX_LOG_MAINTENANCE_BUSY_TIMEOUT_MS)];
+  if (command === "cleanup") {
+    args.push(
+      "--threshold-mib", String(cfg.thresholdMiB),
+      "--retain-hours", String(cfg.retainHours),
+      "--batch-rows", String(CODEX_LOG_MAINTENANCE_BATCH_ROWS),
+      "--max-batches", String(CODEX_LOG_MAINTENANCE_MAX_BATCHES),
+    );
+  }
+  return new Promise(resolve => {
+    let child = null;
+    let stdout = "";
+    let stderr = "";
+    let outputTooLarge = false;
+    let timedOut = false;
+    let settled = false;
+    let timer = null;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    try {
+      child = spawn("python3", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+      finish({ ok: false, result: "failed", errorCode: "helper_unavailable", error: String(error && error.message || error).slice(0, 240) });
+      return;
+    }
+    const append = (target, chunk) => {
+      const value = String(chunk || "");
+      if (target === "stdout") stdout += value;
+      else stderr += value;
+      if (Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(stderr, "utf8") > CODEX_LOG_MAINTAINER_MAX_OUTPUT_BYTES) outputTooLarge = true;
+    };
+    child.stdout.on("data", chunk => append("stdout", chunk));
+    child.stderr.on("data", chunk => append("stderr", chunk));
+    child.once("error", error => {
+      finish({ ok: false, result: "failed", errorCode: "helper_unavailable", error: String(error && error.message || error).slice(0, 240) });
+    });
+    child.once("close", code => {
+      if (timedOut) {
+        finish({ ok: false, result: "failed", errorCode: "helper_timeout", error: "maintenance helper timed out" });
+        return;
+      }
+      if (outputTooLarge) {
+        finish({ ok: false, result: "failed", errorCode: "helper_output", error: "maintenance helper returned too much output" });
+        return;
+      }
+      try {
+        const payload = JSON.parse(stdout);
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid helper JSON");
+        if (code !== 0 && payload.ok !== false) throw new Error("maintenance helper failed");
+        finish(payload);
+      } catch (error) {
+        const detail = stderr.trim() || String(error && error.message || error);
+        finish({ ok: false, result: "failed", errorCode: "helper_failed", error: detail.slice(0, 240) });
+      }
+    });
+    timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch {}
+    }, CODEX_LOG_MAINTAINER_TIMEOUT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();
+  });
+}
+
+function applyCodexLogMaintenanceResult(result) {
+  const runtime = codexLogMaintenanceRuntime;
+  runtime.lastCompletedAt = Date.now();
+  runtime.lastResult = String(result && result.result || "failed");
+  runtime.lastError = result && result.ok === false ? formatCodexLogMaintenanceError(result) : "";
+  runtime.phase = result && result.ok === false ? "error" : "idle";
+  for (const name of ["databaseBytes", "walBytes", "totalBytes", "totalMiB", "deletedRows", "batches", "physicalBytesBefore", "physicalBytesAfter", "physicalBytesDelta"]) {
+    if (result && Number.isFinite(Number(result[name]))) runtime[name] = Number(result[name]);
+  }
+}
+
+async function runCodexLogMaintenance(reason = "scheduled") {
+  const maintenanceConfig = normalizeCodexLogMaintenanceConfig(config.codexLogMaintenance);
+  if (!maintenanceConfig.enabled) {
+    codexLogMaintenanceRuntime.phase = "disabled";
+    codexLogMaintenanceRuntime.nextCheckAt = 0;
+    return { ok: false, result: "disabled", errorCode: "disabled", error: "Codex SQLite maintenance is disabled" };
+  }
+  if (codexLogMaintenanceInFlight) {
+    return { ok: false, result: "in_progress", errorCode: "in_progress", error: "Codex SQLite maintenance is already running" };
+  }
+  codexLogMaintenanceRuntime.phase = "checking";
+  codexLogMaintenanceRuntime.lastCheckAt = Date.now();
+  const work = invokeCodexLogMaintainer("cleanup", maintenanceConfig);
+  codexLogMaintenanceInFlight = work;
+  try {
+    const result = await work;
+    applyCodexLogMaintenanceResult(result);
+    if (result && result.ok && Number(result.deletedRows) > 0) {
+      addEventLog("codex_sqlite_maintenance", 0, `Codex SQLite 日志维护已删除 ${Number(result.deletedRows)} 条过期记录（${reason}）`, "");
+    }
+    return result;
+  } catch (error) {
+    const result = { ok: false, result: "failed", errorCode: "helper_failed", error: String(error && error.message || error).slice(0, 240) };
+    applyCodexLogMaintenanceResult(result);
+    return result;
+  } finally {
+    if (codexLogMaintenanceInFlight === work) codexLogMaintenanceInFlight = null;
+    broadcastStatus();
+  }
+}
+
+function scheduleCodexLogMaintenance(delayMs) {
+  if (!config.codexLogMaintenance || !config.codexLogMaintenance.enabled) return;
+  const delay = Math.max(1000, Number(delayMs) || CODEX_LOG_MAINTENANCE_INITIAL_DELAY_MS);
+  codexLogMaintenanceRuntime.nextCheckAt = Date.now() + delay;
+  codexLogMaintenanceTimer = setTimeout(async () => {
+    codexLogMaintenanceTimer = null;
+    await runCodexLogMaintenance("scheduled");
+    if (config.codexLogMaintenance && config.codexLogMaintenance.enabled) {
+      scheduleCodexLogMaintenance(config.codexLogMaintenance.checkIntervalMinutes * 60000);
+    }
+  }, delay);
+  if (codexLogMaintenanceTimer && typeof codexLogMaintenanceTimer.unref === "function") codexLogMaintenanceTimer.unref();
+}
+
+function configureCodexLogMaintenanceTimer() {
+  if (codexLogMaintenanceTimer) {
+    clearTimeout(codexLogMaintenanceTimer);
+    codexLogMaintenanceTimer = null;
+  }
+  const maintenanceConfig = normalizeCodexLogMaintenanceConfig(config.codexLogMaintenance);
+  config.codexLogMaintenance = maintenanceConfig;
+  if (!maintenanceConfig.enabled) {
+    codexLogMaintenanceRuntime.phase = codexLogMaintenanceInFlight ? "checking" : "disabled";
+    codexLogMaintenanceRuntime.nextCheckAt = 0;
+    return;
+  }
+  if (!codexLogMaintenanceInFlight) codexLogMaintenanceRuntime.phase = "scheduled";
+  scheduleCodexLogMaintenance(CODEX_LOG_MAINTENANCE_INITIAL_DELAY_MS);
 }
 
 function normalizePath(p) {
@@ -2711,11 +3061,23 @@ function recordPath(pathname, method, inputBytes, outputBytes, duration) {
 }
 
 // --- Cost estimation ---
-function estimateCost(inputBytes, outputBytes) {
-  const bpt = config.bytesPerToken || 3;
+function resolveModelPricing(model) {
+  const modelName = String(model == null ? "" : model).trim();
+  const matched = modelName ? (config.modelPricing || []).find(rule => rule.model === modelName) : null;
+  if (matched) return matched;
+  return {
+    inputPer1M: Number(config.prices && config.prices.inputPer1M) || 0,
+    outputPer1M: Number(config.prices && config.prices.outputPer1M) || 0,
+    bytesPerToken: Number(config.bytesPerToken) || 3,
+  };
+}
+
+function estimateCost(model, inputBytes, outputBytes, pricingOverride) {
+  const pricing = pricingOverride || resolveModelPricing(model);
+  const bpt = pricing.bytesPerToken;
   const inTokens = inputBytes / bpt;
   const outTokens = outputBytes / bpt;
-  const cost = (inTokens / 1000000) * (config.prices.inputPer1M || 0) + (outTokens / 1000000) * (config.prices.outputPer1M || 0);
+  const cost = (inTokens / 1000000) * pricing.inputPer1M + (outTokens / 1000000) * pricing.outputPer1M;
   return cost;
 }
 
@@ -2807,13 +3169,15 @@ function trimHourlyModelDimensions(models) {
     .map(key => ({ key, requests: Math.max(0, Number(models[key] && models[key].requests) || 0) }))
     .sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key));
   const keep = new Set(ranked.slice(0, STATE_HOURLY_MODEL_LIMIT - 1).map(item => item.key));
-  const other = models[STATE_HOURLY_OTHER_MODEL] || { requests: 0, inputBytes: 0, outputBytes: 0 };
+  const other = models[STATE_HOURLY_OTHER_MODEL] || { requests: 0, inputBytes: 0, outputBytes: 0, totalCost: 0 };
+  other.totalCost = Number.isFinite(Number(other.totalCost)) ? Number(other.totalCost) : 0;
   for (const key of keys) {
     if (keep.has(key) || key === STATE_HOURLY_OTHER_MODEL) continue;
     const value = models[key] || {};
     other.requests += Math.max(0, Number(value.requests) || 0);
     other.inputBytes += Math.max(0, Number(value.inputBytes) || 0);
     other.outputBytes += Math.max(0, Number(value.outputBytes) || 0);
+    other.totalCost += Math.max(0, Number(value.totalCost) || 0);
     delete models[key];
   }
   models[STATE_HOURLY_OTHER_MODEL] = other;
@@ -3056,7 +3420,7 @@ function getKeyState(idx) {
     if (ks.stats.outputBytes === undefined) ks.stats.outputBytes = 0;
     if (ks.stats.totalDuration === undefined) ks.stats.totalDuration = 0;
     if (ks.stats.totalTtfb === undefined) ks.stats.totalTtfb = 0;
-    if (ks.stats.totalCost === undefined) ks.stats.totalCost = 0;
+    ks.stats.totalCost = Number.isFinite(Number(ks.stats.totalCost)) ? Number(ks.stats.totalCost) : 0;
     if (!ks.stats.hourly) ks.stats.hourly = {};
     if (!ks.stats.daily) ks.stats.daily = {};
     if (ks.stats.daily) {
@@ -3065,7 +3429,20 @@ function getKeyState(idx) {
         if (ks.stats.daily[d].outputBytes === undefined) ks.stats.daily[d].outputBytes = 0;
         if (ks.stats.daily[d].totalDuration === undefined) ks.stats.daily[d].totalDuration = 0;
         if (ks.stats.daily[d].totalTtfb === undefined) ks.stats.daily[d].totalTtfb = 0;
-        if (ks.stats.daily[d].totalCost === undefined) ks.stats.daily[d].totalCost = 0;
+        ks.stats.daily[d].totalCost = Number.isFinite(Number(ks.stats.daily[d].totalCost)) ? Number(ks.stats.daily[d].totalCost) : 0;
+      }
+    }
+    if (ks.stats.hourly) {
+      for (const h of Object.keys(ks.stats.hourly)) {
+        const bucket = ks.stats.hourly[h];
+        if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) continue;
+        bucket.totalCost = Number.isFinite(Number(bucket.totalCost)) ? Number(bucket.totalCost) : 0;
+        if (!bucket.models || typeof bucket.models !== "object" || Array.isArray(bucket.models)) continue;
+        for (const model of Object.keys(bucket.models)) {
+          const modelBucket = bucket.models[model];
+          if (!modelBucket || typeof modelBucket !== "object" || Array.isArray(modelBucket)) continue;
+          modelBucket.totalCost = Number.isFinite(Number(modelBucket.totalCost)) ? Number(modelBucket.totalCost) : 0;
+        }
       }
     }
   }
@@ -3108,16 +3485,16 @@ function classifyClientApp(ua) {
   return (s.split(" ")[0] || "").slice(0, 40) || "(未知)";
 }
 
-function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, model, statusCode, client) {
+function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, model, statusCode, client, pricingOverride) {
   const ks = getKeyState(idx);
   const s = ks.stats;
-  const cost = estimateCost(inputBytes || 0, outputBytes || 0);
+  const cost = estimateCost(model, inputBytes || 0, outputBytes || 0, pricingOverride);
   s.totalRequests++;
   if (success) s.successRequests++; else s.failRequests++;
   s.lastUsed = Date.now();
   if (inputBytes) s.inputBytes += inputBytes;
   if (outputBytes) s.outputBytes += outputBytes;
-  s.totalCost = (s.totalCost || 0) + cost;
+  s.totalCost = (Number.isFinite(Number(s.totalCost)) ? Number(s.totalCost) : 0) + cost;
   if (duration) {
     s.totalDuration = (s.totalDuration || 0) + duration;
     s.totalTtfb = (s.totalTtfb || 0) + (ttfb || 0);
@@ -3131,7 +3508,7 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
   s.daily[d].requests++;
   if (inputBytes) s.daily[d].inputBytes += inputBytes;
   if (outputBytes) s.daily[d].outputBytes += outputBytes;
-  s.daily[d].totalCost = (s.daily[d].totalCost || 0) + cost;
+  s.daily[d].totalCost = (Number.isFinite(Number(s.daily[d].totalCost)) ? Number(s.daily[d].totalCost) : 0) + cost;
   if (duration) {
     s.daily[d].totalDuration = (s.daily[d].totalDuration || 0) + duration;
     s.daily[d].totalTtfb = (s.daily[d].totalTtfb || 0) + (ttfb || 0);
@@ -3147,7 +3524,7 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
   s.hourly[hk].requests++;
   if (inputBytes) s.hourly[hk].inputBytes += inputBytes;
   if (outputBytes) s.hourly[hk].outputBytes += outputBytes;
-  s.hourly[hk].totalCost = (s.hourly[hk].totalCost || 0) + cost;
+  s.hourly[hk].totalCost = (Number.isFinite(Number(s.hourly[hk].totalCost)) ? Number(s.hourly[hk].totalCost) : 0) + cost;
   if (duration) s.hourly[hk].totalDuration = (s.hourly[hk].totalDuration || 0) + duration;
   if (ttfb) s.hourly[hk].totalTtfb = (s.hourly[hk].totalTtfb || 0) + ttfb;
   const _mk = String(model || "(未知)").slice(0, STATE_HOURLY_MODEL_NAME_MAX_CHARS);
@@ -3156,10 +3533,12 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
   const modelDimensionCount = Object.keys(hourlyModels).length;
   const modelNameLimit = hourlyModels[STATE_HOURLY_OTHER_MODEL] ? STATE_HOURLY_MODEL_LIMIT : STATE_HOURLY_MODEL_LIMIT - 1;
   if (!hourlyModels[modelKey] && modelDimensionCount >= modelNameLimit) modelKey = STATE_HOURLY_OTHER_MODEL;
-  if (!hourlyModels[modelKey]) hourlyModels[modelKey] = { requests: 0, inputBytes: 0, outputBytes: 0 };
+  if (!hourlyModels[modelKey]) hourlyModels[modelKey] = { requests: 0, inputBytes: 0, outputBytes: 0, totalCost: 0 };
+  hourlyModels[modelKey].totalCost = Number.isFinite(Number(hourlyModels[modelKey].totalCost)) ? Number(hourlyModels[modelKey].totalCost) : 0;
   hourlyModels[modelKey].requests++;
   if (inputBytes) hourlyModels[modelKey].inputBytes += inputBytes;
   if (outputBytes) hourlyModels[modelKey].outputBytes += outputBytes;
+  hourlyModels[modelKey].totalCost += cost;
   if (statusCode !== undefined) {
     if (!s.hourly[hk].statusCodes) s.hourly[hk].statusCodes = {};
     const scKey = statusCode === 200 ? "ok" : (statusCode >= 400 && statusCode < 500 ? "4xx" : (statusCode >= 500 ? "5xx" : "fail"));
@@ -3688,6 +4067,9 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   try { reqModel = JSON.parse(body.toString()).model || null; } catch(e) {}
   const acct = accounts[idx];
   const resolvedModel = acct.model || cleanModel || reqModel || null;
+  // Freeze the selected price rule at request start. A config save while a
+  // long stream is in flight must apply only to later requests.
+  const requestPricing = { ...resolveModelPricing(resolvedModel) };
   activeRequests[idx].push({ start: Date.now(), model: resolvedModel || "?" });
   const reqStart = Date.now();
   let ttfb = null;
@@ -3736,7 +4118,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
           : (statusCode === 402 ? "insufficient_quota" : "upstream_api_error");
         activeDecr(idx);
         markFailure(idx, statusCode);
-        recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode, client);
+        recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode, client, requestPricing);
         recordPath(pathname, method, 0, 0, dur);
         Object.assign(logEntry, {
           status: statusCode,
@@ -3795,7 +4177,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       if (!lifecycle) {
-        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode, client);
+        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode, client, requestPricing);
       }
       if (lifecycle && lifecycle.terminalReason) {
         recordStreamOutcome(idx, lifecycle.terminalReason, true);
@@ -3807,7 +4189,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       lifecycle._metricsCallback = (success) => {
         const dur = Date.now() - reqStart;
         const accBytes = transform.accBytes || 0;
-        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel, success ? (apiRes.statusCode || 200) : 0, client);
+        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel, success ? (apiRes.statusCode || 200) : 0, client, requestPricing);
         if (!success && !clientCancelled) markFailure(idx, 0);
       };
       lifecycle._onTerminal = completedLifecycle => {
@@ -3890,7 +4272,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     console.error(`[proxy] #${idx + 1} Error: ${err.message}`);
     const errorMessage = sanitizeUpstreamErrorMessage(err && err.message);
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client);
+    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client, requestPricing);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null, upstreamErrorReason: "upstream_error", streamErrorMsg: errorMessage, terminalSource: "upstream_transport_error" });
     addLog(logEntry);
     const _ks3=getKeyState(idx);_ks3.lastStatus=0;_ks3.lastTime=Date.now();_ks3.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
@@ -3912,7 +4294,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     proxyReq.destroy();
     markFailure(idx, 0);
     if (!lifecycle) {
-    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client);
+      recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client, requestPricing);
     }
     recordPath(pathname, method, 0, 0, dur);
     const errorMessage = "Upstream request timed out";
@@ -4636,12 +5018,18 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   </div>
 </div>
 <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;font-size:12px">
-  <div style="color:#94a3b8;padding:4px 0">💰 输入价格（每百万token）</div>
-  <div><input id="cfgPriceIn" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0"></div>
-  <div style="color:#94a3b8;padding:4px 0">💰 输出价格（每百万token）</div>
-  <div><input id="cfgPriceOut" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0"></div>
-  <div style="color:#94a3b8;padding:4px 0">🔤 每 token 字节数</div>
-  <div><input id="cfgBpt" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" value="3" placeholder="3"></div>
+  <div style="color:#94a3b8;padding:4px 0">💰 默认输入价格（每百万 token）</div>
+  <div><input id="cfgPriceIn" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" title="未匹配模型时使用"></div>
+  <div style="color:#94a3b8;padding:4px 0">💰 默认输出价格（每百万 token）</div>
+  <div><input id="cfgPriceOut" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" title="未匹配模型时使用"></div>
+  <div style="color:#94a3b8;padding:4px 0">🔤 默认每 token 字节数</div>
+  <div><input id="cfgBpt" type="number" min="0.1" max="100" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" value="3" placeholder="3" title="未匹配模型时使用"></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">🧮 按模型计费覆盖</div>
+  <div style="grid-column:1/-1">
+    <div style="font-size:10px;color:#64748b;margin:0 0 6px">按实际最终转发模型名精确匹配；未配置或未知模型使用上方默认规则。费用按传输字节估算，不等同于上游账单 token；新价格仅影响之后的请求。</div>
+    <div id="cfgModelPricingArea"></div>
+    <button class="btn" type="button" style="font-size:10px;padding:2px 8px;margin-top:6px" onclick="addModelPricingRule()">＋ 添加模型规则</button>
+  </div>
   <div style="color:#94a3b8;padding:4px 0">🔔 桌面通知</div>
   <div><label><input type="checkbox" id="cfgDesktop"> 全部 Key 失效时通知</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔊 声音提醒</div>
@@ -4702,6 +5090,15 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><input id="cfgStateMaxMiB" type="number" min="4" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超限时删除最旧统计桶）</div>
   <div style="color:#94a3b8;padding:4px 0">WSL proxy.log</div>
   <div><input id="cfgProxyLogMaxMiB" type="number" min="1" max="100" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgProxyLogKeepFiles" type="number" min="1" max="20" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 个归档（systemd 使用 journald）</div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">🗄 Codex SQLite 日志维护</div>
+  <div style="color:#94a3b8;padding:4px 0">启用数据库维护</div>
+  <div><label><input type="checkbox" id="cfgCodexLogMaintenanceEnabled" onchange="toggleCodexLogMaintenanceControls()"> 达到容量阈值后短批次删除保留期外的 Codex 日志</label></div>
+  <div style="color:#94a3b8;padding:4px 0">数据库路径</div>
+  <div><input id="cfgCodexLogMaintenancePath" style="width:min(100%,420px);background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="/root/.codex/logs_2.sqlite" title="填写 WSL 内部绝对路径，例如 /root/.codex/logs_2.sqlite；也可直接粘贴 WSL 网络路径，检测时会自动转换；不要填写 -wal/-shm 文件。"><button class="btn" id="cfgCodexLogMaintenanceCheckBtn" type="button" style="font-size:10px;padding:2px 7px;margin-left:6px" onclick="checkCodexLogMaintenancePath()">检测路径</button><span id="cfgCodexLogMaintenanceCheck" style="font-size:10px;color:#64748b;margin-left:6px"></span></div>
+  <div style="color:#94a3b8;padding:4px 0">触发容量 / 保留时长</div>
+  <div><input id="cfgCodexLogMaintenanceThreshold" data-codex-log-maintenance-control type="number" min="64" max="102400" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgCodexLogMaintenanceRetain" data-codex-log-maintenance-control type="number" min="1" max="8760" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 小时</div>
+  <div style="color:#94a3b8;padding:4px 0">检查间隔</div>
+  <div><input id="cfgCodexLogMaintenanceInterval" data-codex-log-maintenance-control type="number" min="5" max="1440" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟　<button class="btn" id="cfgCodexLogMaintenanceRunBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px" onclick="runCodexLogMaintenanceNow()">立即检查</button></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）</div>
   <div style="color:#94a3b8;padding:4px 0">启用日志事件</div>
   <div><label><input type="checkbox" id="cfgLogIncidentEnabled" checked> 触发失败/流失败规则　<input type="checkbox" id="cfgLogIncidentNotify"> 发送通知</label></div>
@@ -4739,6 +5136,7 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
 <div style="font-size:11px;color:#22c55e;margin-bottom:8px" id="cfgAutoResumeStatus">🧬 闲置恢复: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgCodexLogMaintenanceRuntime">🗄 Codex SQLite 日志维护: --</div>
 <div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
 
@@ -5120,6 +5518,7 @@ async function loadConfigUI(){
     document.getElementById("cfgPriceIn").value=c.prices?.inputPer1M||"";
     document.getElementById("cfgPriceOut").value=c.prices?.outputPer1M||"";
     document.getElementById("cfgBpt").value=c.bytesPerToken||3;
+    renderModelPricingRules(c.modelPricing);
     document.getElementById("cfgWebhook").value=c.webhookUrl||"";
     document.getElementById("cfgDesktop").checked=c.notifications?.desktop!==false;
     document.getElementById("cfgSound").checked=c.notifications?.sound!==false;
@@ -5149,6 +5548,14 @@ async function loadConfigUI(){
     document.getElementById("cfgStateMaxMiB").value=c.stateMaxMiB??32;
     document.getElementById("cfgProxyLogMaxMiB").value=c.proxyLogMaxMiB??10;
     document.getElementById("cfgProxyLogKeepFiles").value=c.proxyLogKeepFiles??5;
+    const codexLogMaintenance=c.codexLogMaintenance||{};
+    document.getElementById("cfgCodexLogMaintenanceEnabled").checked=codexLogMaintenance.enabled===true;
+    document.getElementById("cfgCodexLogMaintenancePath").value=codexLogMaintenance.dbPath||"/root/.codex/logs_2.sqlite";
+    document.getElementById("cfgCodexLogMaintenanceThreshold").value=codexLogMaintenance.thresholdMiB??2048;
+    document.getElementById("cfgCodexLogMaintenanceRetain").value=codexLogMaintenance.retainHours??12;
+    document.getElementById("cfgCodexLogMaintenanceInterval").value=codexLogMaintenance.checkIntervalMinutes??15;
+    toggleCodexLogMaintenanceControls();
+    renderCodexLogMaintenanceRuntime(c.codexLogMaintenanceRuntime||{});
     const logIncidents=c.logIncidents||{};
     document.getElementById("cfgLogIncidentEnabled").checked=logIncidents.enabled!==false;
     document.getElementById("cfgLogIncidentNotify").checked=logIncidents.notify===true;
@@ -5194,6 +5601,101 @@ async function loadConfigUI(){
     window.twBadgeTimer=setInterval(updateTimeWindowBadges,60000);
     updateTimeWindowBadges();
   }catch(e){}
+}
+function normalizeCodexLogMaintenancePathInput(){
+  const input=document.getElementById("cfgCodexLogMaintenancePath");
+  const raw=(input&&input.value||"").trim();
+  const backslash=String.fromCharCode(92);
+  const lower=raw.toLowerCase();
+  const prefixes=[backslash+backslash+"wsl.localhost"+backslash,backslash+backslash+"wsl$"+backslash];
+  const prefix=prefixes.find(candidate=>lower.startsWith(candidate));
+  if(!prefix)return raw;
+  const withoutHost=raw.slice(prefix.length);
+  const distributionEnd=withoutHost.indexOf(backslash);
+  if(distributionEnd<=0)return raw;
+  const innerPath=withoutHost.slice(distributionEnd+1).split(backslash).join("/").split("/").filter(Boolean).join("/");
+  const normalized=innerPath?"/"+innerPath:raw;
+  if(input&&normalized!==raw)input.value=normalized;
+  return normalized;
+}
+function codexLogMaintenanceConfigFromForm(){
+  return {
+    enabled:document.getElementById("cfgCodexLogMaintenanceEnabled").checked,
+    dbPath:normalizeCodexLogMaintenancePathInput(),
+    thresholdMiB:configInteger("cfgCodexLogMaintenanceThreshold",2048),
+    retainHours:configInteger("cfgCodexLogMaintenanceRetain",12),
+    checkIntervalMinutes:configInteger("cfgCodexLogMaintenanceInterval",15)
+  };
+}
+function toggleCodexLogMaintenanceControls(){
+  const enabled=!!document.getElementById("cfgCodexLogMaintenanceEnabled")?.checked;
+  document.querySelectorAll("[data-codex-log-maintenance-control]").forEach(el=>{el.disabled=!enabled;});
+  if(!enabled)renderCodexLogMaintenanceRuntime({phase:"disabled"});
+}
+function codexLogMaintenanceBytes(value){
+  const bytes=Math.max(0,Number(value)||0);
+  if(bytes>=1024*1024*1024)return (bytes/(1024*1024*1024)).toFixed(2)+" GiB";
+  if(bytes>=1024*1024)return (bytes/(1024*1024)).toFixed(1)+" MiB";
+  if(bytes>=1024)return (bytes/1024).toFixed(1)+" KiB";
+  return String(Math.round(bytes))+" B";
+}
+function setCodexLogMaintenanceCheck(text,color){
+  const el=document.getElementById("cfgCodexLogMaintenanceCheck");
+  if(!el)return;
+  el.textContent=text||"";
+  el.style.color=color||"#64748b";
+}
+function renderCodexLogMaintenanceRuntime(runtime){
+  const el=document.getElementById("cfgCodexLogMaintenanceRuntime");
+  if(!el)return;
+  const enabled=!!document.getElementById("cfgCodexLogMaintenanceEnabled")?.checked;
+  if(!enabled){el.textContent="🗄 Codex SQLite 日志维护: 未启用";el.style.color="#64748b";return;}
+  const state=runtime&&typeof runtime==="object"?runtime:{};
+  const total=codexLogMaintenanceBytes(state.totalBytes||0);
+  let text="🗄 Codex SQLite 日志维护: ";
+  let color="#94a3b8";
+  if(state.inFlight||state.phase==="checking"){text+="正在检查数据库…";color="#fbbf24";}
+  else if(state.phase==="error"){text+=(state.lastError||"上次检查失败");color="#f87171";}
+  else if(state.lastResult==="cleaned"){text+="已删除 "+(state.deletedRows||0)+" 条过期记录；当前 "+total;color="#4ade80";}
+  else if(state.lastResult==="retention_satisfied"){text+="已满足保留期；当前 "+total+"（物理空间将在 SQLite 后续复用）";color="#94a3b8";}
+  else if(state.lastResult==="skipped_busy"){text+="数据库忙，已跳过并等待下次检查；当前 "+total;color="#fbbf24";}
+  else if(state.lastResult==="below_threshold"){text+="当前 "+total+"，未达到触发阈值";color="#94a3b8";}
+  else if(state.nextCheckAt&&state.nextCheckAt>Date.now()){text+="已计划检查；当前 "+total;color="#94a3b8";}
+  else{text+="等待首次检查";color="#94a3b8";}
+  el.textContent=text;
+  el.style.color=color;
+}
+async function checkCodexLogMaintenancePath(){
+  const button=document.getElementById("cfgCodexLogMaintenanceCheckBtn");
+  if(button)button.disabled=true;
+  setCodexLogMaintenanceCheck("检测中…","#fbbf24");
+  try{
+    const r=await fetch("/__codex-log-maintenance/check",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({codexLogMaintenance:codexLogMaintenanceConfigFromForm()})});
+    const j=await r.json();
+    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"路径或数据库无效"),"#f87171");return false;}
+    const check=j.check||{};
+    setCodexLogMaintenanceCheck("✓ 有效：主库 "+codexLogMaintenanceBytes(check.databaseBytes)+"，WAL "+codexLogMaintenanceBytes(check.walBytes),"#4ade80");
+    return true;
+  }catch(e){setCodexLogMaintenanceCheck("✕ 检测失败: "+e.message,"#f87171");return false;}
+  finally{if(button)button.disabled=false;}
+}
+async function runCodexLogMaintenanceNow(){
+  if(!document.getElementById("cfgCodexLogMaintenanceEnabled").checked){setCodexLogMaintenanceCheck("请先启用并保存配置","#fbbf24");return;}
+  const button=document.getElementById("cfgCodexLogMaintenanceRunBtn");
+  if(button)button.disabled=true;
+  setCodexLogMaintenanceCheck("正在检查已保存的数据库配置…","#fbbf24");
+  try{
+    const r=await fetch("/__codex-log-maintenance/run",{method:"POST"});
+    const j=await r.json();
+    renderCodexLogMaintenanceRuntime(j.runtime||{});
+    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"执行失败"),"#f87171");return;}
+    const result=j.result||{};
+    if(result.result==="skipped_busy")setCodexLogMaintenanceCheck("数据库忙，已跳过；下个周期会重试","#fbbf24");
+    else if(result.result==="below_threshold")setCodexLogMaintenanceCheck("当前容量未达到阈值，未删除记录","#94a3b8");
+    else if(result.result==="retention_satisfied")setCodexLogMaintenanceCheck("没有超过保留期的记录；不会自动 VACUUM","#94a3b8");
+    else setCodexLogMaintenanceCheck("✓ 已完成，删除 "+(result.deletedRows||0)+" 条过期记录","#4ade80");
+  }catch(e){setCodexLogMaintenanceCheck("✕ 执行失败: "+e.message,"#f87171");}
+  finally{toggleCodexLogMaintenanceControls();}
 }
 function renderPortGroups(groups, groupEnabled, groupKeyInfo){
   const area=document.getElementById("portGroupsArea");
@@ -5399,7 +5901,7 @@ function renderTrend(){
       const h=hMap[hk];
       const ib=v.inputBytes||0,ob=v.outputBytes||0;
       h.input+=ib;h.output+=ob;h.bytes+=ib+ob;h.req+=v.requests||0;
-      h.totalCost+=v.totalCost||0;h.totalDuration+=v.totalDuration||0;
+      h.totalCost+=Number(v.totalCost)||0;h.totalDuration+=v.totalDuration||0;
       if(!h.keys[ai])h.keys[ai]={bytes:0,req:0};
       h.keys[ai].bytes+=ib+ob;
       h.keys[ai].req+=v.requests||0;
@@ -5409,10 +5911,11 @@ function renderTrend(){
       allUrls[uKey]=(allUrls[uKey]||0)+(v.requests||0);
       if(v.models){
         for(const [mk,mv] of Object.entries(v.models)){
-          if(!h.models[mk])h.models[mk]={requests:0,inputBytes:0,outputBytes:0};
+          if(!h.models[mk])h.models[mk]={requests:0,inputBytes:0,outputBytes:0,totalCost:0};
           h.models[mk].requests+=mv.requests||0;
           h.models[mk].inputBytes+=mv.inputBytes||0;
           h.models[mk].outputBytes+=mv.outputBytes||0;
+          h.models[mk].totalCost+=Number(mv.totalCost)||0;
           if(!allModels[mk])allModels[mk]=0;
           allModels[mk]+=mv.requests||0;
         }
@@ -5542,6 +6045,9 @@ function renderTrend(){
       const mmdd=k.slice(0,10),hh=k.slice(11);
       lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
       lines.push("费用: $"+h.totalCost.toFixed(6));
+      const modelCosts=Object.entries(h.models||{}).filter(([,mv])=>(Number(mv.totalCost)||0)>0).sort((a,b)=>(Number(b[1].totalCost)||0)-(Number(a[1].totalCost)||0));
+      for(const [mk,mv] of modelCosts.slice(0,8))lines.push("  "+mk+": $"+(Number(mv.totalCost)||0).toFixed(6));
+      if(modelCosts.length>8)lines.push("  其他模型: $"+modelCosts.slice(8).reduce((sum,[,mv])=>sum+(Number(mv.totalCost)||0),0).toFixed(6));
       return '<div class="trend-bar" style="height:'+Math.max(2,vals[i]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
     }).join("");
     const legendEl=document.getElementById("trendLegend");
@@ -5687,7 +6193,7 @@ function render(){
   const allBytes=data.reduce((s,x)=>s+(x.inputBytes||0)+(x.outputBytes||0),0);
   const allReq=data.reduce((s,x)=>s+(x.totalRequests||0),0);
   const avgScore=tot>0?Math.round(data.reduce((s,x)=>s+(x.healthScore||100),0)/tot):100;
-  const totalCost=data.reduce((s,x)=>s+(x.totalCost||0),0);
+  const totalCost=data.reduce((s,x)=>s+(Number(x.totalCost)||0),0);
   const q="http://localhost:3456/";
 
   document.getElementById("subText").textContent="最后更新: "+new Date().toLocaleString("zh-CN")+" | 实时推送";
@@ -7217,10 +7723,94 @@ function exportLogs(){
 function openConfig(){renderUpdateInfo();loadConfigUI();document.getElementById("configModal").classList.add("on")}
 function closeConfig(){document.getElementById("configModal").classList.remove("on")}
 function configInteger(id,fallback){const value=parseInt(document.getElementById(id).value,10);return Number.isFinite(value)?value:fallback}
+function renderModelPricingRules(modelPricing){
+  const area=document.getElementById("cfgModelPricingArea");
+  if(!area)return;
+  const rules=Array.isArray(modelPricing)?modelPricing:(modelPricing&&Array.isArray(modelPricing.rules)?modelPricing.rules:[]);
+  area.innerHTML='<div id="cfgModelPricingRows" style="display:flex;flex-direction:column;gap:4px"></div><div id="cfgModelPricingEmpty" style="font-size:10px;color:#64748b;padding:4px 0">暂无模型覆盖规则</div>';
+  rules.slice(0,50).forEach(rule=>addModelPricingRule(rule));
+  updateModelPricingEmptyState();
+}
+function modelPricingField(value){return value===undefined||value===null||value===""?"":String(value)}
+function addModelPricingRule(rule){
+  const rows=document.getElementById("cfgModelPricingRows");
+  if(!rows||rows.children.length>=50)return;
+  const row=document.createElement("div");
+  row.className="cfg-model-pricing-row";
+  row.style.cssText="display:grid;grid-template-columns:minmax(110px,1.5fr) repeat(3,minmax(78px,1fr)) 28px;gap:4px;align-items:center";
+  row.innerHTML='<input class="cfg-model-pricing-model" placeholder="模型名，例如 gpt-5" maxlength="80" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<input class="cfg-model-pricing-input" type="number" min="0" max="1000000" step="any" placeholder="输入 / 1M" title="输入价格（每百万 token）" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<input class="cfg-model-pricing-output" type="number" min="0" max="1000000" step="any" placeholder="输出 / 1M" title="输出价格（每百万 token）" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<input class="cfg-model-pricing-bpt" type="number" min="0.1" max="100" step="any" placeholder="字节/token" title="每 token 字节数" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+    '<button class="btn" type="button" title="删除模型规则" style="padding:1px 5px;color:#f87171" onclick="removeModelPricingRule(this)">✕</button>';
+  const value=rule&&typeof rule==="object"?rule:{};
+  row.querySelector(".cfg-model-pricing-model").value=modelPricingField(value.model);
+  row.querySelector(".cfg-model-pricing-input").value=modelPricingField(value.inputPer1M);
+  row.querySelector(".cfg-model-pricing-output").value=modelPricingField(value.outputPer1M);
+  row.querySelector(".cfg-model-pricing-bpt").value=modelPricingField(value.bytesPerToken);
+  rows.appendChild(row);
+  updateModelPricingEmptyState();
+}
+function removeModelPricingRule(button){
+  const row=button&&button.closest(".cfg-model-pricing-row");
+  if(row)row.remove();
+  updateModelPricingEmptyState();
+}
+function updateModelPricingEmptyState(){
+  const rows=document.getElementById("cfgModelPricingRows");
+  const empty=document.getElementById("cfgModelPricingEmpty");
+  if(empty)empty.style.display=rows&&rows.children.length?"none":"block";
+}
+function readModelPricingNumber(value,label,minimum,maximum){
+  if(value==="")throw new Error(label+"不能为空");
+  const number=Number(value);
+  if(!Number.isFinite(number)||number<minimum||number>maximum)throw new Error(label+"必须在 "+minimum+"–"+maximum+" 之间");
+  return number;
+}
+function readDefaultPricingNumber(id,label,fallback,minimum,maximum){
+  const value=document.getElementById(id).value.trim();
+  return value===""?fallback:readModelPricingNumber(value,label,minimum,maximum);
+}
+function collectDefaultPricingRule(){
+  return {
+    prices:{
+      inputPer1M:readDefaultPricingNumber("cfgPriceIn","默认输入价格",0,0,1000000),
+      outputPer1M:readDefaultPricingNumber("cfgPriceOut","默认输出价格",0,0,1000000)
+    },
+    bytesPerToken:readDefaultPricingNumber("cfgBpt","默认每 token 字节数",3,0.1,100)
+  };
+}
+function collectModelPricingRules(){
+  const result=[];
+  const seen=new Set();
+  const rows=document.querySelectorAll("#cfgModelPricingRows .cfg-model-pricing-row");
+  for(const row of rows){
+    const model=row.querySelector(".cfg-model-pricing-model").value.trim();
+    const inputRaw=row.querySelector(".cfg-model-pricing-input").value.trim();
+    const outputRaw=row.querySelector(".cfg-model-pricing-output").value.trim();
+    const bptRaw=row.querySelector(".cfg-model-pricing-bpt").value.trim();
+    if(!model&&!inputRaw&&!outputRaw&&!bptRaw)continue;
+    if(!model)throw new Error("模型规则缺少模型名");
+    if(model.length>80||/[\\u0000-\\u001f\\u007f]/.test(model))throw new Error("模型名无效: "+model);
+    if(seen.has(model))throw new Error("模型规则重复: "+model);
+    seen.add(model);
+    result.push({
+      model,
+      inputPer1M:readModelPricingNumber(inputRaw,"模型 "+model+" 的输入价格",0,1000000),
+      outputPer1M:readModelPricingNumber(outputRaw,"模型 "+model+" 的输出价格",0,1000000),
+      bytesPerToken:readModelPricingNumber(bptRaw,"模型 "+model+" 的每 token 字节数",0.1,100)
+    });
+  }
+  return result;
+}
 async function saveConfig(){
+  let modelPricing,defaultPricing;
+  try{modelPricing=collectModelPricingRules();defaultPricing=collectDefaultPricingRule();}
+  catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message;return;}
   const c={
-    prices:{inputPer1M:parseFloat(document.getElementById("cfgPriceIn").value)||0,outputPer1M:parseFloat(document.getElementById("cfgPriceOut").value)||0},
-    bytesPerToken:parseInt(document.getElementById("cfgBpt").value)||3,
+    prices:defaultPricing.prices,
+    bytesPerToken:defaultPricing.bytesPerToken,
+    modelPricing,
     webhookUrl:document.getElementById("cfgWebhook").value.trim(),
     notifications:{desktop:document.getElementById("cfgDesktop").checked,sound:document.getElementById("cfgSound").checked},
     autoRecover:document.getElementById("cfgAutoRecover").checked,
@@ -7255,6 +7845,7 @@ async function saveConfig(){
     stateMaxMiB:configInteger("cfgStateMaxMiB",32),
     proxyLogMaxMiB:configInteger("cfgProxyLogMaxMiB",10),
     proxyLogKeepFiles:configInteger("cfgProxyLogKeepFiles",5),
+    codexLogMaintenance:codexLogMaintenanceConfigFromForm(),
     logIncidents:{
       enabled:document.getElementById("cfgLogIncidentEnabled").checked,
       notify:document.getElementById("cfgLogIncidentNotify").checked,
@@ -7275,6 +7866,10 @@ async function saveConfig(){
     cmdPath:document.getElementById("cfgCmdPath").value.trim()||"/mnt/c/Windows/System32/cmd.exe",
     autoResumeProjects:collectResumeProjects()
   };
+  if(c.codexLogMaintenance.enabled&&!(await checkCodexLogMaintenancePath())){
+    document.getElementById("configStatus").textContent="保存失败: Codex SQLite 数据库路径或结构未通过检测";
+    return;
+  }
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
     const j=await r.json();
@@ -8337,124 +8932,211 @@ function createGroupServer(groupName, port) {
     return;
   }
 
+  if (pathname === "/__codex-log-maintenance/check") {
+    if (req.method !== "POST") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    const bodyChunks = [];
+    let bodyBytes = 0;
+    let tooLarge = false;
+    req.on("data", chunk => {
+      bodyBytes += chunk.length;
+      if (bodyBytes > 32 * 1024) { tooLarge = true; return; }
+      bodyChunks.push(chunk);
+    });
+    req.on("end", async () => {
+      try {
+        if (tooLarge) throw new Error("request body is too large");
+        const payload = JSON.parse(Buffer.concat(bodyChunks).toString("utf8"));
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("a configuration object is required");
+        const candidateInput = Object.prototype.hasOwnProperty.call(payload, "codexLogMaintenance") ? payload.codexLogMaintenance : payload;
+        if (!candidateInput || typeof candidateInput !== "object" || Array.isArray(candidateInput) || !Object.prototype.hasOwnProperty.call(candidateInput, "dbPath") || !String(candidateInput.dbPath == null ? "" : candidateInput.dbPath).trim()) {
+          throw new Error("database path is required");
+        }
+        const candidate = normalizeCodexLogMaintenanceConfig(candidateInput);
+        const check = await invokeCodexLogMaintainer("check", candidate);
+        if (!check.ok) {
+          res.writeHead(400, cors);
+          res.end(JSON.stringify({ ok: false, error: formatCodexLogMaintenanceError(check), errorCode: check.errorCode || "invalid" }));
+          return;
+        }
+        res.writeHead(200, cors);
+        res.end(JSON.stringify({ ok: true, check }));
+      } catch (error) {
+        res.writeHead(400, cors);
+        res.end(JSON.stringify({ ok: false, error: String(error && error.message || error).slice(0, 240) }));
+      }
+    });
+    return;
+  }
+
+  if (pathname === "/__codex-log-maintenance/run") {
+    if (req.method !== "POST") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    if (!config.codexLogMaintenance || !config.codexLogMaintenance.enabled) {
+      res.writeHead(409, cors);
+      res.end(JSON.stringify({ ok: false, error: "请先启用并保存 Codex SQLite 日志维护配置" }));
+      return;
+    }
+    runCodexLogMaintenance("manual").then(result => {
+      if (res.destroyed) return;
+      const statusCode = result && result.result === "in_progress" ? 409 : result && result.ok ? 200 : 503;
+      res.writeHead(statusCode, cors);
+      res.end(JSON.stringify({ ok: !!(result && result.ok), result, runtime: getCodexLogMaintenanceRuntimeStatus(), error: result && result.ok ? "" : formatCodexLogMaintenanceError(result) }));
+    }).catch(error => {
+      if (res.destroyed) return;
+      res.writeHead(503, cors);
+      res.end(JSON.stringify({ ok: false, error: String(error && error.message || error).slice(0, 240), runtime: getCodexLogMaintenanceRuntimeStatus() }));
+    });
+    return;
+  }
+
   if (pathname === "/__config") {
     if (req.method === "GET") {
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime, lastRequestTime, lastKeyUseTime, lastResumeTime }, null, 2));
+      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime, lastRequestTime, lastKeyUseTime, lastResumeTime, codexLogMaintenanceRuntime: getCodexLogMaintenanceRuntimeStatus() }, null, 2));
       return;
     }
     if (req.method === "PUT") {
       const bodyChunks = [];
       req.on("data", c => bodyChunks.push(c));
-      req.on("end", () => {
+      req.on("end", async () => {
         const body = Buffer.concat(bodyChunks).toString('utf-8');
         try {
           const c = JSON.parse(body);
-          if (Object.prototype.hasOwnProperty.call(c, "updateBaselineTag")) {
-            const rawBaselineTag = c.updateBaselineTag == null ? "" : String(c.updateBaselineTag).trim();
-            const normalizedBaselineTag = normalizeUpdateBaselineTag(rawBaselineTag);
-            if (rawBaselineTag && !normalizedBaselineTag) {
-              throw new Error("updateBaselineTag must be a stable Release tag such as v2.29.1");
-            }
-            c.updateBaselineTag = normalizedBaselineTag;
-          }
-          const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
-          const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
-          Object.assign(cur, c);
-          normalizeRuntimeStorageConfig(cur);
-          // Handle group actions
-          if (c._groupAction) {
-            if (c._groupAction === "addGroup" && c._groupName && c._groupPort) {
-              const gName = c._groupName.toUpperCase();
-              const gPort = parseInt(c._groupPort);
-              if (!gPort || gPort < 1024 || gPort > 65535) throw new Error("Port must be 1024-65535");
-              if (cur.groups && Object.values(cur.groups).includes(gPort)) throw new Error("Port already in use by another group");
-              cur.groups = cur.groups || {};
-              cur.groups[gName] = gPort;
-              c._groupName = gName; c._groupPort = gPort;
-              delete c._groupAction;
-            } else if (c._groupAction === "removeGroup" && c._groupName) {
-              if (c._groupName === "A") throw new Error("Cannot remove group A");
-              if (cur.groups) { delete cur.groups[c._groupName]; }
-              stopGroup(c._groupName);
-              delete c._groupAction; delete c._groupName;
-            } else if (c._groupAction === "setGroupPort" && c._groupName && c._groupPort) {
-              const gName = c._groupName.toUpperCase();
-              const gPort = parseInt(c._groupPort);
-              if (!gPort || gPort < 1024 || gPort > 65535) throw new Error("Port must be 1024-65535");
-              const portUsed = Object.entries(cur.groups||{}).some(([n,p]) => p === gPort && n !== gName);
-              if (portUsed) throw new Error("Port already in use by another group");
-              cur.groups = cur.groups || {};
-              cur.groups[gName] = gPort;
-              if (servers[gName]) { stopGroup(gName); }
-              c._groupName = gName; c._groupPort = gPort;
-              delete c._groupAction;
-            } else if (c._groupAction === "toggleGroup" && c._groupName) {
-              if (c._groupName === "A") throw new Error("Cannot disable group A");
-              const port = cur.groups && cur.groups[c._groupName];
-              if (!port) throw new Error("Group not found: "+c._groupName);
-              cur.groupEnabled = cur.groupEnabled || {};
-              if (c._groupEnabled === false) {
-                stopGroup(c._groupName);
-                cur.groupEnabled[c._groupName] = false;
-              } else {
-                startGroup(c._groupName, port);
-                cur.groupEnabled[c._groupName] = true;
+          if (!c || typeof c !== "object" || Array.isArray(c)) throw new Error("configuration object is required");
+          await enqueueConfigSave(async () => {
+            if (Object.prototype.hasOwnProperty.call(c, "updateBaselineTag")) {
+              const rawBaselineTag = c.updateBaselineTag == null ? "" : String(c.updateBaselineTag).trim();
+              const normalizedBaselineTag = normalizeUpdateBaselineTag(rawBaselineTag);
+              if (rawBaselineTag && !normalizedBaselineTag) {
+                throw new Error("updateBaselineTag must be a stable Release tag such as v2.29.1");
               }
-              delete c._groupAction; delete c._groupName; delete c._groupEnabled;
+              c.updateBaselineTag = normalizedBaselineTag;
             }
-          }
-          // Clean up group action metadata so it doesn't pollute config.json
-          delete cur._groupAction; delete cur._groupName; delete cur._groupPort; delete cur._groupEnabled;
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(cur, null, 2));
-          const savedNextTime = autoRecoverNextTime;
-          const savedDailyNextTime = autoRecoverDailyNextTime;
-          const savedInterval = config.autoRecoverInterval;
-          const savedDailyDays = config.autoRecoverDailyDays;
-          const savedDailyHour = config.autoRecoverDailyHour;
-          const savedDailyMin = config.autoRecoverDailyMinute;
-          loadConfig();
-          applyRuntimeStoragePolicy();
-          // Sync group servers with new config
-          const newGroups = config.groups || {A: 3456};
-          // Start new groups
-          for (const [name, port] of Object.entries(newGroups)) {
-            if (!oldGroups[name] && name !== "A") {
-              startGroup(name, port).catch(e => console.error(`[proxy] Failed to start group ${name}: ${e.message}`));
+            const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+            const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
+            Object.assign(cur, c);
+            normalizeRuntimeStorageConfig(cur);
+            const changesDefaultPrices = Object.prototype.hasOwnProperty.call(c, "prices");
+            const changesDefaultBytesPerToken = Object.prototype.hasOwnProperty.call(c, "bytesPerToken");
+            if (changesDefaultPrices || changesDefaultBytesPerToken) {
+              const defaultPricing = normalizeDefaultPricing(cur.prices, cur.bytesPerToken, true, {
+                prices: changesDefaultPrices,
+                bytesPerToken: changesDefaultBytesPerToken,
+              });
+              cur.prices = defaultPricing.prices;
+              cur.bytesPerToken = defaultPricing.bytesPerToken;
             }
-          }
-          // Stop removed groups
-          for (const name of Object.keys(oldGroups)) {
-            if (!newGroups[name] && name !== "A") {
-              stopGroup(name);
+            if (Object.prototype.hasOwnProperty.call(c, "modelPricing")) {
+              cur.modelPricing = normalizeModelPricing(cur.modelPricing, true);
             }
-          }
-          // Restart groups with changed port
-          for (const [name, port] of Object.entries(newGroups)) {
-            if (oldGroups[name] && oldGroups[name] !== port && name !== "A") {
-              stopGroup(name);
-              startGroup(name, port).catch(e => console.error(`[proxy] Failed to restart group ${name}: ${e.message}`));
+            if (Object.prototype.hasOwnProperty.call(c, "codexLogMaintenance")) {
+              cur.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(cur.codexLogMaintenance);
+              if (cur.codexLogMaintenance.enabled) {
+                const check = await invokeCodexLogMaintainer("check", cur.codexLogMaintenance);
+                if (!check.ok) throw new Error(formatCodexLogMaintenanceError(check));
+              }
             }
-          }
-          if (config.autoRecover && savedNextTime > Date.now() && savedInterval === config.autoRecoverInterval) {
-            autoRecoverNextTime = savedNextTime;
-          }
-          if (config.autoRecoverDaily && savedDailyNextTime > Date.now() &&
-              savedDailyDays === config.autoRecoverDailyDays &&
-              savedDailyHour === config.autoRecoverDailyHour &&
-              savedDailyMin === config.autoRecoverDailyMinute) {
-            autoRecoverDailyNextTime = savedDailyNextTime;
-            if (autoRecoverDailyTimer) clearTimeout(autoRecoverDailyTimer);
-            scheduleDailyRecover();
-          } else if (config.autoRecoverDaily && savedDailyNextTime > 0 && savedDailyNextTime <= Date.now() &&
-              savedDailyDays === config.autoRecoverDailyDays &&
-              savedDailyHour === config.autoRecoverDailyHour &&
-              savedDailyMin === config.autoRecoverDailyMinute) {
-            if (autoRecoverDailyTimer) clearTimeout(autoRecoverDailyTimer);
-            autoRecover();
-            autoRecoverDailyNextTime = calcNextDailyRun(Date.now(), savedDailyDays, savedDailyHour, savedDailyMin);
-            scheduleDailyRecover();
-          }
+            // Handle group actions
+            if (c._groupAction) {
+              if (c._groupAction === "addGroup" && c._groupName && c._groupPort) {
+                const gName = c._groupName.toUpperCase();
+                const gPort = parseInt(c._groupPort);
+                if (!gPort || gPort < 1024 || gPort > 65535) throw new Error("Port must be 1024-65535");
+                if (cur.groups && Object.values(cur.groups).includes(gPort)) throw new Error("Port already in use by another group");
+                cur.groups = cur.groups || {};
+                cur.groups[gName] = gPort;
+                c._groupName = gName; c._groupPort = gPort;
+                delete c._groupAction;
+              } else if (c._groupAction === "removeGroup" && c._groupName) {
+                if (c._groupName === "A") throw new Error("Cannot remove group A");
+                if (cur.groups) { delete cur.groups[c._groupName]; }
+                stopGroup(c._groupName);
+                delete c._groupAction; delete c._groupName;
+              } else if (c._groupAction === "setGroupPort" && c._groupName && c._groupPort) {
+                const gName = c._groupName.toUpperCase();
+                const gPort = parseInt(c._groupPort);
+                if (!gPort || gPort < 1024 || gPort > 65535) throw new Error("Port must be 1024-65535");
+                const portUsed = Object.entries(cur.groups||{}).some(([n,p]) => p === gPort && n !== gName);
+                if (portUsed) throw new Error("Port already in use by another group");
+                cur.groups = cur.groups || {};
+                cur.groups[gName] = gPort;
+                if (servers[gName]) { stopGroup(gName); }
+                c._groupName = gName; c._groupPort = gPort;
+                delete c._groupAction;
+              } else if (c._groupAction === "toggleGroup" && c._groupName) {
+                if (c._groupName === "A") throw new Error("Cannot disable group A");
+                const port = cur.groups && cur.groups[c._groupName];
+                if (!port) throw new Error("Group not found: "+c._groupName);
+                cur.groupEnabled = cur.groupEnabled || {};
+                if (c._groupEnabled === false) {
+                  stopGroup(c._groupName);
+                  cur.groupEnabled[c._groupName] = false;
+                } else {
+                  startGroup(c._groupName, port);
+                  cur.groupEnabled[c._groupName] = true;
+                }
+                delete c._groupAction; delete c._groupName; delete c._groupEnabled;
+              }
+            }
+            // Clean up group action metadata so it doesn't pollute config.json
+            delete cur._groupAction; delete cur._groupName; delete cur._groupPort; delete cur._groupEnabled;
+            writeConfigAtomically(cur);
+            const savedNextTime = autoRecoverNextTime;
+            const savedDailyNextTime = autoRecoverDailyNextTime;
+            const savedInterval = config.autoRecoverInterval;
+            const savedDailyDays = config.autoRecoverDailyDays;
+            const savedDailyHour = config.autoRecoverDailyHour;
+            const savedDailyMin = config.autoRecoverDailyMinute;
+            loadConfig();
+            applyRuntimeStoragePolicy();
+            // Sync group servers with new config
+            const newGroups = config.groups || {A: 3456};
+            // Start new groups
+            for (const [name, port] of Object.entries(newGroups)) {
+              if (!oldGroups[name] && name !== "A") {
+                startGroup(name, port).catch(e => console.error(`[proxy] Failed to start group ${name}: ${e.message}`));
+              }
+            }
+            // Stop removed groups
+            for (const name of Object.keys(oldGroups)) {
+              if (!newGroups[name] && name !== "A") {
+                stopGroup(name);
+              }
+            }
+            // Restart groups with changed port
+            for (const [name, port] of Object.entries(newGroups)) {
+              if (oldGroups[name] && oldGroups[name] !== port && name !== "A") {
+                stopGroup(name);
+                startGroup(name, port).catch(e => console.error(`[proxy] Failed to restart group ${name}: ${e.message}`));
+              }
+            }
+            if (config.autoRecover && savedNextTime > Date.now() && savedInterval === config.autoRecoverInterval) {
+              autoRecoverNextTime = savedNextTime;
+            }
+            if (config.autoRecoverDaily && savedDailyNextTime > Date.now() &&
+                savedDailyDays === config.autoRecoverDailyDays &&
+                savedDailyHour === config.autoRecoverDailyHour &&
+                savedDailyMin === config.autoRecoverDailyMinute) {
+              autoRecoverDailyNextTime = savedDailyNextTime;
+              if (autoRecoverDailyTimer) clearTimeout(autoRecoverDailyTimer);
+              scheduleDailyRecover();
+            } else if (config.autoRecoverDaily && savedDailyNextTime > 0 && savedDailyNextTime <= Date.now() &&
+                savedDailyDays === config.autoRecoverDailyDays &&
+                savedDailyHour === config.autoRecoverDailyHour &&
+                savedDailyMin === config.autoRecoverDailyMinute) {
+              if (autoRecoverDailyTimer) clearTimeout(autoRecoverDailyTimer);
+              autoRecover();
+              autoRecoverDailyNextTime = calcNextDailyRun(Date.now(), savedDailyDays, savedDailyHour, savedDailyMin);
+              scheduleDailyRecover();
+            }
+          });
           res.writeHead(200, cors);
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {

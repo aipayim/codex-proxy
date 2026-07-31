@@ -46,6 +46,7 @@ if [ ! -f "config.json" ]; then
   "webhookUrl": "",
   "prices": { "inputPer1M": 0, "outputPer1M": 0 },
   "bytesPerToken": 3,
+  "modelPricing": [],
   "notifications": { "sound": true, "desktop": true },
   "autoRecover": true,
   "autoRecoverInterval": 1,
@@ -72,6 +73,13 @@ if [ ! -f "config.json" ]; then
   "stateMaxMiB": 32,
   "proxyLogMaxMiB": 10,
   "proxyLogKeepFiles": 5,
+  "codexLogMaintenance": {
+    "enabled": false,
+    "dbPath": "",
+    "thresholdMiB": 2048,
+    "retainHours": 12,
+    "checkIntervalMinutes": 15
+  },
   "logDetail": "full",
   "logIncidents": {
     "enabled": true,
@@ -130,6 +138,12 @@ if [ "$NODE_MAJOR" -lt 16 ]; then
   exit 1
 fi
 echo "[ok] Node.js $NODE_V"
+
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' >/dev/null 2>&1; then
+  echo "[ok] Python 3 SQLite support available (optional Codex log maintenance)"
+else
+  echo "[warn] Python 3 with sqlite3 is unavailable; Codex SQLite log maintenance will stay unavailable until Python 3 is installed"
+fi
 
 # ── 4. 安装系统级服务 ─────────────────────────────────────
 echo ""
