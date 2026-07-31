@@ -1385,6 +1385,7 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-08-01 修复闲置恢复启动器失败**：闲置恢复此前每次触发都失败——`resume-codex.sh` 用 `cmd.exe /c start` 打开可见 Windows 终端时，WSL 路径（`/mnt/c/...`）以 `/` 开头会被 cmd 解析成开关（`无效开关 - "/mnt"`），`start` 立即返回退出码 1，runner 从未启动、命令从未执行。修复：启动前用 `wslpath -w` 把 WSL 路径转为 Windows 反斜杠形式再交给 `start`，并保留可见终端窗口；启动器失败时把 cmd 的 stderr（GBK 转 UTF-8）写回状态文件第 5 字段，代理将其显示为 `launcherError` 并带进 `auto_resume_launcher_failed` 事件消息。端到端实测通过：状态机 `starting → running → exited` 完整走通，命令真实执行。
 - **2026-07-31 模型级费用估算**：系统配置新增 `modelPricing` 规则数组，可按最终转发的精确模型名分别设置输入/输出单价和 `bytesPerToken`；未命中模型继续回退全局价格。每个请求在开始转发时冻结规则，后续变更不回算进行中或既有统计、趋势及历史日志费用。
 - **2026-07-31 Codex SQLite 日志维护**：系统配置新增可选的 Codex SQLite 日志维护开关、数据库路径检测、容量阈值、保留时长、检查周期和立即检查状态。启用保存前服务端会复验当前用户 `~/.codex/` 下的常规 `logs*.sqlite` 文件及 `logs(id, ts)` 结构；支持将 `\\wsl.localhost\发行版\...` / `\\wsl$\发行版\...` 自动转换为 WSL 内部路径。后台通过 Python 标准库的 SQLite 短事务限量删除过期行，忙时让步、不重启代理/watchdog/Codex CLI，且不主动执行 `VACUUM`、checkpoint 或操作 WAL/SHM。新增 SQLite 维护回归测试，Release 包包含运行 helper、继续排除所有测试源码。
 - **2026-07-31 修复下游归集崩溃循环**：修复重启后代理反复 `ReferenceError: client is not defined` 崩溃并被 watchdog 重启的问题（`forwardRequest` 中新增 `client` 变量声明并透传给 5 处 `recordRequest` 调用，日志条目复用同一值）。新增回归测试：运行时断言 `recordRequest` 正确累计 `clients` 且未定义客户端被忽略、源契约断言 `forwardRequest` 必须先声明 `client` 再调用 `recordRequest`。

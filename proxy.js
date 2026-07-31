@@ -1363,14 +1363,14 @@ function stopAutoResumeProcess(pidInfo) {
 function readAutoResumeRunnerStatus(statusFile) {
   try {
     const fields = fs.readFileSync(statusFile, "utf8").trim().split("\t");
-    const [phase, rawPid, rawUpdatedAt, rawExitCode] = fields;
+    const [phase, rawPid, rawUpdatedAt, rawExitCode, rawLauncherError] = fields;
     const allowed = new Set(["starting", "running", "exited", "failed", "terminated", "cd_failed", "launcher_failed"]);
     if (!allowed.has(phase)) return null;
     const pid = parseInt(rawPid, 10);
     const updatedAt = normalizeAutoResumeTimestamp(rawUpdatedAt);
     const exitCode = rawExitCode === "" || rawExitCode === undefined ? null : parseInt(rawExitCode, 10);
     if (!updatedAt || (rawPid && (!Number.isSafeInteger(pid) || pid < 0))) return null;
-    return { phase, pid: Number.isSafeInteger(pid) ? pid : 0, updatedAt, exitCode: Number.isSafeInteger(exitCode) ? exitCode : null };
+    return { phase, pid: Number.isSafeInteger(pid) ? pid : 0, updatedAt, exitCode: Number.isSafeInteger(exitCode) ? exitCode : null, launcherError: rawLauncherError ? String(rawLauncherError).slice(0, 200) : null };
   } catch {
     return null;
   }
@@ -1389,6 +1389,7 @@ function refreshAutoResumeProjectStatus(proj, index) {
     runnerPid: status.pid || null,
     runnerUpdatedAt: status.updatedAt,
     exitCode: status.exitCode,
+    launcherError: status.launcherError || null,
   }, true);
 
   const label = autoResumeProjectLabel(proj, index);
@@ -1397,7 +1398,7 @@ function refreshAutoResumeProjectStatus(proj, index) {
   else if (status.phase === "terminated") addEventLog("auto_resume_terminated", 0, `闲置恢复：${label} 已被下一次恢复终止`, "");
   else if (status.phase === "cd_failed") addEventLog("auto_resume_command_failed", 0, `闲置恢复：${label} 无法进入项目目录`, "");
   else if (status.phase === "failed") addEventLog("auto_resume_command_failed", 0, `闲置恢复：${label} 命令退出失败（代码 ${status.exitCode ?? "未知"}）`, "");
-  else if (status.phase === "launcher_failed") addEventLog("auto_resume_launcher_failed", 0, `闲置恢复：${label} 启动器退出失败`, "");
+  else if (status.phase === "launcher_failed") addEventLog("auto_resume_launcher_failed", 0, `闲置恢复：${label} 启动器退出失败${status.launcherError ? "（"+status.launcherError+"）" : ""}`, "");
 }
 
 function configureAutoResumeTimer() {

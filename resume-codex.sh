@@ -11,6 +11,18 @@ TITLE="${5:-Codex Resume}"
 CMD_PATH="${6:-/mnt/c/Windows/System32/cmd.exe}"
 WSL_PATH="${CODEX_RESUME_WSL_PATH:-/mnt/c/Windows/System32/wsl.exe}"
 
+# cmd.exe's `start` treats any leading "/" as a switch, so a POSIX path like
+# /mnt/c/... must be converted to its Windows backslash form before `start`.
+WSL_WIN_PATH="$WSL_PATH"
+if [[ "$WSL_WIN_PATH" == /mnt/* ]]; then
+  if command -v wslpath >/dev/null 2>&1; then
+    WSL_WIN_PATH="$(wslpath -w "$WSL_WIN_PATH" 2>/dev/null || true)"
+  fi
+  if [[ -z "$WSL_WIN_PATH" || "$WSL_WIN_PATH" == /* ]]; then
+    WSL_WIN_PATH="C:${WSL_PATH#/mnt/c}"
+  fi
+fi
+
 write_status() {
   local phase="$1"
   local pid="${2:-0}"
@@ -86,10 +98,16 @@ RUNNER
 } > "$RUNNER_FILE"
 
 chmod 700 "$RUNNER_FILE"
-"$CMD_PATH" /d /s /c start "$TITLE" "$WSL_PATH" bash -l "$RUNNER_FILE"
+CMD_OUT="$( { "$CMD_PATH" /d /s /c start "$TITLE" "$WSL_WIN_PATH" bash -l "$RUNNER_FILE"; } 2>&1 )"
 launcher_code=$?
 if (( launcher_code != 0 )); then
   write_status "launcher_failed" 0 "$launcher_code"
+  if [ -n "$CMD_OUT" ]; then
+    CMD_OUT_MSG="$(printf '%s' "$CMD_OUT" | iconv -f GBK -t UTF-8//IGNORE 2>/dev/null || true)"
+    [ -z "$CMD_OUT_MSG" ] && CMD_OUT_MSG="$CMD_OUT"
+    CMD_OUT_MSG="$(printf '%s' "$CMD_OUT_MSG" | tr '\r\n' '  ' | tr -s ' ' | cut -c1-200)"
+    printf '\t%s' "$CMD_OUT_MSG" >> "$STATUS_FILE"
+  fi
   rm -f -- "$RUNNER_FILE"
   exit "$launcher_code"
 fi
