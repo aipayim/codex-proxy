@@ -234,6 +234,21 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
   <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
   <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">💾 运行时数据上限（保存后立即裁剪状态与请求日志；WSL 控制台日志由 watchdog 轮转器在 10 秒内读取新值）</div>
+  <div style="color:#94a3b8;padding:4px 0">请求日志保留天数</div>
+  <div><input id="cfgLogRetention" type="number" min="0" max="3650" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天（0=关闭按天清理，容量上限仍有效）</div>
+  <div style="color:#94a3b8;padding:4px 0">请求日志总容量</div>
+  <div><input id="cfgLogMaxMiB" type="number" min="16" max="4096" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（所有 JSONL 分段合计）</div>
+  <div style="color:#94a3b8;padding:4px 0">请求日志单段上限</div>
+  <div><input id="cfgLogSegmentMaxMiB" type="number" min="1" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超过后同日分段）</div>
+  <div style="color:#94a3b8;padding:4px 0">状态小时统计保留</div>
+  <div><input id="cfgStateHourlyRetentionDays" type="number" min="31" max="365" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
+  <div style="color:#94a3b8;padding:4px 0">状态日统计保留</div>
+  <div><input id="cfgStateDailyRetentionDays" type="number" min="30" max="3650" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
+  <div style="color:#94a3b8;padding:4px 0">state.json 容量上限</div>
+  <div><input id="cfgStateMaxMiB" type="number" min="4" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超限时删除最旧统计桶）</div>
+  <div style="color:#94a3b8;padding:4px 0">WSL proxy.log</div>
+  <div><input id="cfgProxyLogMaxMiB" type="number" min="1" max="100" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgProxyLogKeepFiles" type="number" min="1" max="20" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 个归档（systemd 使用 journald）</div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 分钟级限速</div>
   <div style="color:#94a3b8;padding:4px 0">每分钟请求上限</div>
   <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
@@ -339,6 +354,14 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoCodes").value=(c.autoRecoverCodes||[401,402,403,429,500,502,503,504]).join(",");
     document.getElementById("cfgAutoDiscarded").checked=c.autoRecoverDiscarded===true;
     document.getElementById("cfgRoundRobin").checked=c.roundRobin===true;
+    document.getElementById("cfgLogRetention").value=c.logRetentionDays??7;
+    document.getElementById("cfgLogMaxMiB").value=c.logMaxMiB??256;
+    document.getElementById("cfgLogSegmentMaxMiB").value=c.logSegmentMaxMiB??16;
+    document.getElementById("cfgStateHourlyRetentionDays").value=c.stateHourlyRetentionDays??35;
+    document.getElementById("cfgStateDailyRetentionDays").value=c.stateDailyRetentionDays??180;
+    document.getElementById("cfgStateMaxMiB").value=c.stateMaxMiB??32;
+    document.getElementById("cfgProxyLogMaxMiB").value=c.proxyLogMaxMiB??10;
+    document.getElementById("cfgProxyLogKeepFiles").value=c.proxyLogKeepFiles??5;
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
     try{
@@ -968,6 +991,7 @@ async function loadLogs(){
 
 function openConfig(){loadConfigUI();document.getElementById("configModal").classList.add("on")}
 function closeConfig(){document.getElementById("configModal").classList.remove("on")}
+function configInteger(id,fallback){const value=parseInt(document.getElementById(id).value,10);return Number.isFinite(value)?value:fallback}
 async function saveConfig(){
   const c={
     prices:{inputPer1M:parseFloat(document.getElementById("cfgPriceIn").value)||0,outputPer1M:parseFloat(document.getElementById("cfgPriceOut").value)||0},
@@ -979,6 +1003,14 @@ async function saveConfig(){
     autoRecoverCodes:(document.getElementById("cfgAutoCodes").value||"").split(",").map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)),
     autoRecoverDiscarded:document.getElementById("cfgAutoDiscarded").checked,
     roundRobin:document.getElementById("cfgRoundRobin").checked,
+    logRetentionDays:configInteger("cfgLogRetention",7),
+    logMaxMiB:configInteger("cfgLogMaxMiB",256),
+    logSegmentMaxMiB:configInteger("cfgLogSegmentMaxMiB",16),
+    stateHourlyRetentionDays:configInteger("cfgStateHourlyRetentionDays",35),
+    stateDailyRetentionDays:configInteger("cfgStateDailyRetentionDays",180),
+    stateMaxMiB:configInteger("cfgStateMaxMiB",32),
+    proxyLogMaxMiB:configInteger("cfgProxyLogMaxMiB",10),
+    proxyLogKeepFiles:configInteger("cfgProxyLogKeepFiles",5),
     maxRequestsPerMin:parseInt(document.getElementById("cfgMaxReqPerMin").value)||10,
     maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0
   };

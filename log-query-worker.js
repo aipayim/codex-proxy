@@ -4,9 +4,9 @@ const fs = require("fs");
 const path = require("path");
 const { parentPort, workerData } = require("worker_threads");
 
-const DAY_FILE_RE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
+const LOG_FILE_RE = /^(\d{4}-\d{2}-\d{2})(?:\.(\d{1,6}))?\.jsonl$/;
 const CHUNK_SIZE = 64 * 1024;
-const MAX_DIMENSION_VALUES = { upstream: 32, model: 48, path: 32, group: 16, key: 256 };
+const MAX_DIMENSION_VALUES = { upstream: 32, model: 48, path: 32, group: 16, key: 64 };
 const LATENCY_BOUNDS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, 120000, 300000, 900000, 1800000];
 
 function emptyHistogram() {
@@ -113,19 +113,32 @@ function parseLine(buffer) {
   try { return JSON.parse(trimmed); } catch { return null; }
 }
 
+function parseLogFileName(name) {
+  const match = LOG_FILE_RE.exec(String(name || ""));
+  if (!match) return null;
+  const startedAt = Date.parse(`${match[1]}T00:00:00.000Z`);
+  if (!Number.isFinite(startedAt)) return null;
+  return {
+    name: String(name),
+    day: match[1],
+    startedAt,
+    segment: match[2] ? Number(match[2]) : Number.MAX_SAFE_INTEGER,
+  };
+}
+
 function listLogFiles(logDir, query) {
   let files = [];
   try {
-    files = fs.readdirSync(logDir).filter(name => DAY_FILE_RE.test(name)).sort().reverse();
+    files = fs.readdirSync(logDir)
+      .map(parseLogFileName)
+      .filter(Boolean)
+      .sort((left, right) => right.startedAt - left.startedAt || right.segment - left.segment || right.name.localeCompare(left.name));
   } catch {
     return [];
   }
   const since = Number.isFinite(query.since) ? query.since : 0;
   const until = Number.isFinite(query.until) ? query.until : Number.MAX_SAFE_INTEGER;
-  return files.filter(file => {
-    const start = Date.parse(`${file.slice(0, 10)}T00:00:00.000Z`);
-    return !Number.isFinite(start) || (start <= until && start + 86400000 >= since);
-  });
+  return files.filter(file => file.startedAt <= until && file.startedAt + 86400000 >= since);
 }
 
 function statusMatches(value, filter) {
@@ -151,7 +164,7 @@ function matchesQuery(entry, query) {
   if (query.group && String(entry.group || "A").toUpperCase() !== query.group.toUpperCase()) return false;
   if (query.q) {
     const needle = query.q.toLowerCase();
-    const haystack = [entry.message, entry.url, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason]
+    const haystack = [entry.message, entry.url, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource]
       .map(value => String(value || "").toLowerCase()).join("\n");
     if (!haystack.includes(needle)) return false;
   }
@@ -234,7 +247,7 @@ function runQuery(data) {
   const budget = { bytes: 0, maxBytes: Math.max(CHUNK_SIZE, Number(data.maxScanBytes) || 64 * 1024 * 1024) };
   let fileIndex = 0;
   if (query.cursor && typeof query.cursor.file === "string") {
-    const cursorIndex = files.indexOf(query.cursor.file);
+    const cursorIndex = files.findIndex(file => file.name === query.cursor.file);
     if (cursorIndex < 0) return { entries: [], nextCursor: null, hasMore: false, truncated: false, scannedBytes: 0, filesAvailable: files.length, filesScanned: 0, stats: pageStats([]) };
     fileIndex = cursorIndex;
   }
@@ -244,7 +257,7 @@ function runQuery(data) {
   let filesScanned = 0;
   for (; fileIndex < files.length; fileIndex++) {
     const file = files[fileIndex];
-    const filePath = path.join(data.logDir, file);
+    const filePath = path.join(data.logDir, file.name);
     const start = query.cursor && fileIndex === firstFileIndex ? query.cursor.position : undefined;
     let result;
     filesScanned++;
@@ -253,14 +266,14 @@ function runQuery(data) {
         if (!matchesQuery(entry, query)) return false;
         entries.push(entry);
         if (entries.length < limit) return false;
-        nextCursor = { file, position: resumePosition };
+        nextCursor = { file: file.name, position: resumePosition };
         return true;
       }, budget);
     } catch {
       continue;
     }
     if (result.limited) {
-      nextCursor = { file, position: result.nextPosition };
+      nextCursor = { file: file.name, position: result.nextPosition };
       truncated = true;
       break;
     }
@@ -269,7 +282,7 @@ function runQuery(data) {
       // next older file so the caller does not receive a misleading empty page.
       if (result.nextPosition <= 0) {
         const nextFile = files[fileIndex + 1];
-        nextCursor = nextFile ? { file: nextFile, position: Number.MAX_SAFE_INTEGER } : null;
+        nextCursor = nextFile ? { file: nextFile.name, position: Number.MAX_SAFE_INTEGER } : null;
       }
       break;
     }
@@ -291,10 +304,9 @@ function runSummary(data) {
   const excludedDays = new Set(Array.isArray(data.excludeDays) ? data.excludeDays.map(value => String(value)) : []);
   const days = {};
   for (const file of files) {
-    if (excludedDays.has(file.slice(0, 10))) continue;
-    const aggregate = createAggregate();
-    try { scanFileForward(path.join(data.logDir, file), entry => addEntryToAggregate(aggregate, entry)); } catch { continue; }
-    days[file.slice(0, 10)] = aggregate;
+    if (excludedDays.has(file.day)) continue;
+    if (!days[file.day]) days[file.day] = createAggregate();
+    try { scanFileForward(path.join(data.logDir, file.name), entry => addEntryToAggregate(days[file.day], entry)); } catch { continue; }
   }
   return { days };
 }

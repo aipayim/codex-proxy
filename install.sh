@@ -65,6 +65,13 @@ if [ ! -f "config.json" ]; then
   "enableAutoLock": true,
   "logFile": true,
   "logRetentionDays": 7,
+  "logMaxMiB": 256,
+  "logSegmentMaxMiB": 16,
+  "stateHourlyRetentionDays": 35,
+  "stateDailyRetentionDays": 180,
+  "stateMaxMiB": 32,
+  "proxyLogMaxMiB": 10,
+  "proxyLogKeepFiles": 5,
   "logDetail": "full",
   "logIncidents": {
     "enabled": true,
@@ -95,7 +102,7 @@ else
 fi
 
 if [ ! -f "state.json" ]; then
-  echo '{"keys":[],"activeKey":null,"dailyLog":{}}' > state.json
+  echo '{"keys":[],"activeKey":null}' > state.json
   echo "[ok] Created empty state.json"
 else
   echo "[ok] state.json already exists (skip)"

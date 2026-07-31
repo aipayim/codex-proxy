@@ -36,12 +36,14 @@ codex-proxy/
 ├── package.json          # npm 依赖（仅 ws）
 ├── build-release.js      # 生成带来源及完整性元数据的发布资产
 ├── log-query-worker.js   # 历史 JSONL 查询与汇总 Worker（不阻塞代理主线程）
+├── proxy-log-rotator.js  # WSL watchdog 控制台日志分段轮转器
 ├── test-release-provenance.js # 发布来源判定回归测试
 ├── test-stream-lifecycle.js # Responses 流终态回归测试
 ├── test-restart-lifecycle.js # 重启排空、取消与强制重启回归测试
 ├── test-auto-resume-lifecycle.js # Key 心跳闲置恢复与 watchdog 重载回归测试
 ├── test-log-operations-lifecycle.js # 日志游标、汇总与事件处置回归测试
-├── logs/                 # 自动生成，按天滚动的 JSONL 日志及本地汇总/事件 sidecar（保留 N 天）
+├── test-runtime-storage-lifecycle.js # state/JSONL/proxy.log 容量治理回归测试
+├── logs/                 # 自动生成，按天分段的 JSONL 日志及本地汇总/事件 sidecar
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
 ├── resume-codex.sh       # autoResume 辅助脚本：通过 cmd.exe 创建 Windows 可见终端运行 wsl 命令
@@ -67,8 +69,10 @@ GitHub 源码仓库保留构建器和全部回归测试，供发布维护者在�
 | `test-restart-lifecycle.js` | 重启生命周期回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-auto-resume-lifecycle.js` | Key 心跳闲置恢复与 watchdog 重载回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-log-operations-lifecycle.js` | 日志查询、汇总与事件处置回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-runtime-storage-lifecycle.js` | 状态、请求日志和控制台日志容量治理回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `proxy.js` | 核心代理（含内嵌面板） | 复制到目标目录即可 |
 | `log-query-worker.js` | 历史日志查询与汇总 Worker | 必须与 `proxy.js` 同级 |
+| `proxy-log-rotator.js` | WSL `proxy.log` 分段轮转器 | 必须与 `watchdog.sh` 同级 |
 | `dashboard.html` | 独立面板备用 | 同目录放置 |
 | `package.json` | npm 依赖声明 | 复制后 `npm install` |
 | `watchdog.sh` | 进程守护（WSL2） | 复制到同目录；脚本自动以自身位置作为代理目录 |
@@ -456,14 +460,16 @@ codex
 ### 趋势图
 24 小时 / 7 天 / 30 天切换，每小时柱状图，X 轴标签密度自适配。
 屏蔽 Key 的流量也纳入趋势图统计。
-点击标签切换趋势模式，共 6 种：
+点击标签切换趋势模式，共 8 种：
 
 | 标签 | 说明 |
 |------|------|
 | 📊 模型 | 堆叠柱状图，按模型分色显示各模型请求数占比，最多显示前 8 个模型，其余归入「其他」，默认显示 |
 | 📊 流量 | 按字节数显示流量趋势，悬停查看上下行流量及 Key 级明细 |
 | 📈 次数 | 按请求数显示次数趋势 |
-| 💚 健康 | 堆叠柱状图，分色显示 200（绿）/ 4xx（黄）/ 5xx（红）/ 失败（灰） |
+| 💚 健康 | 堆叠柱状图，分色显示 200（绿）/ 4xx（黄）/ 5xx（红）/ 失败（灰），反映上游 HTTP 状态码分布 |
+| 🔺 上游 | 堆叠柱状图，按 Key 的上游域名归集显示各上游使用次数，悬停查看域名 + #Key 列表及次数，最多显示前 8 个域名，其余归入「其他」 |
+| 🔻 下游 | 堆叠柱状图，反映流终态分布：完成/客户端断开/超时/容量不足/配额不足/上游错误，悬停按 Key 列出各上游（#序号 + 域名）的终态次数 |
 | 💰 费用 | 按小时预估费用（USD），悬停查看精确值 |
 | ⏱ 延迟 | 按小时平均延迟，悬停查看具体值及请求数 |
 
@@ -491,11 +497,26 @@ codex
 
 `GET /__logs` 返回 `{ entries, stats, overview, mode, hasMore, nextCursor, truncated }`：无筛选时为 `recent`，内存不足会补齐已保存的日志尾部；有筛选/游标/时间范围时为 `history`。`recent` 响应还会带 `source`、`historyChecked`、`historyUnavailable`、`historyFilesAvailable` 和 `historyFilesScanned`；`history` 响应带 `filesAvailable` 和 `filesScanned`。这些字段分别说明是否包含保存历史、是否完成尾部检查、Worker 是否暂不可用，以及发现/实际扫描的符合格式的日志文件数。`overview` 是服务端汇总；`truncated=true` 表示本页触及扫描边界，应缩小筛选范围或继续使用时间/维度筛选。
 
+### 运行时数据治理
+
+运行时文件不会再无限增长。治理在代理进程内执行，不关闭监听端口、不重启 watchdog，也不会暂停正在传输的请求：
+
+| 文件 | 默认策略 | 说明 |
+|---|---|---|
+| `state.json` | 小时桶 35 天、日桶 180 天、文件上限 32 MiB | 过期桶和超限时最旧的完整时间桶会被裁剪；保存使用临时文件原子替换，并每小时写入 `state.json.bak`。备份仅用于损坏恢复，不参与趋势统计。 |
+| `logs/YYYY-MM-DD*.jsonl` | 按天保留 7 天、所有分段合计 256 MiB、单段 16 MiB | 同日超限生成编号分段；按天清理和总容量清理同时生效。`logRetentionDays=0` 只关闭按天删除，容量上限仍生效。单条日志超过 512 KiB 会被截断为有限诊断字段或丢弃。 |
+| `logs/.log-summary.json` | 8 MiB | 只保留最近汇总桶；它是统计加速缓存，缺失时可由 Worker 重建，不是原始日志。 |
+| WSL `proxy.log` | 当前段 10 MiB，另保留 5 个归档 | `proxy-log-rotator.js` 通过管道写入并轮转为 `proxy.log.1` 等文件，配置每 10 秒重新读取。旧的超大单文件首次启动时会迁移为有界尾部。systemd 部署使用 journald，不使用该文件。 |
+
+点击「系统配置」保存后会立即执行一次状态压缩和请求日志清理；WSL 控制台日志的新容量值最迟约 10 秒生效。轮转器是 WSL watchdog 的必需运行文件，缺失时 watchdog 会拒绝以无界方式启动代理，而不会把输出重新追加到无限增长的 `proxy.log`。
+
+这些操作不等同于重启代理。若正在运行的实例尚未加载本次源码变更，需在合适的维护窗口人工重启后才会使用新代码；重启本身仍可能中断活跃流，不能用来安全“暂停并恢复”任意 Codex CLI 任务。
+
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -559,7 +580,9 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 若上游在 `[DONE]` 前 EOF、关闭连接、发生错误、空闲超时或达到响应流最大时长，代理会输出 `response.failed`，绝不会伪造 `response.completed`。这使 Codex CLI 能得到明确的失败终态，而不是把不完整响应误判为任务成功。
 
-每个转换请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone` 和 `streamId`，并额外写入一条 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_close`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`client_disconnect`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
+每个转换请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone`、`streamId` 和 `streamErrorMsg`，并额外写入一条带 `url`（上游地址）与 `streamErrorMsg` 的 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_close`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`client_disconnect`、`model_at_capacity`、`insufficient_quota`、`upstream_api_error`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
+
+上游在 SSE 流内或非 2xx HTTP 错误体内返回的错误对象（例如 `Selected model is at capacity. Please try a different model.`、`You exceeded your current quota` 等）不再被静默丢弃：代理会把限长并脱敏后的错误信息记入 `streamErrorMsg`，同时按内容归类为 `model_at_capacity` / `insufficient_quota` / `upstream_api_error`。SSE 错误会向 Codex CLI 输出 `response.failed`；如果一个请求的所有可用 Key 均失败且最终返回 `502`，代理还会写入 `downstream_terminal` 事件。自动切换到其他 Key 后成功不会产生该事件，也不会算作下游失败。日志列表、全文检索和 CSV 可查看错误分类、信息及来源；趋势图「🔻 下游」按小时展示持久化的流终态与最终下游失败，悬停可定位是哪个上游（#序号 + 域名）出现容量、配额或上游错误。代理只能记录实际经过代理的 HTTP/SSE 内容，无法读取 Codex CLI 本地终端中未经过代理的提示。
 
 出现 Codex CLI 的 `stream disconnected before completion` 后，先检查工作区和日志，确认是否已有部分文件修改、命令执行或工具调用结果；不要盲目重放整个编码任务。此类改动在代理重启后生效，应等待所有在途 CLI 任务结束，再在维护窗口重启。
 
@@ -756,6 +779,13 @@ npm run build:release -- --tag v1.2.3 --out ./dist
   "lockFailCodes": ["401","403"],
   "logFile": true,
   "logRetentionDays": 7,
+  "logMaxMiB": 256,
+  "logSegmentMaxMiB": 16,
+  "stateHourlyRetentionDays": 35,
+  "stateDailyRetentionDays": 180,
+  "stateMaxMiB": 32,
+  "proxyLogMaxMiB": 10,
+  "proxyLogKeepFiles": 5,
   "logDetail": "full",
   "logIncidents": {
     "enabled": true,
@@ -816,6 +846,13 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `lockFailCodes` | 只有这些错误码会计入连续失败计数（默认 `["401","403"]`） |
 | `logFile` | 是否启用文件日志（true/false，默认 true）。关闭后仅内存缓存 2000 条，不再写入新日志；已有 JSONL 仍可在日志查看器中查询和导出 |
 | `logRetentionDays` | 日志文件保留天数（默认 7）。设为 0 关闭自动清理 |
+| `logMaxMiB` | 请求 JSONL 文件总容量上限（默认 256 MiB，范围 16–4096）。按最旧分段删除，独立于按天保留 |
+| `logSegmentMaxMiB` | 单个请求 JSONL 分段上限（默认 16 MiB，范围 1–256，不能超过 `logMaxMiB`）。同一天超过后写入编号分段 |
+| `stateHourlyRetentionDays` | `state.json` 小时统计保留天数（默认 35，范围 31–365） |
+| `stateDailyRetentionDays` | `state.json` 日统计保留天数（默认 180，范围 30–3650） |
+| `stateMaxMiB` | `state.json` 容量上限（默认 32 MiB，范围 4–256）。超限时按完整时间桶删除最旧统计，并通过临时文件原子替换 |
+| `proxyLogMaxMiB` | WSL watchdog 当前 `proxy.log` 分段上限（默认 10 MiB，范围 1–100） |
+| `proxyLogKeepFiles` | WSL watchdog 保留的 `proxy.log.N` 归档数（默认 5，范围 1–20）；总量约为当前段加这些归档 |
 | `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
 | `logIncidents` | 日志事件规则对象。可配置是否启用/通知、观察窗口、最低请求数、失败次数及失败率、流失败次数、可选 P95 请求/首字节阈值、自动恢复时间和默认静默分钟数；默认只告警，不会自动暂停分组、重启或变更 Key |
 | `updateBaselineTag` | 高级可选项。定制构建的已人工确认上游稳定 Release Tag，格式 `vX.Y.Z` 或 `X.Y.Z`。官方发布资产和干净官方 Git Tag 自动识别，无需填写；来源未知的定制构建留空时只显示 Release 信息，不比较更新 |
@@ -1304,6 +1341,9 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-07-31 趋势图上游归集与健康恢复**：趋势图新增「🔺 上游」模式，按 Key 的上游域名归集显示各上游使用次数（最多前 8 个域名，其余归入「其他」，悬停查看域名 + #Key 列表 + 次数）；原状态码分布恢复为「💚 健康」标签，两种上游/下游语义不再混用，标签顺序为 模型/流量/次数/健康/上游/下游/费用/延迟。
+- **2026-07-31 运行时数据治理**：新增 `state.json` 小时/日统计裁剪、容量上限与原子备份恢复；请求 JSONL 按天分段并同时受保留期和总容量限制；`.log-summary.json` 有界；WSL watchdog 新增 `proxy-log-rotator.js` 控制台日志轮转及旧大文件迁移。保存系统配置后立即执行清理，缺失轮转器时不再回退到无限追加 `proxy.log`。
+- **2026-07-31 上游错误捕获与下游流终态趋势**：Responses→Chat 转换不再静默丢弃上游 SSE 或非 2xx HTTP 错误体；错误信息会限长脱敏，记录为 `streamErrorMsg` 并按内容归类为 `model_at_capacity`（容量不足）、`insufficient_quota`（配额不足）、`upstream_api_error`（其他上游错误）。SSE 错误明确输出 `response.failed`；全部候选 Key 最终失败并返回 `502` 时新增 `downstream_terminal`，自动回退成功不误报为下游失败。日志、CSV 和历史全文检索新增错误分类/来源字段；趋势图「🔻 下游」按小时展示持久化的流终态与最终下游失败，悬停定位具体上游。后端补充 HTTP 错误体脱敏、容量分类、历史检索和回退语义回归测试。
 - **2026-07-30 日志查询与事件处置**：默认日志视图优先使用内存尾部 50 条；代理重启后内存不足时由受限 Worker 补齐已保存的日志尾部，避免误以为历史日志被清空。修复未填写时间范围被误解析为 Unix 时间 0、导致历史与内存日志同时被筛空的问题。历史筛选、游标分页和导出同样由 Worker 反向扫描 JSONL，取消主线程全量计数/读取。新增分钟与日汇总、首次缺失时后台重建、按需 WebSocket 订阅及 350ms 批量刷新。新增按上游/模型/路径/分组的日志事件中心，可确认、静默、发送通知，并可人工临时暂停或恢复分组；不会自动修改 Key 或重启代理。
 - **2026-07-29 Release 运行时精简**：构建产物不再包含构建器或任何回归测试；Release 内的 `package.json` 移除源码专用脚本，测试和构建固定在 GitHub 源码仓库完成。
 - **2026-07-28 可取消与强制重启控制**：安全重启排空阶段新增取消控制，恢复新请求接入但不虚假恢复已拒绝的排队请求；排空满 30 秒后才允许二次确认强制重启。强制重启明确记录和提示会中断活跃流，新增重启生命周期回归测试，并同步独立备用面板。

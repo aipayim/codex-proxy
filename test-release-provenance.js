@@ -97,6 +97,8 @@ function testReleaseArtifact(releaseDir) {
   assert.ok(manifest.files["proxy.js"]);
   assert.ok(fs.existsSync(path.join(releaseDir, "log-query-worker.js")));
   assert.ok(manifest.files["log-query-worker.js"]);
+  assert.ok(fs.existsSync(path.join(releaseDir, "proxy-log-rotator.js")));
+  assert.ok(manifest.files["proxy-log-rotator.js"]);
   for (const privateFile of ["config.json", "keys.json", "state.json", "proxy.log", "proxy.pid"]) {
     assert.ok(!fs.existsSync(path.join(releaseDir, privateFile)), `release must not contain ${privateFile}`);
   }

@@ -9,8 +9,8 @@ WorkingDirectory={{PROXY_DIR}}
 ExecStart=/usr/bin/node --max-old-space-size=8192 {{PROXY_DIR}}/proxy.js
 Restart=always
 RestartSec=5
-StandardOutput=append:{{PROXY_DIR}}/proxy.log
-StandardError=append:{{PROXY_DIR}}/proxy.log
+StandardOutput=journal
+StandardError=journal
 Environment=NODE_ENV=production
 
 [Install]

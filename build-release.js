@@ -21,6 +21,7 @@ const RELEASE_CONTENT_FILES = [
   "edit-keys.sh",
   "codex-proxy.service",
   "log-query-worker.js",
+  "proxy-log-rotator.js",
 ];
 const RELEASE_INTEGRITY_FILES = [
   "proxy.js",
@@ -34,8 +35,9 @@ const RELEASE_INTEGRITY_FILES = [
   "edit-keys.sh",
   "codex-proxy.service",
   "log-query-worker.js",
+  "proxy-log-rotator.js",
 ];
-const REQUIRED_INTEGRITY_FILES = ["proxy.js", "package.json", "log-query-worker.js"];
+const REQUIRED_INTEGRITY_FILES = ["proxy.js", "package.json", "log-query-worker.js", "proxy-log-rotator.js"];
 
 function fail(message) {
   throw new Error(message);

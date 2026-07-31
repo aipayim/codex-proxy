@@ -103,6 +103,25 @@ async function testRecentHistoryTail(logDir) {
   assert.strictEqual(result.filesScanned, 2, "recent fallback must report files it scanned");
 }
 
+async function testPersistedErrorMessageSearch(logDir) {
+  const time = Date.UTC(2026, 6, 31, 12, 0, 0);
+  writeJsonl(logDir, "2026-07-31", [
+    request("capacity", time, {
+      status: 429,
+      upstreamErrorReason: "model_at_capacity",
+      streamErrorMsg: "Selected model is at capacity. Please try a different model.",
+    }),
+  ]);
+  const result = await runWorker({
+    kind: "query",
+    logDir,
+    query: { limit: 50, q: "at capacity" },
+    maxLimit: 100,
+    maxScanBytes: 1024 * 1024,
+  });
+  assert.deepStrictEqual(result.entries.map(entry => entry.id), ["capacity"], "persisted upstream error text must be searchable after restart");
+}
+
 function testRecentMemoryHistoryMerge() {
   const source = fs.readFileSync(path.join(ROOT, "proxy.js"), "utf8");
   const start = source.indexOf("function logEntryFingerprint(entry)");
@@ -146,7 +165,9 @@ function testSourceContracts() {
   assert.match(source, /LOG_FAST_PAGE_SIZE = 50/);
   assert.match(source, /if \(!summaryWasLoaded && LOG_FILE_ENABLED\)/);
   assert.match(source, /excludeDays: \[getLogDateKey\(Date\.now\(\)\)\]/);
-  assert.match(source, /if \(logCleanupInFlight \|\| LOG_RETENTION_DAYS <= 0\) return;/);
+  assert.match(source, /if \(logCleanupInFlight \|\| logRotationInFlight\) return Promise\.resolve\(false\);/);
+  assert.match(source, /const expired = LOG_RETENTION_DAYS > 0/);
+  assert.match(source, /const budgetBytes =/);
   assert.match(source, /function mergeRecentLogEntries\(memoryEntries, historicalEntries, limit\)/);
   assert.match(source, /if \(value == null \|\| String\(value\)\.trim\(\) === ""\) return undefined;/);
   assert.match(source, /const fallbackQuery = \{ \.\.\.query, mode: "history", cursor: null, limit: LOG_HISTORY_MAX_LIMIT \};/);
@@ -155,6 +176,8 @@ function testSourceContracts() {
   assert.match(source, /historyUnavailable/);
   assert.match(source, /historyFilesAvailable/);
   assert.match(source, /logRecentSource/);
+  assert.match(source, /streamErrorMsg, entry\.upstreamErrorReason, entry\.terminalSource/);
+  assert.match(source, /"upstreamErrorReason", "streamErrorMsg", "terminalSource"/);
   assert.match(source, /\.btn:disabled\{cursor:not-allowed;opacity:\.55\}/);
   assert.match(source, /id="logBrowseHistoryBtn"/);
   assert.match(source, /function toggleLogHistory\(\)/);
@@ -165,6 +188,18 @@ function testSourceContracts() {
   assert.doesNotMatch(source, /_logCache/);
   assert.doesNotMatch(source, /countAllEntries/);
   assert.doesNotMatch(source, /logWrittenCount/);
+  assert.match(source, /data-mode="health" onclick="setTrendMode\('health'\)">💚 健康<\/span><span class="trend-tab" data-mode="upstream" onclick="setTrendMode\('upstream'\)">🔺 上游<\/span><span class="trend-tab" data-mode="downstream"/);
+  assert.match(source, /urls:\{\},urlsKeys:\{\}\};\n  \}\n  const allModels=\{\};\n  const allUrls=\{\};/);
+  assert.match(source, /try\{ uKey=new URL\(a\.url\)\.hostname; \}catch\(e\)\{ uKey=a\.url; \}/);
+  assert.match(source, /h\.urls\[uKey\]=\s*\(h\.urls\[uKey\]\|\|0\)/);
+  assert.match(source, /}else if\(trendMode==="health"\)\{\n    vals=keys\.map\(k=>\{const s=hMap\[k\]\.status;return\(s\.ok\|\|0\)/);
+  assert.match(source, /}else if\(trendMode==="upstream"\)\{\n    vals=keys\.map\(k=>\{const u=hMap\[k\]\.urls\|\|\{\};return Object\.values\(u\)\.reduce\(\(s,n\)=>s\+n,0\);\}\);/);
+  assert.match(source, /}else if\(trendMode==="upstream"\)\{\n    const sortedUrls=Object\.keys\(allUrls\)\.sort\(\(a,b\)=>allUrls\[b\]-allUrls\[a\]\);/);
+  assert.match(source, /const topUrls=sortedUrls\.slice\(0,8\);/);
+  assert.match(source, /urlColorMap\["\(其他\)"\]="#6b7280";/);
+  assert.match(source, /lines\.push\("  "\+u\+" \(#"\+uk\.join\(",#"\)\+"\): "\+uv\+"次"\);/);
+  assert.match(source, /allUrls\["\(其他\)"\]=otherTotal;/);
+  assert.match(source, /trendLegend/);
 }
 
 async function main() {
@@ -173,6 +208,7 @@ async function main() {
     await testCursorPagination(tempDir);
     await testFilteredHistoryAndSummary(tempDir);
     await testRecentHistoryTail(tempDir);
+    await testPersistedErrorMessageSearch(tempDir);
     testRecentMemoryHistoryMerge();
     testUnfilteredLogQueryTimeBounds();
     testSourceContracts();

@@ -29,6 +29,7 @@ const LOG_DIR = path.join(__dirname, "logs");
 const LOG_QUERY_WORKER_FILE = path.join(__dirname, "log-query-worker.js");
 const LOG_SUMMARY_FILE = path.join(LOG_DIR, ".log-summary.json");
 const LOG_INCIDENT_STATE_FILE = path.join(LOG_DIR, ".log-incidents.json");
+const LOG_FILE_NAME_RE = /^(\d{4}-\d{2}-\d{2})(?:\.(\d{1,6}))?\.jsonl$/;
 const PID_FILE = path.join(__dirname, "proxy.pid");
 const UPSTREAM_REPOSITORY = "aipayim/codex-proxy";
 const UPSTREAM_REPOSITORY_URL = "https://github.com/aipayim/codex-proxy";
@@ -52,8 +53,9 @@ const RELEASE_INTEGRITY_FILES = new Set([
   "edit-keys.sh",
   "codex-proxy.service",
   "log-query-worker.js",
+  "proxy-log-rotator.js",
 ]);
-const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json", "log-query-worker.js"]);
+const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json", "log-query-worker.js", "proxy-log-rotator.js"]);
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_CHECK_MIN_REFRESH_MS = 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 8000;
@@ -71,7 +73,40 @@ const LOG_SUMMARY_PERSIST_DELAY_MS = 30000;
 const LOG_INCIDENT_PERSIST_DELAY_MS = 3000;
 const LOG_INCIDENT_EVALUATION_DELAY_MS = 3000;
 const LOG_LATENCY_BOUNDS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, 120000, 300000, 900000, 1800000];
-const LOG_DIMENSION_LIMITS = { upstream: 32, model: 48, path: 32, group: 16, key: 256 };
+const LOG_DIMENSION_LIMITS = { upstream: 32, model: 48, path: 32, group: 16, key: 64 };
+const UPSTREAM_ERROR_CAPTURE_MAX_BYTES = 16 * 1024;
+const UPSTREAM_ERROR_CAPTURE_TIMEOUT_MS = 5000;
+const LOG_ERROR_MESSAGE_MAX_CHARS = 300;
+const DEFAULT_STATE_HOURLY_RETENTION_DAYS = 35;
+const DEFAULT_STATE_DAILY_RETENTION_DAYS = 180;
+const STATE_HOURLY_RETENTION_MIN_DAYS = 31;
+const STATE_HOURLY_RETENTION_MAX_DAYS = 365;
+const STATE_DAILY_RETENTION_MIN_DAYS = 30;
+const STATE_DAILY_RETENTION_MAX_DAYS = 3650;
+const DEFAULT_STATE_MAX_MIB = 32;
+const STATE_MAX_MIB_MIN = 4;
+const STATE_MAX_MIB_LIMIT = 256;
+const STATE_HOURLY_MODEL_LIMIT = 12;
+const STATE_HOURLY_MODEL_NAME_MAX_CHARS = 160;
+const STATE_HOURLY_OTHER_MODEL = "(其他)";
+const STATUS_HOURLY_BUCKET_LIMIT = 31 * 24 + 48;
+const STATUS_DAILY_BUCKET_LIMIT = 35;
+const RATE_WINDOW_MS = 60000;
+const STATE_COMPACTION_INTERVAL_MS = 10 * 60 * 1000;
+const STATE_COMPACTION_BUCKET_ADD_THRESHOLD = 100;
+const DEFAULT_PROXY_LOG_MAX_MIB = 10;
+const DEFAULT_PROXY_LOG_KEEP_FILES = 5;
+const PROXY_LOG_MAX_MIB_LIMIT = 100;
+const PROXY_LOG_KEEP_FILES_LIMIT = 20;
+const DEFAULT_LOG_MAX_MIB = 256;
+const LOG_MAX_MIB_MIN = 16;
+const LOG_MAX_MIB_LIMIT = 4096;
+const DEFAULT_LOG_SEGMENT_MAX_MIB = 16;
+const LOG_SEGMENT_MAX_MIB_MIN = 1;
+const LOG_SEGMENT_MAX_MIB_LIMIT = 256;
+const LOG_SUMMARY_MAX_BYTES = 8 * 1024 * 1024;
+const LOG_SUMMARY_MEASURE_INTERVAL = 30;
+const LOG_ENTRY_MAX_BYTES = 512 * 1024;
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
 let LOG_DETAIL = "full";
@@ -102,10 +137,14 @@ function isBailian(url) { return supportsCacheControl(url); }
 // --- End protocol hosts ---
 let logStream = null;
 let logDate = null;
+let logStreamBytes = 0;
+let logRotationInFlight = false;
+const pendingLogLines = [];
+let lastLogWriteDropWarningAt = 0;
 let logCleanupInFlight = false;
 
 let accounts = [];
-let state = { keys: [], activeKey: null, dailyLog: {} };
+let state = { keys: [], activeKey: null };
 const activeRequests = {};
 const requestLog = [];
 const slidingWindows = {};
@@ -125,7 +164,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, updateBaselineTag: "", logIncidents: {} };
+let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {} };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -169,6 +208,11 @@ let _boostBatchMode = "";
 let _boostBatchCursor = 0;
 let _boostBatchPool = [];
 let _boostBatchPoolIdx = 0;
+let lastStateCompactionAt = 0;
+let stateBucketAddsSinceCompaction = 0;
+let lastStateBudgetWarningAt = 0;
+let lastLogSummaryBudgetWarningAt = 0;
+let stateStatusBucketSelectionCache = new WeakMap();
 
 function getActiveRequestCount() {
   return Object.values(activeRequests).reduce((sum, requests) => sum + (Array.isArray(requests) ? requests.length : 0), 0);
@@ -669,7 +713,8 @@ setInterval(() => {
   const qcut = Date.now() - 30000;
   requestQueue = requestQueue.filter(r => r.time > qcut && !r.clientRes.destroyed);
   cleanOldLogs();
-  pruneLogRollups();
+  if (pruneLogRollups()) scheduleLogSummaryPersist();
+  if (compactState()) scheduleStateSave();
   scheduleLogIncidentEvaluation();
 }, 600000); // every 10 minutes
 
@@ -677,6 +722,7 @@ function loadConfig() {
   try {
     const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
     const c = JSON.parse(raw);
+    normalizeRuntimeStorageConfig(c);
     if (c.webhookUrl) config.webhookUrl = c.webhookUrl;
     if (c.prices) { config.prices.inputPer1M = c.prices.inputPer1M || 0; config.prices.outputPer1M = c.prices.outputPer1M || 0; }
     if (c.bytesPerToken) config.bytesPerToken = c.bytesPerToken;
@@ -705,12 +751,19 @@ function loadConfig() {
     config.enableAutoLock = c.enableAutoLock !== false;
     config.lockAfterFailCount = Math.max(1, c.lockAfterFailCount || 3);
     config.lockFailCodes = Array.isArray(c.lockFailCodes) ? c.lockFailCodes : ["401","403"];
-    LOG_RETENTION_DAYS = c.logRetentionDays != null ? c.logRetentionDays : 7;
+    LOG_RETENTION_DAYS = c.logRetentionDays;
     LOG_FILE_ENABLED = c.logFile !== false;
     LOG_DETAIL = c.logDetail === "basic" ? "basic" : "full";
     config.logFile = LOG_FILE_ENABLED;
     config.logRetentionDays = LOG_RETENTION_DAYS;
     config.logDetail = LOG_DETAIL;
+    config.logMaxMiB = c.logMaxMiB;
+    config.logSegmentMaxMiB = c.logSegmentMaxMiB;
+    config.stateHourlyRetentionDays = c.stateHourlyRetentionDays;
+    config.stateDailyRetentionDays = c.stateDailyRetentionDays;
+    config.stateMaxMiB = c.stateMaxMiB;
+    config.proxyLogMaxMiB = c.proxyLogMaxMiB;
+    config.proxyLogKeepFiles = c.proxyLogKeepFiles;
     config.logIncidents = normalizeLogIncidentConfig(c.logIncidents);
     STREAM_LIFETIME = Math.min(7200000, Math.max(60000, parseInt(c.streamLifetime) || 1800000));
     config.streamLifetime = STREAM_LIFETIME;
@@ -761,6 +814,26 @@ function loadConfig() {
     }
   }
   configureAutoResumeTimer();
+}
+
+function clampConfigInteger(value, fallback, min, max) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeRuntimeStorageConfig(value) {
+  const configValue = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  configValue.logRetentionDays = clampConfigInteger(configValue.logRetentionDays, 7, 0, 3650);
+  configValue.logMaxMiB = clampConfigInteger(configValue.logMaxMiB, DEFAULT_LOG_MAX_MIB, LOG_MAX_MIB_MIN, LOG_MAX_MIB_LIMIT);
+  configValue.logSegmentMaxMiB = clampConfigInteger(configValue.logSegmentMaxMiB, DEFAULT_LOG_SEGMENT_MAX_MIB, LOG_SEGMENT_MAX_MIB_MIN, LOG_SEGMENT_MAX_MIB_LIMIT);
+  if (configValue.logSegmentMaxMiB > configValue.logMaxMiB) configValue.logSegmentMaxMiB = configValue.logMaxMiB;
+  configValue.stateHourlyRetentionDays = clampConfigInteger(configValue.stateHourlyRetentionDays, DEFAULT_STATE_HOURLY_RETENTION_DAYS, STATE_HOURLY_RETENTION_MIN_DAYS, STATE_HOURLY_RETENTION_MAX_DAYS);
+  configValue.stateDailyRetentionDays = clampConfigInteger(configValue.stateDailyRetentionDays, DEFAULT_STATE_DAILY_RETENTION_DAYS, STATE_DAILY_RETENTION_MIN_DAYS, STATE_DAILY_RETENTION_MAX_DAYS);
+  configValue.stateMaxMiB = clampConfigInteger(configValue.stateMaxMiB, DEFAULT_STATE_MAX_MIB, STATE_MAX_MIB_MIN, STATE_MAX_MIB_LIMIT);
+  configValue.proxyLogMaxMiB = clampConfigInteger(configValue.proxyLogMaxMiB, DEFAULT_PROXY_LOG_MAX_MIB, 1, PROXY_LOG_MAX_MIB_LIMIT);
+  configValue.proxyLogKeepFiles = clampConfigInteger(configValue.proxyLogKeepFiles, DEFAULT_PROXY_LOG_KEEP_FILES, 1, PROXY_LOG_KEEP_FILES_LIMIT);
+  return configValue;
 }
 
 function normalizePath(p) {
@@ -831,7 +904,7 @@ function persistAutoResumeRuntime() {
 
 function getAutoResumeRuntimeState() {
   if (!state || typeof state !== "object" || Array.isArray(state)) {
-    state = { keys: [], activeKey: null, dailyLog: {} };
+    state = { keys: [], activeKey: null };
   }
   if (!state.autoResume || typeof state.autoResume !== "object" || Array.isArray(state.autoResume)) {
     state.autoResume = {};
@@ -1199,6 +1272,85 @@ function addEventLog(eventType, idx, message, url) {
   broadcastLog(entry);
 }
 
+function sanitizeUpstreamErrorMessage(value) {
+  let message = String(value == null ? "" : value)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Upstream error bodies are outside our trust boundary. Keep the diagnostic
+  // useful without allowing an accidentally echoed credential into local logs.
+  message = message
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/=:-]{8,}\b/gi, "Bearer [redacted]")
+    .replace(/\b(?:sk|rk)-[A-Za-z0-9_-]{8,}\b/gi, "[redacted-key]")
+    .replace(/\b(api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]");
+  return message.slice(0, LOG_ERROR_MESSAGE_MAX_CHARS);
+}
+
+function findUpstreamErrorMessage(value, depth = 0) {
+  if (depth > 3 || value == null) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const message = findUpstreamErrorMessage(item, depth + 1);
+      if (message) return message;
+    }
+    return "";
+  }
+  if (typeof value !== "object") return "";
+  for (const key of ["message", "detail", "error_description", "description", "error"]) {
+    const message = findUpstreamErrorMessage(value[key], depth + 1);
+    if (message) return message;
+  }
+  return "";
+}
+
+function extractUpstreamErrorMessage(payload) {
+  let value = payload;
+  if (Buffer.isBuffer(value)) value = value.toString("utf8");
+  if (typeof value === "string") {
+    const raw = value;
+    try { value = JSON.parse(raw); } catch { return sanitizeUpstreamErrorMessage(raw); }
+  }
+  return sanitizeUpstreamErrorMessage(findUpstreamErrorMessage(value));
+}
+
+function classifyUpstreamErrorMessage(message) {
+  const text = String(message || "");
+  if (/capacity|at capacity|overloaded|busy|try a different model|not currently available/i.test(text)) return "model_at_capacity";
+  if (/quota|insufficient|billing|billing_hard_limit/i.test(text)) return "insufficient_quota";
+  return "upstream_api_error";
+}
+
+function captureUpstreamErrorMessage(apiRes, callback) {
+  const chunks = [];
+  let capturedBytes = 0;
+  let settled = false;
+  let timer = null;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    const message = extractUpstreamErrorMessage(chunks.length ? Buffer.concat(chunks) : "");
+    if (!apiRes.destroyed) apiRes.destroy();
+    callback(message);
+  };
+  apiRes.on("data", chunk => {
+    if (capturedBytes >= UPSTREAM_ERROR_CAPTURE_MAX_BYTES) return;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const remaining = UPSTREAM_ERROR_CAPTURE_MAX_BYTES - capturedBytes;
+    chunks.push(buffer.subarray(0, remaining));
+    capturedBytes += Math.min(buffer.length, remaining);
+    if (capturedBytes >= UPSTREAM_ERROR_CAPTURE_MAX_BYTES) finish();
+  });
+  apiRes.once("end", finish);
+  apiRes.once("error", finish);
+  apiRes.once("close", finish);
+  timer = setTimeout(finish, UPSTREAM_ERROR_CAPTURE_TIMEOUT_MS);
+  if (timer.unref) timer.unref();
+  apiRes.resume();
+}
+
 function addStreamTerminalLog(idx, lifecycle) {
   const outcome = lifecycle.terminalKind || "unknown";
   const reason = lifecycle.terminalReason || "unknown";
@@ -1213,6 +1365,10 @@ function addStreamTerminalLog(idx, lifecycle) {
     streamOutcome: outcome,
     streamReason: reason,
     streamSawDone: sawDone,
+    url: (accounts[idx] && accounts[idx].url) || "",
+    upstreamErrorReason: outcome === "failed" ? reason : "",
+    streamErrorMsg: lifecycle.upstreamErrorMessage || "",
+    terminalSource: "upstream_sse",
   };
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
@@ -1221,41 +1377,289 @@ function addStreamTerminalLog(idx, lifecycle) {
   broadcastLog(entry);
 }
 
+function addDownstreamTerminalLog(idx, options = {}) {
+  const account = accounts[idx] || {};
+  const reason = normalizeStreamTerminalReason(options.reason, "upstream_api_error");
+  const errorMessage = sanitizeUpstreamErrorMessage(options.errorMessage || "");
+  const status = Number.isInteger(options.status) ? options.status : 502;
+  const entry = {
+    time: Date.now(),
+    type: "event",
+    eventType: "downstream_terminal",
+    idx: idx + 1,
+    group: String(options.group || account.group || "A").toUpperCase(),
+    method: options.method || "",
+    path: options.path || "",
+    reqModel: options.reqModel || null,
+    overrideModel: account.model || null,
+    status,
+    message: `downstream failed: ${reason}; HTTP ${status}`,
+    streamOutcome: "failed",
+    streamReason: reason,
+    streamSawDone: false,
+    upstreamErrorReason: reason,
+    streamErrorMsg: errorMessage,
+    terminalSource: options.source || "upstream_http_error",
+    url: account.url || "",
+  };
+  requestLog.push(entry);
+  if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  recordLogSummary(entry);
+  if (LOG_FILE_ENABLED) writeLogEntry(entry);
+  recordStreamOutcome(idx, reason, true);
+  broadcastLog(entry);
+}
+
 function isRequestLogFailure(entry) {
   return entry.status === 0 || entry.status >= 400 || entry.streamOutcome === "failed";
 }
 
-function ensureLogStream() {
-  const today = new Date().toISOString().slice(0, 10);
-  if (logDate === today && logStream) return;
-  if (logStream) { try { logStream.end(); } catch(e) {} }
+function parseManagedLogFileName(file) {
+  const match = LOG_FILE_NAME_RE.exec(String(file || ""));
+  if (!match) return null;
+  const startedAt = Date.parse(`${match[1]}T00:00:00.000Z`);
+  if (!Number.isFinite(startedAt)) return null;
+  return {
+    name: String(file),
+    day: match[1],
+    startedAt,
+    segment: match[2] ? Number(match[2]) : Number.MAX_SAFE_INTEGER,
+  };
+}
+
+function logBasePath(day) {
+  return path.join(LOG_DIR, `${day}.jsonl`);
+}
+
+function nextLogSegmentNumber(day) {
+  let next = 1;
   try {
-    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
-    logStream = fs.createWriteStream(path.join(LOG_DIR, today + ".jsonl"), { flags: "a" });
-    logDate = today;
-  } catch(e) { /* fail silently */ }
+    for (const file of fs.readdirSync(LOG_DIR)) {
+      const parsed = parseManagedLogFileName(file);
+      if (parsed && parsed.day === day && Number.isFinite(parsed.segment)) next = Math.max(next, parsed.segment + 1);
+    }
+  } catch {}
+  return next;
+}
+
+function archiveCurrentLogSegment(day) {
+  const source = logBasePath(day);
+  try {
+    const stat = fs.statSync(source);
+    if (!stat.isFile() || stat.size <= 0) return false;
+    const destination = path.join(LOG_DIR, `${day}.${String(nextLogSegmentNumber(day)).padStart(6, "0")}.jsonl`);
+    fs.renameSync(source, destination);
+    return true;
+  } catch (error) {
+    if (error && error.code !== "ENOENT") console.warn(`[proxy] failed to archive request log: ${error.message}`);
+    return false;
+  }
+}
+
+function openLogStreamForDate(day) {
+  if (!LOG_FILE_ENABLED) return false;
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const base = logBasePath(day);
+    let existingBytes = 0;
+    try { existingBytes = Math.max(0, fs.statSync(base).size); } catch {}
+    const segmentBytes = config.logSegmentMaxMiB * 1024 * 1024;
+    if (existingBytes >= segmentBytes && existingBytes > 0) {
+      archiveCurrentLogSegment(day);
+      existingBytes = 0;
+    }
+    const stream = fs.createWriteStream(base, { flags: "a", mode: 0o600 });
+    stream.on("error", error => {
+      console.warn(`[proxy] request log stream error: ${error.message}`);
+      if (logStream === stream) {
+        logStream = null;
+        logDate = null;
+        logStreamBytes = 0;
+      }
+    });
+    logStream = stream;
+    logDate = day;
+    logStreamBytes = existingBytes;
+    return true;
+  } catch (error) {
+    console.warn(`[proxy] failed to open request log: ${error.message}`);
+    logStream = null;
+    logDate = null;
+    logStreamBytes = 0;
+    return false;
+  }
+}
+
+function flushPendingLogLines() {
+  while (pendingLogLines.length && !logRotationInFlight) {
+    const line = pendingLogLines[0];
+    if (!writeLogLine(line)) return;
+    pendingLogLines.shift();
+  }
+}
+
+function rotateLogStream(nextDay, archiveCurrent) {
+  if (logRotationInFlight) return;
+  logRotationInFlight = true;
+  const previousStream = logStream;
+  const previousDay = logDate;
+  logStream = null;
+  logDate = null;
+  logStreamBytes = 0;
+  const finish = () => {
+    try {
+      if (!LOG_FILE_ENABLED) {
+        pendingLogLines.length = 0;
+      } else {
+        if (archiveCurrent && previousDay && previousDay === nextDay) archiveCurrentLogSegment(previousDay);
+        openLogStreamForDate(nextDay);
+      }
+    } catch (error) {
+      console.warn(`[proxy] failed to rotate request log: ${error.message}`);
+    }
+    logRotationInFlight = false;
+    flushPendingLogLines();
+    cleanOldLogs();
+  };
+  if (previousStream) {
+    try { previousStream.end(finish); } catch { finish(); }
+  } else {
+    finish();
+  }
+}
+
+function ensureLogStream(day) {
+  if (!LOG_FILE_ENABLED || logRotationInFlight) return false;
+  if (logDate === day && logStream) return true;
+  if (logStream) {
+    rotateLogStream(day, false);
+    return false;
+  }
+  return openLogStreamForDate(day);
+}
+
+function queueLogLine(line) {
+  if (pendingLogLines.length >= MAX_LOG) {
+    pendingLogLines.shift();
+    const now = Date.now();
+    if (now - lastLogWriteDropWarningAt >= 5 * 60 * 1000) {
+      lastLogWriteDropWarningAt = now;
+      console.warn(`[proxy] request log rotation backlog exceeded ${MAX_LOG}; oldest pending entries were dropped`);
+    }
+  }
+  pendingLogLines.push(line);
+}
+
+function writeLogLine(line) {
+  if (!LOG_FILE_ENABLED) return false;
+  const day = getLogDateKey(Date.now());
+  if (!ensureLogStream(day)) return false;
+  const lineBytes = Buffer.byteLength(line, "utf8");
+  const segmentBytes = config.logSegmentMaxMiB * 1024 * 1024;
+  if (logStreamBytes > 0 && logStreamBytes + lineBytes > segmentBytes) {
+    rotateLogStream(day, true);
+    return false;
+  }
+  try {
+    logStream.write(line);
+    logStreamBytes += lineBytes;
+    return true;
+  } catch (error) {
+    console.warn(`[proxy] failed to write request log: ${error.message}`);
+    return false;
+  }
+}
+
+function serializeBoundedLogEntry(entry) {
+  let line = JSON.stringify(entry) + "\n";
+  if (Buffer.byteLength(line, "utf8") <= LOG_ENTRY_MAX_BYTES) return line;
+  const compact = { logTruncated: true };
+  for (const field of ["time", "type", "eventType", "idx", "status", "path", "group", "reqModel", "overrideModel", "streamOutcome", "streamReason", "upstreamErrorReason", "terminalSource", "streamId", "message", "streamErrorMsg", "url"]) {
+    const value = entry && entry[field];
+    if (value === undefined || value === null) continue;
+    compact[field] = typeof value === "string" ? value.slice(0, 512) : value;
+  }
+  line = JSON.stringify(compact) + "\n";
+  return Buffer.byteLength(line, "utf8") <= LOG_ENTRY_MAX_BYTES ? line : null;
 }
 
 function writeLogEntry(entry) {
+  if (!LOG_FILE_ENABLED) return;
   try {
-    ensureLogStream();
-    logStream.write(JSON.stringify(entry) + "\n");
-  } catch(e) { /* fail silently */ }
+    const line = serializeBoundedLogEntry(entry);
+    if (!line) {
+      const now = Date.now();
+      if (now - lastLogWriteDropWarningAt >= 5 * 60 * 1000) {
+        lastLogWriteDropWarningAt = now;
+        console.warn(`[proxy] request log entry exceeded ${Math.round(LOG_ENTRY_MAX_BYTES / 1024)} KiB and was dropped`);
+      }
+      return;
+    }
+    if (!writeLogLine(line)) queueLogLine(line);
+  } catch (error) {
+    console.warn(`[proxy] failed to serialize request log: ${error.message}`);
+  }
 }
 
 function cleanOldLogs() {
-  if (logCleanupInFlight || LOG_RETENTION_DAYS <= 0) return;
+  if (logCleanupInFlight || logRotationInFlight) return Promise.resolve(false);
   logCleanupInFlight = true;
   const now = Date.now();
-  fs.promises.readdir(LOG_DIR).then(files => Promise.all(files.map(async file => {
-    if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(file)) return;
-    const startedAt = Date.parse(`${file.slice(0, 10)}T00:00:00.000Z`);
-    if (Number.isFinite(startedAt) && now - startedAt > LOG_RETENTION_DAYS * 86400000) {
-      await fs.promises.unlink(path.join(LOG_DIR, file));
+  const activeFile = logDate ? `${logDate}.jsonl` : "";
+  return fs.promises.readdir(LOG_DIR, { withFileTypes: true }).then(async entries => {
+    const files = [];
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const parsed = parseManagedLogFileName(entry.name);
+      if (!parsed) continue;
+      try {
+        const stat = await fs.promises.stat(path.join(LOG_DIR, entry.name));
+        files.push({ ...parsed, size: Math.max(0, stat.size) });
+      } catch {}
     }
-  }))).catch(() => {}).finally(() => {
+    files.sort((left, right) => left.startedAt - right.startedAt || left.segment - right.segment);
+    const retained = [];
+    let totalBytes = 0;
+    for (const file of files) {
+      const expired = LOG_RETENTION_DAYS > 0 && now - file.startedAt > LOG_RETENTION_DAYS * 86400000;
+      if (expired && file.name !== activeFile) {
+        try { await fs.promises.unlink(path.join(LOG_DIR, file.name)); } catch {}
+        continue;
+      }
+      retained.push(file);
+      totalBytes += file.size;
+    }
+    const budgetBytes = Math.max(1, Number(config.logMaxMiB) || DEFAULT_LOG_MAX_MIB) * 1024 * 1024;
+    for (const file of retained) {
+      if (totalBytes <= budgetBytes) break;
+      // Never unlink the stream currently open by proxy.js. Older segments of
+      // the same day remain eligible and the compacted summary is preserved.
+      if (file.name === activeFile) continue;
+      try {
+        await fs.promises.unlink(path.join(LOG_DIR, file.name));
+        totalBytes -= file.size;
+      } catch {}
+    }
+    if (pruneLogRollups()) scheduleLogSummaryPersist();
+  }).catch(() => {}).finally(() => {
     logCleanupInFlight = false;
   });
+}
+
+function applyRuntimeStoragePolicy() {
+  const now = Date.now();
+  // Configuration changes must take effect before the next request arrives:
+  // compact state synchronously, then let the file cleanup continue without
+  // holding the request handler or closing the proxy listener.
+  compactState(now, { force: true });
+  saveState(true);
+
+  if (logStream && logDate) {
+    let activeBytes = logStreamBytes;
+    try { activeBytes = Math.max(activeBytes, fs.statSync(logBasePath(logDate)).size); } catch {}
+    if (activeBytes >= config.logSegmentMaxMiB * 1024 * 1024) rotateLogStream(logDate, true);
+  }
+  cleanOldLogs();
 }
 
 function createLogHistogram() {
@@ -1426,9 +1830,22 @@ function getLogDateKey(time) {
 
 function pruneLogRollups(now = Date.now()) {
   const minuteCutoff = now - LOG_ROLLUP_RETENTION_MS;
-  for (const [minute] of logMinuteBuckets) if (minute < minuteCutoff) logMinuteBuckets.delete(minute);
-  const dayCutoff = getLogDateKey(now - Math.max(1, LOG_RETENTION_DAYS) * 86400000);
-  for (const day of logDailySummaries.keys()) if (day < dayCutoff) logDailySummaries.delete(day);
+  let changed = false;
+  for (const [minute] of logMinuteBuckets) {
+    if (minute < minuteCutoff) {
+      logMinuteBuckets.delete(minute);
+      changed = true;
+    }
+  }
+  const dailyRetentionDays = LOG_RETENTION_DAYS > 0 ? LOG_RETENTION_DAYS : 3650;
+  const dayCutoff = getLogDateKey(now - dailyRetentionDays * 86400000);
+  for (const day of logDailySummaries.keys()) {
+    if (day < dayCutoff) {
+      logDailySummaries.delete(day);
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function recordLogSummary(entry, options = {}) {
@@ -1538,6 +1955,38 @@ function serializeLogSummary() {
   };
 }
 
+function serializeBoundedLogSummary() {
+  let serialized = JSON.stringify(serializeLogSummary());
+  let bytes = Buffer.byteLength(serialized, "utf8");
+  if (bytes <= LOG_SUMMARY_MAX_BYTES) return serialized;
+
+  let removed = 0;
+  const shrink = (map) => {
+    const keys = Array.from(map.keys()).sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+    for (let index = 0; index < keys.length; index++) {
+      map.delete(keys[index]);
+      removed++;
+      if ((index + 1) % LOG_SUMMARY_MEASURE_INTERVAL !== 0 && index !== keys.length - 1) continue;
+      serialized = JSON.stringify(serializeLogSummary());
+      bytes = Buffer.byteLength(serialized, "utf8");
+      if (bytes <= LOG_SUMMARY_MAX_BYTES) return true;
+    }
+    return false;
+  };
+
+  // Minute data only powers the recent operations view. Preserve all raw JSONL
+  // logs and daily aggregates before dropping the oldest detailed buckets.
+  if (!shrink(logMinuteBuckets)) shrink(logDailySummaries);
+  if (removed) {
+    const now = Date.now();
+    if (now - lastLogSummaryBudgetWarningAt >= 5 * 60 * 1000) {
+      lastLogSummaryBudgetWarningAt = now;
+      console.warn(`[proxy] log summary exceeded ${(LOG_SUMMARY_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB; removed ${removed} oldest rollup buckets (remaining ${(bytes / (1024 * 1024)).toFixed(1)} MiB)`);
+    }
+  }
+  return serialized;
+}
+
 function scheduleLogSummaryPersist() {
   if (!LOG_FILE_ENABLED || !logSummaryLoaded) return;
   logSummaryDirty = true;
@@ -1556,7 +2005,8 @@ async function persistLogSummary() {
   try {
     await fs.promises.mkdir(LOG_DIR, { recursive: true });
     const tempFile = `${LOG_SUMMARY_FILE}.${process.pid}.tmp`;
-    await fs.promises.writeFile(tempFile, JSON.stringify(serializeLogSummary()), "utf8");
+    const serialized = serializeBoundedLogSummary();
+    await fs.promises.writeFile(tempFile, serialized, "utf8");
     await fs.promises.rename(tempFile, LOG_SUMMARY_FILE);
   } catch (error) {
     console.error(`[proxy] failed to persist log summary: ${error.message}`);
@@ -1568,7 +2018,14 @@ async function persistLogSummary() {
 
 function loadLogSummary() {
   let summaryWasLoaded = false;
-  fs.promises.readFile(LOG_SUMMARY_FILE, "utf8").then(raw => {
+  fs.promises.stat(LOG_SUMMARY_FILE).then(stat => {
+    if (!stat.isFile() || stat.size > LOG_SUMMARY_MAX_BYTES * 2) {
+      if (stat.size > LOG_SUMMARY_MAX_BYTES * 2) console.warn("[proxy] log summary is too large to load; rebuilding bounded rollups in the background");
+      return null;
+    }
+    return fs.promises.readFile(LOG_SUMMARY_FILE, "utf8");
+  }).then(raw => {
+    if (!raw) return;
     const saved = JSON.parse(raw);
     if (!saved || saved.schema !== LOG_SUMMARY_SCHEMA) return;
     for (const [minute, aggregate] of Array.isArray(saved.minuteBuckets) ? saved.minuteBuckets : []) {
@@ -1583,8 +2040,8 @@ function loadLogSummary() {
     logSummaryLoaded = true;
     const pending = logSummaryPendingEntries.splice(0);
     for (const entry of pending) recordLogSummary(entry, { skipPersist: true, skipIncident: true });
-    pruneLogRollups();
-    if (pending.length) scheduleLogSummaryPersist();
+    const pruned = pruneLogRollups();
+    if (pending.length || pruned) scheduleLogSummaryPersist();
     scheduleLogIncidentEvaluation();
     if (!summaryWasLoaded && LOG_FILE_ENABLED) {
       const timer = setTimeout(() => startLogSummaryRebuild(), 2000);
@@ -1603,7 +2060,7 @@ function decodeLogCursor(value) {
   try {
     const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
     const cursor = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-    if (!cursor || !/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(String(cursor.file || "")) || !Number.isFinite(Number(cursor.position)) || Number(cursor.position) < 0) return null;
+    if (!cursor || !parseManagedLogFileName(cursor.file) || !Number.isFinite(Number(cursor.position)) || Number(cursor.position) < 0) return null;
     return { file: cursor.file, position: Math.floor(Number(cursor.position)) };
   } catch {
     return null;
@@ -1660,7 +2117,7 @@ function logEntryMatchesQuery(entry, query) {
   if (query.path && !String(entry.path || "").toLowerCase().includes(query.path.toLowerCase())) return false;
   if (query.group && String(entry.group || "A").toUpperCase() !== query.group) return false;
   if (query.q) {
-    const haystack = [entry.message, entry.url, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason].map(value => String(value || "").toLowerCase()).join("\n");
+    const haystack = [entry.message, entry.url, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource].map(value => String(value || "").toLowerCase()).join("\n");
     if (!haystack.includes(query.q.toLowerCase())) return false;
   }
   return true;
@@ -1726,7 +2183,7 @@ function escapeLogCsvCell(value) {
 }
 
 function formatLogCsv(entries) {
-  const header = ["time", "idx", "group", "method", "path", "status", "inputBytes", "outputBytes", "duration", "ttfb", "reqModel", "overrideModel", "url", "type", "eventType", "message", "streamId", "streamOutcome", "streamReason", "streamSawDone"];
+  const header = ["time", "idx", "group", "method", "path", "status", "inputBytes", "outputBytes", "duration", "ttfb", "reqModel", "overrideModel", "url", "type", "eventType", "message", "streamId", "streamOutcome", "streamReason", "streamSawDone", "upstreamErrorReason", "streamErrorMsg", "terminalSource"];
   const rows = entries.map(entry => [
     entry.time,
     entry.idx,
@@ -1748,6 +2205,9 @@ function formatLogCsv(entries) {
     entry.streamOutcome,
     entry.streamReason,
     entry.streamSawDone === true ? "true" : "false",
+    entry.upstreamErrorReason || "",
+    entry.streamErrorMsg || "",
+    entry.terminalSource || "",
   ].map(escapeLogCsvCell).join(","));
   return `${header.join(",")}\n${rows.join("\n")}`;
 }
@@ -2261,14 +2721,27 @@ function estimateCost(inputBytes, outputBytes) {
 // --- State ---
 function loadState() {
   autoResumeStateReady = false;
+  let compacted = false;
+  let restoredFromBackup = false;
   try {
     state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
-  } catch {
-    state = { keys: [], activeKey: null, dailyLog: {} };
+  } catch (error) {
+    try {
+      state = JSON.parse(fs.readFileSync(STATE_FILE + ".bak", "utf-8"));
+      restoredFromBackup = true;
+      console.warn("[proxy] state.json unreadable; restored runtime state from state.json.bak");
+    } catch {
+      state = { keys: [], activeKey: null };
+      console.warn(`[proxy] state.json unreadable; starting with empty runtime state: ${error.message}`);
+    }
   }
   if (!state || typeof state !== "object" || Array.isArray(state)) {
-    state = { keys: [], activeKey: null, dailyLog: {} };
+    state = { keys: [], activeKey: null };
   }
+  if (!Array.isArray(state.keys)) state.keys = [];
+  // Key state is index-aligned with keys.json. Dropped trailing Keys must not leave
+  // historical state behind forever after an operator removes them.
+  if (accounts.length && state.keys.length > accounts.length) state.keys.length = accounts.length;
   // Migrate old ISO week failPeriod (e.g. "2026-W28") → null for new per-key cycle format
   if (state.keys) {
     for (const ks of state.keys) {
@@ -2279,23 +2752,266 @@ function loadState() {
       }
     }
   }
+  compacted = compactState(Date.now(), { force: true });
   restoreAutoResumeRuntimeState();
+  if (compacted || restoredFromBackup) saveState(true);
 }
+
+function pruneLegacyStatePayload() {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return false;
+  // dailyLog belonged to an early implementation and is no longer read by the
+  // proxy. Keeping it would make every state write carry dead historical data.
+  if (!Object.prototype.hasOwnProperty.call(state, "dailyLog")) return false;
+  delete state.dailyLog;
+  return true;
+}
+
+function parseStateBucketTime(key, hourly) {
+  const value = String(key || "");
+  if (hourly) {
+    if (!/^\d{4}-\d{2}-\d{2}-\d{2}$/.test(value)) return 0;
+    const parsed = Date.parse(`${value.slice(0, 10)}T${value.slice(11, 13)}:00:00.000Z`);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 0;
+  const parsed = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function trimStateBuckets(buckets, cutoff, maxBuckets, hourly) {
+  if (!buckets || typeof buckets !== "object" || Array.isArray(buckets)) return false;
+  const entries = Object.keys(buckets).map(key => ({ key, time: parseStateBucketTime(key, hourly) }));
+  let changed = false;
+  for (const entry of entries) {
+    if (!entry.time || entry.time < cutoff) {
+      delete buckets[entry.key];
+      changed = true;
+    }
+  }
+  const remaining = Object.keys(buckets).map(key => ({ key, time: parseStateBucketTime(key, hourly) }))
+    .sort((a, b) => a.time - b.time || a.key.localeCompare(b.key));
+  const overflow = remaining.length - maxBuckets;
+  if (overflow > 0) {
+    for (let i = 0; i < overflow; i++) delete buckets[remaining[i].key];
+    changed = true;
+  }
+  return changed;
+}
+
+function trimHourlyModelDimensions(models) {
+  if (!models || typeof models !== "object" || Array.isArray(models)) return false;
+  const keys = Object.keys(models);
+  if (keys.length <= STATE_HOURLY_MODEL_LIMIT) return false;
+  const ranked = keys
+    .map(key => ({ key, requests: Math.max(0, Number(models[key] && models[key].requests) || 0) }))
+    .sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key));
+  const keep = new Set(ranked.slice(0, STATE_HOURLY_MODEL_LIMIT - 1).map(item => item.key));
+  const other = models[STATE_HOURLY_OTHER_MODEL] || { requests: 0, inputBytes: 0, outputBytes: 0 };
+  for (const key of keys) {
+    if (keep.has(key) || key === STATE_HOURLY_OTHER_MODEL) continue;
+    const value = models[key] || {};
+    other.requests += Math.max(0, Number(value.requests) || 0);
+    other.inputBytes += Math.max(0, Number(value.inputBytes) || 0);
+    other.outputBytes += Math.max(0, Number(value.outputBytes) || 0);
+    delete models[key];
+  }
+  models[STATE_HOURLY_OTHER_MODEL] = other;
+  return true;
+}
+
+function trimRateWindow(ks, now = Date.now()) {
+  if (!ks || !ks.rateWindow || typeof ks.rateWindow !== "object") return false;
+  const requests = Array.isArray(ks.rateWindow.requests) ? ks.rateWindow.requests : [];
+  const cutoff = now - RATE_WINDOW_MS;
+  const recent = requests.filter(entry => entry && Number.isFinite(Number(entry.time)) && Number(entry.time) >= cutoff);
+  const changed = recent.length !== requests.length || !Array.isArray(ks.rateWindow.requests);
+  ks.rateWindow.requests = recent;
+  if (!Number.isFinite(Number(ks.rateWindow.windowStart)) || Number(ks.rateWindow.windowStart) < cutoff) {
+    ks.rateWindow.windowStart = now;
+    return true;
+  }
+  return changed;
+}
+
+function pruneAutoResumeProjects() {
+  const runtime = state && state.autoResume;
+  if (!runtime || typeof runtime !== "object" || Array.isArray(runtime) ||
+      !runtime.projects || typeof runtime.projects !== "object" || Array.isArray(runtime.projects)) return false;
+  const configured = new Set((config.autoResumeProjects || [])
+    .slice(0, 10)
+    .map((project, index) => autoResumeProjectId(project, index)));
+  let changed = false;
+  for (const id of Object.keys(runtime.projects)) {
+    if (!configured.has(id)) {
+      delete runtime.projects[id];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function compactState(now = Date.now(), options = {}) {
+  if (!state || !Array.isArray(state.keys)) return false;
+  const prunedLegacyPayload = pruneLegacyStatePayload();
+  const prunedAutoResumeProjects = pruneAutoResumeProjects();
+  if (!options.force && now - lastStateCompactionAt < STATE_COMPACTION_INTERVAL_MS && stateBucketAddsSinceCompaction < STATE_COMPACTION_BUCKET_ADD_THRESHOLD) return prunedLegacyPayload || prunedAutoResumeProjects;
+  const hourlyCutoff = now - config.stateHourlyRetentionDays * 86400000;
+  const dailyCutoff = now - config.stateDailyRetentionDays * 86400000;
+  const hourlyMaxBuckets = Math.max(24, config.stateHourlyRetentionDays * 24 + 48);
+  const dailyMaxBuckets = Math.max(1, config.stateDailyRetentionDays + 2);
+  let changed = prunedLegacyPayload || prunedAutoResumeProjects;
+  for (const ks of state.keys) {
+    if (!ks || typeof ks !== "object") continue;
+    if (config.rateLimit) {
+      changed = trimRateWindow(ks, now) || changed;
+    } else if (Object.prototype.hasOwnProperty.call(ks, "rateWindow")) {
+      delete ks.rateWindow;
+      changed = true;
+    }
+    const stats = ks.stats;
+    if (!stats || typeof stats !== "object") continue;
+    changed = trimStateBuckets(stats.hourly, hourlyCutoff, hourlyMaxBuckets, true) || changed;
+    changed = trimStateBuckets(stats.daily, dailyCutoff, dailyMaxBuckets, false) || changed;
+    for (const bucket of Object.values(stats.hourly || {})) {
+      changed = trimHourlyModelDimensions(bucket && bucket.models) || changed;
+    }
+  }
+  lastStateCompactionAt = now;
+  stateBucketAddsSinceCompaction = 0;
+  if (changed) stateStatusBucketSelectionCache = new WeakMap();
+  return changed;
+}
+
+function invalidateStateStatusBucketCache() {
+  stateStatusBucketSelectionCache = new WeakMap();
+}
+
+function selectRecentStateBuckets(buckets, hourly, limit) {
+  if (!buckets || typeof buckets !== "object" || Array.isArray(buckets)) return {};
+  const cached = stateStatusBucketSelectionCache.get(buckets);
+  if (cached && cached.hourly === hourly && cached.limit === limit) return cached.value;
+  const selected = Object.keys(buckets)
+    .map(key => ({ key, time: parseStateBucketTime(key, hourly) }))
+    .filter(entry => entry.time > 0)
+    .sort((left, right) => right.time - left.time || right.key.localeCompare(left.key))
+    .slice(0, limit)
+    .sort((left, right) => left.time - right.time || left.key.localeCompare(right.key));
+  const output = {};
+  for (const entry of selected) output[entry.key] = buckets[entry.key];
+  stateStatusBucketSelectionCache.set(buckets, { hourly, limit, value: output });
+  return output;
+}
+
+function collectStateBucketGroups(hourly) {
+  const groups = new Map();
+  for (const ks of state.keys || []) {
+    const stats = ks && ks.stats;
+    const buckets = stats && (hourly ? stats.hourly : stats.daily);
+    if (!buckets || typeof buckets !== "object" || Array.isArray(buckets)) continue;
+    for (const key of Object.keys(buckets)) {
+      const time = parseStateBucketTime(key, hourly);
+      if (!time) continue;
+      if (!groups.has(time)) groups.set(time, []);
+      groups.get(time).push({ buckets, key });
+    }
+  }
+  return Array.from(groups.entries())
+    .map(([time, entries]) => ({ time, entries }))
+    .sort((a, b) => a.time - b.time);
+}
+
+function trimStateToByteBudget(serialized, budgetBytes) {
+  let output = serialized;
+  let bytes = Buffer.byteLength(output, "utf8");
+  let changed = false;
+  let removed = 0;
+  if (bytes <= budgetBytes) return { serialized: output, bytes, changed, removed };
+
+  // Remove complete time buckets across Keys so the most recent aggregate trend
+  // remains coherent even when an unusually large deployment reaches the cap.
+  for (const hourly of [true, false]) {
+    const groups = collectStateBucketGroups(hourly);
+    let pendingGroups = 0;
+    for (let i = 0; i < groups.length; i++) {
+      for (const entry of groups[i].entries) {
+        if (Object.prototype.hasOwnProperty.call(entry.buckets, entry.key)) {
+          delete entry.buckets[entry.key];
+          removed++;
+          changed = true;
+        }
+      }
+      pendingGroups++;
+      const shouldMeasure = pendingGroups >= (hourly ? 8 : 1) || i === groups.length - 1;
+      if (!shouldMeasure) continue;
+      pendingGroups = 0;
+      output = JSON.stringify(state, null, 2);
+      bytes = Buffer.byteLength(output, "utf8");
+      if (bytes <= budgetBytes) {
+        if (changed) invalidateStateStatusBucketCache();
+        return { serialized: output, bytes, changed, removed };
+      }
+    }
+  }
+  if (changed) invalidateStateStatusBucketCache();
+  return { serialized: output, bytes, changed, removed };
+}
+
+function logStateBudgetWarning(bytes, budgetBytes, removed) {
+  const now = Date.now();
+  if (now - lastStateBudgetWarningAt < 5 * 60 * 1000) return;
+  lastStateBudgetWarningAt = now;
+  const actualMiB = (bytes / (1024 * 1024)).toFixed(1);
+  const budgetMiB = (budgetBytes / (1024 * 1024)).toFixed(1);
+  console.warn(`[proxy] state.json exceeded ${budgetMiB} MiB; removed ${removed} oldest statistics buckets (remaining ${actualMiB} MiB)`);
+}
+
 let _saveThrottle = 0;
+let _savePendingTimer = null;
 function saveState(force) {
   const now = Date.now();
-  if (!force && now - _saveThrottle < 2000) return; // at most every 2s
+  if (!force && now - _saveThrottle < 2000) return false; // at most every 2s
+  if (_savePendingTimer !== null) {
+    clearTimeout(_savePendingTimer);
+    _savePendingTimer = null;
+  }
   _saveThrottle = now;
   try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    compactState(now);
+    let serialized = JSON.stringify(state, null, 2);
+    const stateBudgetBytes = config.stateMaxMiB * 1024 * 1024;
+    if (Buffer.byteLength(serialized, "utf8") > stateBudgetBytes) {
+      const result = trimStateToByteBudget(serialized, stateBudgetBytes);
+      serialized = result.serialized;
+      if (result.changed || result.bytes > stateBudgetBytes) logStateBudgetWarning(result.bytes, stateBudgetBytes, result.removed);
+    }
+    const tempFile = `${STATE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, serialized, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tempFile, STATE_FILE);
+    return true;
   } catch (e) {
     console.error(`[proxy] Failed to save state: ${e.message}`);
+    return false;
   }
 }
+
+function scheduleStateSave() {
+  if (saveState()) return;
+  if (_savePendingTimer !== null) return;
+  const delay = Math.max(0, 2000 - (Date.now() - _saveThrottle));
+  _savePendingTimer = setTimeout(() => {
+    _savePendingTimer = null;
+    saveState(true);
+  }, delay);
+  if (_savePendingTimer.unref) _savePendingTimer.unref();
+}
 function backupState() {
+  const tempFile = `${STATE_FILE}.bak.${process.pid}.tmp`;
   try {
-    fs.copyFileSync(STATE_FILE, STATE_FILE + ".bak");
-  } catch { /* ignore */ }
+    fs.copyFileSync(STATE_FILE, tempFile);
+    fs.renameSync(tempFile, STATE_FILE + ".bak");
+  } catch {
+    try { fs.rmSync(tempFile, { force: true }); } catch {}
+  }
 }
 setInterval(backupState, 3600000);
 
@@ -2327,7 +3043,7 @@ function getKeyState(idx) {
     } catch (e) { /* 静默失败 */ }
   }
   if (ks.failCount === undefined) ks.failCount = 0;
-  if (!ks.rateWindow) ks.rateWindow = { requests: [], windowStart: Date.now() };
+  if (config.rateLimit && !ks.rateWindow) ks.rateWindow = { requests: [], windowStart: Date.now() };
   if (ks.activatedAt !== undefined && !persistedActivatedAt.has(idx)) {
     persistActivatedAt(idx, ks.activatedAt);
     persistedActivatedAt.add(idx);
@@ -2341,6 +3057,7 @@ function getKeyState(idx) {
     if (ks.stats.totalTtfb === undefined) ks.stats.totalTtfb = 0;
     if (ks.stats.totalCost === undefined) ks.stats.totalCost = 0;
     if (!ks.stats.hourly) ks.stats.hourly = {};
+    if (!ks.stats.daily) ks.stats.daily = {};
     if (ks.stats.daily) {
       for (const d of Object.keys(ks.stats.daily)) {
         if (ks.stats.daily[d].inputBytes === undefined) ks.stats.daily[d].inputBytes = 0;
@@ -2369,7 +3086,11 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
     s.totalTtfb = (s.totalTtfb || 0) + (ttfb || 0);
   }
   const d = today();
-  if (!s.daily[d]) s.daily[d] = { requests: 0, inputTokens: 0, outputTokens: 0, inputBytes: 0, outputBytes: 0, totalDuration: 0, totalTtfb: 0, totalCost: 0 };
+  if (!s.daily[d]) {
+    s.daily[d] = { requests: 0, inputTokens: 0, outputTokens: 0, inputBytes: 0, outputBytes: 0, totalDuration: 0, totalTtfb: 0, totalCost: 0 };
+    stateBucketAddsSinceCompaction++;
+    invalidateStateStatusBucketCache();
+  }
   s.daily[d].requests++;
   if (inputBytes) s.daily[d].inputBytes += inputBytes;
   if (outputBytes) s.daily[d].outputBytes += outputBytes;
@@ -2381,18 +3102,27 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
 
   const now = new Date();
   const hk = d + "-" + String(now.getHours()).padStart(2, "0");
-  if (!s.hourly[hk]) s.hourly[hk] = { requests: 0, inputBytes: 0, outputBytes: 0, totalCost: 0, totalDuration: 0, totalTtfb: 0, models: {} };
+  if (!s.hourly[hk]) {
+    s.hourly[hk] = { requests: 0, inputBytes: 0, outputBytes: 0, totalCost: 0, totalDuration: 0, totalTtfb: 0, models: {} };
+    stateBucketAddsSinceCompaction++;
+    invalidateStateStatusBucketCache();
+  }
   s.hourly[hk].requests++;
   if (inputBytes) s.hourly[hk].inputBytes += inputBytes;
   if (outputBytes) s.hourly[hk].outputBytes += outputBytes;
   s.hourly[hk].totalCost = (s.hourly[hk].totalCost || 0) + cost;
   if (duration) s.hourly[hk].totalDuration = (s.hourly[hk].totalDuration || 0) + duration;
   if (ttfb) s.hourly[hk].totalTtfb = (s.hourly[hk].totalTtfb || 0) + ttfb;
-  const _mk = model || "(未知)";
-  if (!s.hourly[hk].models[_mk]) s.hourly[hk].models[_mk] = { requests: 0, inputBytes: 0, outputBytes: 0 };
-  s.hourly[hk].models[_mk].requests++;
-  if (inputBytes) s.hourly[hk].models[_mk].inputBytes += inputBytes;
-  if (outputBytes) s.hourly[hk].models[_mk].outputBytes += outputBytes;
+  const _mk = String(model || "(未知)").slice(0, STATE_HOURLY_MODEL_NAME_MAX_CHARS);
+  const hourlyModels = s.hourly[hk].models;
+  let modelKey = _mk;
+  const modelDimensionCount = Object.keys(hourlyModels).length;
+  const modelNameLimit = hourlyModels[STATE_HOURLY_OTHER_MODEL] ? STATE_HOURLY_MODEL_LIMIT : STATE_HOURLY_MODEL_LIMIT - 1;
+  if (!hourlyModels[modelKey] && modelDimensionCount >= modelNameLimit) modelKey = STATE_HOURLY_OTHER_MODEL;
+  if (!hourlyModels[modelKey]) hourlyModels[modelKey] = { requests: 0, inputBytes: 0, outputBytes: 0 };
+  hourlyModels[modelKey].requests++;
+  if (inputBytes) hourlyModels[modelKey].inputBytes += inputBytes;
+  if (outputBytes) hourlyModels[modelKey].outputBytes += outputBytes;
   if (statusCode !== undefined) {
     if (!s.hourly[hk].statusCodes) s.hourly[hk].statusCodes = {};
     const scKey = statusCode === 200 ? "ok" : (statusCode >= 400 && statusCode < 500 ? "4xx" : (statusCode >= 500 ? "5xx" : "fail"));
@@ -2403,14 +3133,34 @@ function recordRequest(idx, success, inputBytes, outputBytes, duration, ttfb, mo
 
   state.activeKey = idx;
   recordSliding(idx, success, duration);
+  if (config.rateLimit) trimRateWindow(ks);
   const rw = ks.rateWindow;
-  if (rw) {
+  if (config.rateLimit && rw) {
     const bpt = config.bytesPerToken || 3;
     const tokens = ((inputBytes || 0) + (outputBytes || 0)) / bpt;
     rw.requests.push({ time: Date.now(), tokens: Math.round(tokens) });
   }
   saveState();
   broadcastStatus();
+}
+
+function recordStreamOutcome(idx, reason, persist = false) {
+  if (!reason) return;
+  const s = getKeyState(idx).stats;
+  const now = new Date();
+  const hk = today() + "-" + String(now.getHours()).padStart(2, "0");
+  if (!s.hourly[hk]) {
+    s.hourly[hk] = { requests: 0, inputBytes: 0, outputBytes: 0, totalCost: 0, totalDuration: 0, totalTtfb: 0, models: {} };
+    stateBucketAddsSinceCompaction++;
+    invalidateStateStatusBucketCache();
+  }
+  if (!s.hourly[hk].streamOutcomes) s.hourly[hk].streamOutcomes = {};
+  s.hourly[hk].streamOutcomes[reason] = (s.hourly[hk].streamOutcomes[reason] || 0) + 1;
+  if (persist) {
+    if (reason === "upstream_done" || reason === "client_disconnect") scheduleStateSave();
+    else saveState(true);
+    broadcastStatus();
+  }
 }
 
 function markSuccess(idx) {
@@ -2548,13 +3298,11 @@ function daysUntilReset(resetDay) {
 function rateLimitAllow(idx) {
   if (!config.rateLimit) return true;
   const ks = getKeyState(idx);
-  const rw = ks.rateWindow || { requests: [], windowStart: Date.now() };
+  if (!ks.rateWindow) ks.rateWindow = { requests: [], windowStart: Date.now() };
+  const rw = ks.rateWindow;
   const now = Date.now();
-  if (now - rw.windowStart > 60000) {
-    rw.requests = [];
-    rw.windowStart = now;
-  }
-  const recent = rw.requests.filter(e => now - e.time <= 60000);
+  trimRateWindow(ks, now);
+  const recent = rw.requests;
   const acct = accounts[idx];
   const maxReqs = (acct && acct.maxReqPerMin) || config.maxRequestsPerMin;
   const maxToks = (acct && acct.maxTokPerMin) || config.maxTokensPerMin;
@@ -2707,7 +3455,7 @@ function pickKey(model, group) {
 }
 
 // --- Request Queue ---
-function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform) {
+function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, failureContext) {
   if (restartState.phase !== "ready") {
     if (!clientRes.destroyed && !clientRes.headersSent) {
       clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
@@ -2716,7 +3464,7 @@ function enqueueRequest(method, headers, body, clientRes, pathname, group, extra
     return;
   }
   group = group || "A";
-  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform });
+  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform, failureContext: failureContext || null });
   console.log(`[proxy] Queue depth: ${requestQueue.length}`);
   clientRes.on("close", () => {
     const i = requestQueue.findIndex(r => r.clientRes === clientRes);
@@ -2744,6 +3492,20 @@ function processQueue() {
     }
     if (now - r.time > QUEUE_TIMEOUT) {
       if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
+        let timedOutModel = null;
+        try { timedOutModel = JSON.parse(r.body.toString()).model || null; } catch (e) {}
+        if (r.failureContext && Number.isInteger(r.failureContext.idx)) {
+          addDownstreamTerminalLog(r.failureContext.idx, {
+            reason: r.failureContext.reason || "upstream_idle_timeout",
+            errorMessage: r.failureContext.errorMessage || "Request timed out while waiting for an available Key",
+            status: 503,
+            group: r.group,
+            method: r.method,
+            path: r.pathname,
+            reqModel: timedOutModel,
+            source: "queue_timeout",
+          });
+        }
         r.clientRes.writeHead(503, { "content-type": "application/json" });
         r.clientRes.end(JSON.stringify({ error: "request timeout in queue" }));
       }
@@ -2773,6 +3535,16 @@ function processQueue() {
       forwardRequest(rforceIdx, r.method, r.headers, r.body, r.clientRes, r.pathname, (result) => {
         if (result.switched) {
           if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
+            addDownstreamTerminalLog(result.idx, {
+              reason: result.reason || "upstream_api_error",
+              errorMessage: result.errorMessage || "",
+              status: 502,
+              group: r.group,
+              method: r.method,
+              path: r.pathname,
+              reqModel: rmodel,
+              source: result.source || "upstream_failure",
+            });
             r.clientRes.writeHead(502, { "content-type": "application/json" });
             r.clientRes.end(JSON.stringify({ error: `Key #${rforceIdx+1} failed` }));
           }
@@ -2787,6 +3559,7 @@ function processQueue() {
     }
     forwardRequest(idx, r.method, r.headers, r.body, r.clientRes, r.pathname, (result) => {
       if (result.switched) {
+        r.failureContext = result;
         requestQueue.push(r);
       }
     }, r.extraTransform);
@@ -2911,16 +3684,30 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     if (isKeyError || isServerError) {
       if (onDone.done) { apiRes.destroy(); return; }
       onDone.done = true;
-      const dur = Date.now() - reqStart;
-      activeDecr(idx);
-      markFailure(idx, apiRes.statusCode);
-      recordRequest(idx, false, 0, 0, dur, null, resolvedModel, apiRes.statusCode);
-      recordPath(pathname, method, 0, 0, dur);
-      Object.assign(logEntry, { status: apiRes.statusCode, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
-      addLog(logEntry);
-      const _ks1=getKeyState(idx);_ks1.lastStatus=apiRes.statusCode;_ks1.lastTime=Date.now();_ks1.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
-      apiRes.destroy();
-      onDone({ switched: true, code: apiRes.statusCode });
+      const statusCode = apiRes.statusCode;
+      captureUpstreamErrorMessage(apiRes, errorMessage => {
+        const dur = Date.now() - reqStart;
+        const reason = errorMessage
+          ? classifyUpstreamErrorMessage(errorMessage)
+          : (statusCode === 402 ? "insufficient_quota" : "upstream_api_error");
+        activeDecr(idx);
+        markFailure(idx, statusCode);
+        recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode);
+        recordPath(pathname, method, 0, 0, dur);
+        Object.assign(logEntry, {
+          status: statusCode,
+          inputBytes: body ? body.length : 0,
+          outputBytes: 0,
+          duration: dur,
+          ttfb,
+          upstreamErrorReason: reason,
+          streamErrorMsg: errorMessage,
+          terminalSource: "upstream_http_error",
+        });
+        addLog(logEntry);
+        const _ks1=getKeyState(idx);_ks1.lastStatus=statusCode;_ks1.lastTime=Date.now();_ks1.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
+        onDone({ switched: true, idx, code: statusCode, reason, errorMessage, source: "upstream_http_error" });
+      });
       return;
     }
 
@@ -2956,12 +3743,18 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
           streamOutcome: lifecycle.terminalKind || "unknown",
           streamReason: lifecycle.terminalReason || "unknown",
           streamSawDone: lifecycle.sawDone === true,
+          upstreamErrorReason: lifecycle.terminalKind === "failed" ? (lifecycle.terminalReason || "upstream_api_error") : "",
+          streamErrorMsg: lifecycle.upstreamErrorMessage || "",
+          terminalSource: "upstream_sse",
         });
       }
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
       if (!lifecycle) {
         recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode);
+      }
+      if (lifecycle && lifecycle.terminalReason) {
+        recordStreamOutcome(idx, lifecycle.terminalReason, true);
       }
       broadcastStatus();
     };
@@ -3034,7 +3827,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     } else {
       apiRes.pipe(transform).pipe(clientRes);
     }
-    onDone({ switched: false });
+    onDone({ switched: false, idx });
   });
   proxyReq.setTimeout(TIMEOUT);
   // The request is now flushed with the selected account's Authorization key.
@@ -3051,12 +3844,13 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     const dur = Date.now() - reqStart;
     activeDecr(idx);
     console.error(`[proxy] #${idx + 1} Error: ${err.message}`);
+    const errorMessage = sanitizeUpstreamErrorMessage(err && err.message);
     markFailure(idx, 0);
     recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0);
-    Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
+    Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null, upstreamErrorReason: "upstream_error", streamErrorMsg: errorMessage, terminalSource: "upstream_transport_error" });
     addLog(logEntry);
     const _ks3=getKeyState(idx);_ks3.lastStatus=0;_ks3.lastTime=Date.now();_ks3.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
-    onDone({ switched: true, error: err });
+    onDone({ switched: true, idx, reason: "upstream_error", error: err, errorMessage, source: "upstream_transport_error" });
   });
 
   proxyReq.on("timeout", () => {
@@ -3077,10 +3871,11 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0);
     }
     recordPath(pathname, method, 0, 0, dur);
-    Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null });
+    const errorMessage = "Upstream request timed out";
+    Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null, upstreamErrorReason: "upstream_idle_timeout", streamErrorMsg: errorMessage, terminalSource: "upstream_timeout" });
     addLog(logEntry);
     const _ks4=getKeyState(idx);_ks4.lastStatus=0;_ks4.lastTime=Date.now();_ks4.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
-    onDone({ switched: true, error: new Error("timeout") });
+    onDone({ switched: true, idx, reason: "upstream_idle_timeout", error: new Error("timeout"), errorMessage, source: "upstream_timeout" });
   });
 
   if (body) {
@@ -3129,6 +3924,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
   const MAX_RETRIES = Math.max(activeCount * 2, 10);
   let model = null;
   let forceIdx = -1;
+  let lastFailure = null;
   try {
     const parsed = JSON.parse(body.toString());
     model = parsed.model || null;
@@ -3140,6 +3936,26 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       }
     }
   } catch(e) {}
+  function reportFinalFailure(failure, fallbackMessage) {
+    const canRespond = !clientRes.destroyed && !clientRes.writableEnded;
+    if (canRespond && failure && Number.isInteger(failure.idx)) {
+      addDownstreamTerminalLog(failure.idx, {
+        reason: failure.reason || "upstream_api_error",
+        errorMessage: failure.errorMessage || "",
+        status: 502,
+        group,
+        method,
+        path: pathname,
+        reqModel: model,
+        source: failure.source || "upstream_failure",
+      });
+    }
+    if (canRespond && !clientRes.headersSent) {
+      clientRes.writeHead(502, { "content-type": "application/json" });
+      clientRes.end(JSON.stringify({ error: fallbackMessage || "All keys exhausted" }));
+    }
+    responded = true;
+  }
   function attempt() {
     if (responded) return;
     if (forceIdx >= 0) {
@@ -3156,17 +3972,14 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       const tag = a.remark ? ` (${a.remark})` : "";
       console.log(`[proxy] → #${forceIdx+1}${tag} (direct via #N) ${a.url}`);
       forwardRequest(forceIdx, method, headers, body, clientRes, pathname, (r) => {
-        if (r.switched && !clientRes.destroyed && !clientRes.headersSent) {
-          clientRes.writeHead(502, { "content-type": "application/json" });
-          clientRes.end(JSON.stringify({ error: `Key #${forceIdx+1} failed: ${r.code || r.error?.message || "error"}` }));
-        }
-        responded = true;
+        if (r.switched) reportFinalFailure(r, `Key #${forceIdx+1} failed: ${r.code || r.error?.message || "error"}`);
+        else responded = true;
       }, extraTransform, model);
       return;
     }
     if (retries >= MAX_RETRIES) {
       console.error(`[proxy] Max retries (${MAX_RETRIES}) reached, queueing`);
-      enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform);
+      enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, lastFailure);
       responded = true;
       return;
     }
@@ -3175,16 +3988,12 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
       if (idx < 0) {
         console.log(`[proxy] No available keys, queueing request`);
-        enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform);
+        enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, lastFailure);
         responded = true;
         return;
       }
       console.error(`[proxy] All accounts exhausted`);
-      if (!clientRes.destroyed && !clientRes.headersSent) {
-        clientRes.writeHead(502, { "content-type": "application/json" });
-        clientRes.end(JSON.stringify({ error: "All keys exhausted" }));
-      }
-      responded = true;
+      reportFinalFailure(lastFailure, "All keys exhausted");
       return;
     }
     usedKeys.add(idx);
@@ -3192,12 +4001,10 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     const tag = a.remark ? ` (${a.remark})` : "";
     console.log(`[proxy] → #${idx + 1}${tag} ${a.url}`);
     forwardRequest(idx, method, headers, body, clientRes, pathname, (r) => {
+      if (r.switched) lastFailure = r;
       if (r.switched && usedKeys.size < activeCount) { console.log(`[proxy] #${idx+1} → ${r.code||"err"}, switching...`); return attempt(); }
-      if (r.switched && !clientRes.destroyed && !clientRes.headersSent) {
-        clientRes.writeHead(502, { "content-type": "application/json" });
-        clientRes.end(JSON.stringify({ error: "All keys exhausted" }));
-      }
-      responded = true;
+      if (r.switched) reportFinalFailure(r, "All keys exhausted");
+      else responded = true;
     }, extraTransform);
   }
   attempt();
@@ -3306,8 +4113,8 @@ function buildStatusData() {
         return ["周日","周一","周二","周三","周四","周五","周六"][new Date(next).getDay()];
       })(),
       ...s,
-      daily: s.daily || {},
-      hourly: s.hourly || {},
+      daily: selectRecentStateBuckets(s.daily, false, STATUS_DAILY_BUCKET_LIMIT),
+      hourly: selectRecentStateBuckets(s.hourly, true, STATUS_HOURLY_BUCKET_LIMIT),
       timeWindow: a.timeWindow || undefined,
       tz: a.tz || undefined,
       _inTimeWindow: a.timeWindow ? isInTimeWindow(a) : undefined,
@@ -3611,7 +4418,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
-<div class="trend-title"><div class="trend-tabs" id="trendTabs"><span class="trend-tab active" data-mode="model" onclick="setTrendMode('model')">📊 模型</span><span class="trend-tab" data-mode="bytes" onclick="setTrendMode('bytes')">📊 流量</span><span class="trend-tab" data-mode="req" onclick="setTrendMode('req')">📈 次数</span><span class="trend-tab" data-mode="health" onclick="setTrendMode('health')">💚 健康</span><span class="trend-tab" data-mode="cost" onclick="setTrendMode('cost')">💰 费用</span><span class="trend-tab" data-mode="latency" onclick="setTrendMode('latency')">⏱ 延迟</span></div><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
+<div class="trend-title"><div class="trend-tabs" id="trendTabs"><span class="trend-tab active" data-mode="model" onclick="setTrendMode('model')">📊 模型</span><span class="trend-tab" data-mode="bytes" onclick="setTrendMode('bytes')">📊 流量</span><span class="trend-tab" data-mode="req" onclick="setTrendMode('req')">📈 次数</span><span class="trend-tab" data-mode="health" onclick="setTrendMode('health')">💚 健康</span><span class="trend-tab" data-mode="upstream" onclick="setTrendMode('upstream')">🔺 上游</span><span class="trend-tab" data-mode="downstream" onclick="setTrendMode('downstream')">🔻 下游</span><span class="trend-tab" data-mode="cost" onclick="setTrendMode('cost')">💰 费用</span><span class="trend-tab" data-mode="latency" onclick="setTrendMode('latency')">⏱ 延迟</span></div><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
 <div class="trend-bars" id="trendBars"></div>
 <div class="trend-labels" id="trendLabels"></div>
 <div id="trendLegend" class="trend-legend"></div>
@@ -3835,9 +4642,22 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div id="cfgResumeProjects" style="grid-column:1/-1"></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">📋 日志配置</div>
   <div style="color:#94a3b8;padding:4px 0">启用文件日志</div>
-  <div><label><input type="checkbox" id="cfgLogFile" checked> 保留 <input id="cfgLogRetention" type="number" min="0" max="365" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天自动清理</label></div>
+  <div><label><input type="checkbox" id="cfgLogFile" checked> 保留 <input id="cfgLogRetention" type="number" min="0" max="3650" style="width:54px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天自动清理（0=关闭按天清理，容量上限仍有效）</label></div>
   <div style="color:#94a3b8;padding:4px 0">日志详情级别</div>
   <div><label><select id="cfgLogDetail" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><option value="full">完整</option><option value="basic">简洁</option></select> 简洁模式不记录模型名</label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">💾 运行时数据上限（保存后立即执行状态压缩和请求日志清理；WSL 控制台日志由 watchdog 轮转器在 10 秒内读取新值）</div>
+  <div style="color:#94a3b8;padding:4px 0">请求日志总容量</div>
+  <div><input id="cfgLogMaxMiB" type="number" min="16" max="4096" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（所有 JSONL 分段合计）</div>
+  <div style="color:#94a3b8;padding:4px 0">请求日志单段上限</div>
+  <div><input id="cfgLogSegmentMaxMiB" type="number" min="1" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超过后同日分段）</div>
+  <div style="color:#94a3b8;padding:4px 0">状态小时统计保留</div>
+  <div><input id="cfgStateHourlyRetentionDays" type="number" min="31" max="365" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
+  <div style="color:#94a3b8;padding:4px 0">状态日统计保留</div>
+  <div><input id="cfgStateDailyRetentionDays" type="number" min="30" max="3650" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
+  <div style="color:#94a3b8;padding:4px 0">state.json 容量上限</div>
+  <div><input id="cfgStateMaxMiB" type="number" min="4" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超限时删除最旧统计桶）</div>
+  <div style="color:#94a3b8;padding:4px 0">WSL proxy.log</div>
+  <div><input id="cfgProxyLogMaxMiB" type="number" min="1" max="100" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgProxyLogKeepFiles" type="number" min="1" max="20" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 个归档（systemd 使用 journald）</div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）</div>
   <div style="color:#94a3b8;padding:4px 0">启用日志事件</div>
   <div><label><input type="checkbox" id="cfgLogIncidentEnabled" checked> 触发失败/流失败规则　<input type="checkbox" id="cfgLogIncidentNotify"> 发送通知</label></div>
@@ -4276,8 +5096,15 @@ async function loadConfigUI(){
     document.getElementById("cfgLockCount").value=c.lockAfterFailCount||3;
     document.getElementById("cfgLockCodes").value=(c.lockFailCodes||["401","403"]).join(",");
     document.getElementById("cfgLogFile").checked=c.logFile!==false;
-    document.getElementById("cfgLogRetention").value=c.logRetentionDays||7;
+    document.getElementById("cfgLogRetention").value=c.logRetentionDays??7;
     document.getElementById("cfgLogDetail").value=c.logDetail||"full";
+    document.getElementById("cfgLogMaxMiB").value=c.logMaxMiB??256;
+    document.getElementById("cfgLogSegmentMaxMiB").value=c.logSegmentMaxMiB??16;
+    document.getElementById("cfgStateHourlyRetentionDays").value=c.stateHourlyRetentionDays??35;
+    document.getElementById("cfgStateDailyRetentionDays").value=c.stateDailyRetentionDays??180;
+    document.getElementById("cfgStateMaxMiB").value=c.stateMaxMiB??32;
+    document.getElementById("cfgProxyLogMaxMiB").value=c.proxyLogMaxMiB??10;
+    document.getElementById("cfgProxyLogKeepFiles").value=c.proxyLogKeepFiles??5;
     const logIncidents=c.logIncidents||{};
     document.getElementById("cfgLogIncidentEnabled").checked=logIncidents.enabled!==false;
     document.getElementById("cfgLogIncidentNotify").checked=logIncidents.notify===true;
@@ -4511,12 +5338,17 @@ function renderTrend(){
   for(let i=hours-1;i>=0;i--){
     const d=new Date(now-i*3600000);
     const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0"),hh=String(d.getHours()).padStart(2,"0");
-    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,totalCost:0,totalDuration:0,keys:{},models:{},status:{}};
+    hMap[y+"-"+m+"-"+dd+"-"+hh]={bytes:0,input:0,output:0,req:0,totalCost:0,totalDuration:0,keys:{},models:{},status:{},streams:{},streamsByKey:{},urls:{},urlsKeys:{}};
   }
   const allModels={};
+  const allUrls={};
   for(const a of data){
     if(!a.hourly)continue;
     const ai=a.idx;
+    let uKey="(未知)";
+    if(a.url){
+      try{ uKey=new URL(a.url).hostname; }catch(e){ uKey=a.url; }
+    }
     for(const [hk,v] of Object.entries(a.hourly)){
       if(hMap[hk]===undefined)continue;
       const h=hMap[hk];
@@ -4526,6 +5358,10 @@ function renderTrend(){
       if(!h.keys[ai])h.keys[ai]={bytes:0,req:0};
       h.keys[ai].bytes+=ib+ob;
       h.keys[ai].req+=v.requests||0;
+      h.urls[uKey]=(h.urls[uKey]||0)+(v.requests||0);
+      if(!h.urlsKeys[uKey])h.urlsKeys[uKey]={};
+      h.urlsKeys[uKey][ai]=(h.urlsKeys[uKey][ai]||0)+(v.requests||0);
+      allUrls[uKey]=(allUrls[uKey]||0)+(v.requests||0);
       if(v.models){
         for(const [mk,mv] of Object.entries(v.models)){
           if(!h.models[mk])h.models[mk]={requests:0,inputBytes:0,outputBytes:0};
@@ -4540,6 +5376,14 @@ function renderTrend(){
         for(const [scKey,scVal] of Object.entries(v.statusCodes)){
           if(!h.status[scKey])h.status[scKey]=0;
           h.status[scKey]+=scVal;
+        }
+      }
+      if(v.streamOutcomes){
+        for(const [soKey,soVal] of Object.entries(v.streamOutcomes)){
+          if(!h.streams[soKey])h.streams[soKey]=0;
+          h.streams[soKey]+=soVal;
+          if(!h.streamsByKey[ai])h.streamsByKey[ai]={};
+          h.streamsByKey[ai][soKey]=(h.streamsByKey[ai][soKey]||0)+soVal;
         }
       }
     }
@@ -4559,6 +5403,12 @@ function renderTrend(){
     max=Math.max(...vals,1);
   }else if(trendMode==="health"){
     vals=keys.map(k=>{const s=hMap[k].status;return(s.ok||0)+(s["4xx"]||0)+(s["5xx"]||0)+(s.fail||0);});
+    max=Math.max(...vals,1);
+  }else if(trendMode==="upstream"){
+    vals=keys.map(k=>{const u=hMap[k].urls||{};return Object.values(u).reduce((s,n)=>s+n,0);});
+    max=Math.max(...vals,1);
+  }else if(trendMode==="downstream"){
+    vals=keys.map(k=>{const st=hMap[k].streams||{};return Object.values(st).reduce((s,n)=>s+n,0);});
     max=Math.max(...vals,1);
   }else if(trendMode==="latency"){
     vals=keys.map(k=>{const h=hMap[k];return h.req>0?Math.round(h.totalDuration/h.req):0;});
@@ -4664,6 +5514,109 @@ function renderTrend(){
     }).join("");
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML="";
+  }else if(trendMode==="upstream"){
+    const sortedUrls=Object.keys(allUrls).sort((a,b)=>allUrls[b]-allUrls[a]);
+    const topUrls=sortedUrls.slice(0,8);
+    const urlColorMap={};
+    topUrls.forEach((u,i)=>{urlColorMap[u]=modelColors[i%modelColors.length];});
+    if(sortedUrls.length>8)urlColorMap["(其他)"]="#6b7280";
+    bars.innerHTML=keys.map((k,i)=>{
+      const h=hMap[k];
+      const total=h.req||0;
+      const lines=[];
+      const mmdd=k.slice(0,10),hh=k.slice(11);
+      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+      lines.push("合计: "+total+"次");
+      const segments=[];
+      for(const u of topUrls){
+        const uv=h.urls[u]||0;
+        if(uv>0){
+          const pct=total?uv/total*100:0;
+          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+urlColorMap[u]+'"></div>');
+          const uk=Object.keys(h.urlsKeys[u]||{});
+          lines.push("  "+u+" (#"+uk.join(",#")+"): "+uv+"次");
+        }
+      }
+      if(sortedUrls.length>8){
+        let otherTotal=0;
+        for(const [uu,uuVal] of Object.entries(h.urls)){
+          if(!topUrls.includes(uu))otherTotal+=uuVal;
+        }
+        if(otherTotal>0){
+          const pct=total?otherTotal/total*100:0;
+          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:#6b7280"></div>');
+          lines.push("  (其他): "+otherTotal+"次");
+        }
+      }
+      const barH=Math.max(2,vals[i]/max*80);
+      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'">'+segments.join("")+'</div>';
+    }).join("");
+    const legendUrls=topUrls.slice();
+    if(sortedUrls.length>8){
+      let otherTotal=0;
+      for(const u of sortedUrls){if(!topUrls.includes(u))otherTotal+=allUrls[u]||0;}
+      allUrls["(其他)"]=otherTotal;
+      legendUrls.push("(其他)");
+    }
+    const legendEl=document.getElementById("trendLegend");
+    if(legendEl)legendEl.innerHTML=legendUrls.map(u=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+urlColorMap[u]+'"></span>'+esc(u)+' ('+allUrls[u]+')</span>').join("");
+  }else if(trendMode==="downstream"){
+    const dColors={upstream_done:"#22c55e",client_disconnect:"#60a5fa",upstream_idle_timeout:"#eab308",stream_lifetime_timeout:"#eab308",model_at_capacity:"#f97316",insufficient_quota:"#f97316",upstream_api_error:"#ef4444",upstream_error:"#ef4444",upstream_close:"#ef4444",upstream_eof_without_done:"#ef4444"};
+    const dLabels={upstream_done:"完成",client_disconnect:"客户端断开",upstream_idle_timeout:"超时",stream_lifetime_timeout:"超时",model_at_capacity:"容量不足",insufficient_quota:"配额不足",upstream_api_error:"上游错误",upstream_error:"上游错误",upstream_close:"上游关闭",upstream_eof_without_done:"上游未完成"};
+    const dOrder=["upstream_done","client_disconnect","upstream_idle_timeout","stream_lifetime_timeout","model_at_capacity","insufficient_quota","upstream_api_error","upstream_error","upstream_close","upstream_eof_without_done"];
+    bars.innerHTML=keys.map((k,i)=>{
+      const h=hMap[k];
+      const st=h.streams||{};
+      const total=Object.values(st).reduce((s,n)=>s+n,0);
+      const lines=[];
+      const mmdd=k.slice(0,10),hh=k.slice(11);
+      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
+      lines.push("流终态: "+total+"次");
+      for(const [soKey,soVal] of Object.entries(st)){
+        lines.push("  "+(dLabels[soKey]||soKey)+": "+soVal+"次");
+      }
+      const bk=h.streamsByKey||{};
+      const bkKeys=Object.keys(bk).sort((a,b)=>{
+        const na=Object.values(bk[a]).reduce((s,n)=>s+n,0),nb=Object.values(bk[b]).reduce((s,n)=>s+n,0);
+        return nb-na;
+      });
+      for(const ki of bkKeys){
+        const kk=bk[ki];
+        const kdata=data.find(item=>String(item&&item.idx)===String(ki));
+        let hostLabel="#"+ki;
+        if(kdata&&kdata.url){
+          try{hostLabel+=" ("+new URL(kdata.url).hostname+")";}catch(e){hostLabel+=" ("+kdata.url+")";}
+        }
+        const kc=[];
+        for(const [soKey,soVal] of Object.entries(kk)){
+          if(soVal>0)kc.push((dLabels[soKey]||soKey)+" "+soVal);
+        }
+        if(kc.length)lines.push("  "+hostLabel+": "+kc.join(", "));
+      }
+      const segments=[];
+      for(const soKey of dOrder){
+        const soVal=st[soKey];
+        if(soVal>0){
+          const pct=total?soVal/total*100:0;
+          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+(dColors[soKey]||"#6b7280")+'"></div>');
+        }
+      }
+      for(const [soKey,soVal] of Object.entries(st)){
+        if(!dOrder.includes(soKey)){
+          const pct=total?soVal/total*100:0;
+          segments.push('<div class="trend-seg" style="height:'+pct+'%;background:#6b7280"></div>');
+        }
+      }
+      const barH=Math.max(2,vals[i]/max*80);
+      return '<div class="trend-bar trend-stack" style="height:'+barH+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'">'+segments.join("")+'</div>';
+    }).join("");
+    const legendEl=document.getElementById("trendLegend");
+    if(legendEl)legendEl.innerHTML=
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#22c55e"></span>完成</span>'+
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#60a5fa"></span>客户端断开</span>'+
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#eab308"></span>超时</span>'+
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#f97316"></span>容量/配额</span>'+
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#ef4444"></span>上游错误</span>';
   }else{
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
@@ -5971,11 +6924,11 @@ function logSortBy(field){
 function logDetailText(entry){
   if(entry.type==="event"){
     const lines=["事件: "+(entry.eventType||""),"消息: "+(entry.message||""),"URL: "+(entry.url||"")];
-    if(entry.eventType==="stream_terminal")lines.push("流 ID: "+(entry.streamId||""),"结果: "+(entry.streamOutcome||""),"原因: "+(entry.streamReason||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否"));
+    if(entry.eventType==="stream_terminal"||entry.eventType==="downstream_terminal")lines.push("流 ID: "+(entry.streamId||""),"结果: "+(entry.streamOutcome||""),"原因: "+(entry.streamReason||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否"),"错误信息: "+(entry.streamErrorMsg||"无"),"来源: "+(entry.terminalSource||""));
     return lines.join("\\n");
   }
   return [
-    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
+    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"上游错误分类: "+(entry.upstreamErrorReason||""),"错误信息: "+(entry.streamErrorMsg||"无"),"错误来源: "+(entry.terminalSource||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
   ].join("\\n");
 }
 
@@ -6202,6 +7155,12 @@ function makeEventRow(e, seq){
       else if (e.streamOutcome === "cancelled") label="⏹ 客户端断开";
       else label="⛔ 流失败";
       detail=e.message||"";
+      if (e.streamErrorMsg) detail=e.message+" | "+e.streamErrorMsg;
+      break;
+    case "downstream_terminal":
+      label="🔻 下游失败";
+      detail=e.message||"";
+      if (e.streamErrorMsg) detail=e.message+" | "+e.streamErrorMsg;
       break;
     default: label="📌 "+(e.eventType||"事件"); detail=e.message||"";
   }
@@ -6224,6 +7183,7 @@ function exportLogs(){
 
 function openConfig(){renderUpdateInfo();loadConfigUI();document.getElementById("configModal").classList.add("on")}
 function closeConfig(){document.getElementById("configModal").classList.remove("on")}
+function configInteger(id,fallback){const value=parseInt(document.getElementById(id).value,10);return Number.isFinite(value)?value:fallback}
 async function saveConfig(){
   const c={
     prices:{inputPer1M:parseFloat(document.getElementById("cfgPriceIn").value)||0,outputPer1M:parseFloat(document.getElementById("cfgPriceOut").value)||0},
@@ -6253,8 +7213,15 @@ async function saveConfig(){
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
     logFile:document.getElementById("cfgLogFile").checked,
-    logRetentionDays:parseInt(document.getElementById("cfgLogRetention").value)||7,
+    logRetentionDays:configInteger("cfgLogRetention",7),
     logDetail:document.getElementById("cfgLogDetail").value,
+    logMaxMiB:configInteger("cfgLogMaxMiB",256),
+    logSegmentMaxMiB:configInteger("cfgLogSegmentMaxMiB",16),
+    stateHourlyRetentionDays:configInteger("cfgStateHourlyRetentionDays",35),
+    stateDailyRetentionDays:configInteger("cfgStateDailyRetentionDays",180),
+    stateMaxMiB:configInteger("cfgStateMaxMiB",32),
+    proxyLogMaxMiB:configInteger("cfgProxyLogMaxMiB",10),
+    proxyLogKeepFiles:configInteger("cfgProxyLogKeepFiles",5),
     logIncidents:{
       enabled:document.getElementById("cfgLogIncidentEnabled").checked,
       notify:document.getElementById("cfgLogIncidentNotify").checked,
@@ -6681,6 +7648,9 @@ const STREAM_TERMINAL_REASONS = new Set([
   "upstream_idle_timeout",
   "stream_lifetime_timeout",
   "client_disconnect",
+  "model_at_capacity",
+  "insufficient_quota",
+  "upstream_api_error",
 ]);
 
 function normalizeStreamTerminalReason(reason, fallback) {
@@ -6698,6 +7668,7 @@ function createResponsesLifecycle(model) {
     terminalKind: null,
     terminalReason: null,
     sawDone: false,
+    upstreamErrorMessage: "",
     _started: false,
     _transform: null,
     _metricsCallback: null,
@@ -6805,6 +7776,12 @@ function createChatToResponsesStream(lifecycle) {
     }
     let parsed;
     try { parsed = JSON.parse(data); } catch(e) { return false; }
+    if (parsed && (parsed.error || parsed.object === "error" || parsed.type === "error")) {
+      const errMsg = extractUpstreamErrorMessage(parsed) || "upstream error";
+      lifecycle.upstreamErrorMessage = errMsg;
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(errMsg));
+      return true;
+    }
     if (parsed.object !== "chat.completion.chunk") return false;
 
     lifecycle.model = parsed.model || lifecycle.model;
@@ -7351,6 +8328,7 @@ function createGroupServer(groupName, port) {
           const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
           const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
           Object.assign(cur, c);
+          normalizeRuntimeStorageConfig(cur);
           // Handle group actions
           if (c._groupAction) {
             if (c._groupAction === "addGroup" && c._groupName && c._groupPort) {
@@ -7403,6 +8381,7 @@ function createGroupServer(groupName, port) {
           const savedDailyHour = config.autoRecoverDailyHour;
           const savedDailyMin = config.autoRecoverDailyMinute;
           loadConfig();
+          applyRuntimeStoragePolicy();
           // Sync group servers with new config
           const newGroups = config.groups || {A: 3456};
           // Start new groups
