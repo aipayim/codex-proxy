@@ -5073,8 +5073,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <button class="btn" style="font-size:11px" onclick="batchResetMgr()">🔄 批量重置</button>
   <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
   <button class="btn" style="font-size:11px;color:#f59e0b" onclick="cleanFailedKeys()">🧹 清理失败</button>
-  <button class="btn" style="font-size:11px;color:#4ade80" onclick="batchSetTimeWindow()">⏰ 设置时段</button>
-  <button class="btn" style="font-size:11px;color:#fb923c" onclick="batchClearTimeWindow()">⏰ 清除时段</button>
+  <button class="btn" style="font-size:11px;color:#4ade80" onclick="batchSetTimeWindow()" title="为选中的 Key 设置错峰可用小时段（含时区）；开始==结束=全天可用">⏰ 错峰时段</button>
+  <button class="btn" style="font-size:11px;color:#fb923c" onclick="batchClearTimeWindow()" title="清除选中 Key 的错峰时段，恢复全天可用">⏰ 清除时段</button>
   <button class="btn" style="font-size:11px" onclick="openImportMgr()">📋 导入</button>
   <button class="btn" style="font-size:11px" onclick="openExportMgr()">📥 导出</button>
   <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
@@ -7090,16 +7090,18 @@ function batchDeleteMgr(){
 }
 function batchSetTimeWindow(){
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要设置时段的 Key");return}
+  if(!sel.length){alert("请先勾选要设置错峰时段的 Key");return}
   const tzOpts=Array.from({length:25},(_, i)=>i-12).map(v=>'<option value="'+(v>=0?"+":"")+v+'">UTC'+(v>=0?"+":"")+v+'</option>').join('');
   const hourOpts=Array.from({length:24},(_, i)=>'<option value="'+i+'">'+(i<10?'0':'')+i+':00</option>').join('');
-  const html='<div style="padding:12px;background:#1e293b;border-radius:8px;min-width:280px">'+
-    '<div style="margin-bottom:8px;color:#e2e8f0;font-size:13px;font-weight:500">设置选中 '+sel.length+' 个 Key 的时段</div>'+
+  const html='<div style="padding:12px;background:#1e293b;border-radius:8px;min-width:300px">'+
+    '<div style="margin-bottom:8px;color:#e2e8f0;font-size:13px;font-weight:500">设置选中 '+sel.length+' 个 Key 的错峰时段</div>'+
+    '<div style="margin-bottom:10px;font-size:11px;color:#94a3b8;line-height:1.7;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px">设定后仅在该时段内参与调度（按所选时区，24 小时制）。<br>开始&lt;结束=同天时段（如 08-17）；开始&gt;结束=跨夜时段（如 22-08）；开始==结束=全天可用。</div>'+
     '<div style="display:grid;grid-template-columns:auto 1fr;gap:8px;font-size:12px;align-items:center">'+
-    '<label style="color:#94a3b8">时区</label><select id="twTz" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+tzOpts+'</select>'+
-    '<label style="color:#94a3b8">开始</label><select id="twStart" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
-    '<label style="color:#94a3b8">结束</label><select id="twEnd" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
+    '<label style="color:#94a3b8">时区</label><select id="twTz" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+tzOpts+'</select>'+
+    '<label style="color:#94a3b8">开始</label><select id="twStart" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
+    '<label style="color:#94a3b8">结束</label><select id="twEnd" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
     '</div>'+
+    '<div id="twPreview" style="margin-top:10px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:12px;color:#cbd5e1;line-height:1.7"></div>'+
     '<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">'+
     '<button class="btn" onclick="this.closest(\\'.modal-cover\\').remove()">取消</button>'+
     '<button class="btn btn-p" onclick="confirmSetTimeWindow()">确认设置</button>'+
@@ -7111,6 +7113,18 @@ function batchSetTimeWindow(){
   cover.addEventListener('click',e=>{if(e.target===cover)cover.remove()});
   document.body.appendChild(cover);
   document.getElementById('twTz').value='+0';
+  updateTwPreview();
+}
+function updateTwPreview(){
+  const tzEl=document.getElementById('twTz'),startEl=document.getElementById('twStart'),endEl=document.getElementById('twEnd');
+  const pre=document.getElementById('twPreview');
+  if(!tzEl||!startEl||!endEl||!pre)return;
+  const tz=tzEl.value,start=parseInt(startEl.value),end=parseInt(endEl.value);
+  const windowDesc=start===end
+    ? '全时段（无限制，等效清除）'
+    : (start<end?start+':00-'+end+':00（同天窗口）':start+':00-'+end+':00（跨夜窗口）');
+  const inWin=isInTimeWindow({timeWindow:{start,end},tz});
+  pre.innerHTML='时段：<b style="color:#e2e8f0">'+windowDesc+'</b>（'+tz+'，24 小时制）<br>当前：<b style="color:'+(inWin?'#4ade80':'#fb923c')+'">'+(inWin?'时段内 ✔（可参与调度）':'非时段 ✖（不参与调度）')+'</b>';
 }
 function confirmSetTimeWindow(){
   const sel=getSelectedMgr();
