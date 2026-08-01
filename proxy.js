@@ -38,8 +38,10 @@ const UPSTREAM_REPOSITORY_URL = "https://github.com/aipayim/codex-proxy";
 const UPSTREAM_LATEST_RELEASE_API = "https://api.github.com/repos/aipayim/codex-proxy/releases/latest";
 const BUILD_INFO_FILE = path.join(__dirname, "build-info.json");
 const RELEASE_MANIFEST_FILE = path.join(__dirname, "release-manifest.json");
+const RELEASE_BASELINE_FILE = path.join(__dirname, "release-baseline.txt");
 const BUILD_INFO_MAX_BYTES = 16 * 1024;
 const RELEASE_MANIFEST_MAX_BYTES = 64 * 1024;
+const RELEASE_BASELINE_MAX_BYTES = 4 * 1024;
 const RELEASE_INTEGRITY_FILE_MAX_BYTES = 8 * 1024 * 1024;
 const AUTO_RESUME_RUNTIME_FILE_MAX_BYTES = 8 * 1024;
 const GIT_PROBE_TIMEOUT_MS = 1000;
@@ -59,7 +61,7 @@ const RELEASE_INTEGRITY_FILES = new Set([
   "codex-sqlite-log-maintainer.py",
 ]);
 const REQUIRED_RELEASE_INTEGRITY_FILES = new Set(["proxy.js", "package.json", "log-query-worker.js", "proxy-log-rotator.js", "codex-sqlite-log-maintainer.py"]);
-const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_TTL_MS = 60 * 60 * 1000;
 const UPDATE_CHECK_MIN_REFRESH_MS = 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 8000;
 const UPDATE_MAX_RESPONSE_BYTES = 64 * 1024;
@@ -546,17 +548,41 @@ function inspectGitBuild() {
   };
 }
 
+function inspectSourceBaselineBuild() {
+  const buffer = readSmallLocalFile(RELEASE_BASELINE_FILE, RELEASE_BASELINE_MAX_BYTES);
+  if (!buffer) return { comparable: false, reason: "source-baseline-missing" };
+  const lines = buffer.toString("utf8").split(/\r?\n/);
+  let baselineTag = "";
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    baselineTag = normalizeUpdateBaselineTag(line);
+    break;
+  }
+  if (!baselineTag) return { comparable: false, reason: "source-baseline-invalid" };
+  return {
+    comparable: true,
+    source: "source-baseline",
+    baselineTag,
+    commit: null,
+    verification: "source-baseline-file",
+    provenanceLabel: "源码基线文件（由发布流程维护）",
+  };
+}
+
 function inspectLocalBuildProvenance() {
   const releaseBuild = inspectReleaseArtifactBuild();
   if (releaseBuild.comparable) return releaseBuild;
   const gitBuild = inspectGitBuild();
   if (gitBuild.comparable) return gitBuild;
+  const baselineBuild = inspectSourceBaselineBuild();
+  if (baselineBuild.comparable) return baselineBuild;
   return {
     comparable: false,
     source: "unknown",
     verification: "none",
     provenanceLabel: "本地来源未验证",
-    reason: releaseBuild.reason || gitBuild.reason || "unknown",
+    reason: releaseBuild.reason || gitBuild.reason || baselineBuild.reason || "unknown",
   };
 }
 
@@ -4918,6 +4944,8 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 @keyframes restart-spin{to{transform:rotate(360deg)}}
 .update-badge{display:none;align-items:center;justify-content:center;min-width:30px;padding:3px 7px;background:#4a2708;border:1px solid #f59e0b;color:#fbbf24;border-radius:4px;cursor:pointer;font-size:14px;line-height:1;animation:update-pulse 1.35s ease-in-out infinite}
 .update-badge.on{display:inline-flex}
+.update-badge.neutral{display:inline-flex;background:#1e293b;border:1px solid #475569;color:#94a3b8;animation:none}
+.update-badge.neutral:hover{background:#334155;color:#e2e8f0}
 .update-badge:hover{background:#6b3809;color:#fde68a}
 @keyframes update-pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}50%{box-shadow:0 0 0 5px rgba(245,158,11,.24)}}
 .update-notes{margin-top:10px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#0f172a;border:1px solid #334155;border-radius:4px;padding:10px;color:#cbd5e1;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -5153,6 +5181,8 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <div id="cfgVersionInfo" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 12px;padding:7px 9px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:11px;color:#94a3b8">
   <span>本地构建：<strong id="cfgCurrentVersion" style="color:#e2e8f0">本地开发/定制版本（未能验证发布基线）</strong></span>
   <span id="cfgBuildProvenance" style="color:#64748b">来源：待识别</span>
+  <span>最新正式 Release：<strong id="cfgLatestRelease" style="color:#e2e8f0">未知</strong></span>
+  <span id="cfgVersionGap" style="color:#94a3b8"></span>
   <a href="https://github.com/aipayim/codex-proxy" target="_blank" rel="noopener noreferrer" title="升级前先备份本机定制代码、配置和状态；在 GitHub 查看 Release 后合并变更，并在维护窗口验证、重启代理。" style="color:#60a5fa">GitHub 升级说明 ↗</a>
   <button class="btn" type="button" onclick="openUpdateModal()" style="font-size:10px;padding:2px 6px">检查更新</button>
   <span id="cfgUpdateStatus" style="color:#64748b"></span>
@@ -5293,6 +5323,11 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 <div class="modal" id="updateModal">
 <div class="mcontent" style="max-width:720px">
 <div class="mtitle"><span>版本更新</span><button class="btn" type="button" onclick="closeUpdateModal()">✕</button></div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin:0 0 10px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:12px;color:#94a3b8">
+  <span>本机版本：<strong id="updateCurrentVersion" style="color:#e2e8f0">…</strong></span>
+  <span>最新正式 Release：<strong id="updateLatestVersion" style="color:#e2e8f0">…</strong></span>
+  <span id="updateVersionGap" style="color:#94a3b8"></span>
+</div>
 <div id="updateSummary" style="font-size:13px;color:#cbd5e1;line-height:1.6">正在读取 GitHub Release 信息…</div>
 <pre class="update-notes" id="updateReleaseNotes">正在读取更新说明…</pre>
 <div id="updateSafety" style="margin-top:10px;padding:9px 10px;background:#3b2f1e;border:1px solid #a16207;border-radius:4px;color:#fde68a;font-size:12px;line-height:1.6"></div>
@@ -5521,6 +5556,24 @@ function formatIdle(ms){
   parts.push(s.toFixed(2)+"s");
   return parts.join(" ");
 }
+function describeBuildReason(reason){
+  const map={
+    "release-metadata-missing":"缺少发布元数据（build-info.json/release-manifest.json）",
+    "release-metadata-invalid":"发布元数据无效",
+    "release-manifest-mismatch":"发布清单摘要不匹配",
+    "release-manifest-invalid":"发布清单无效",
+    "release-manifest-incomplete":"发布清单不完整",
+    "release-files-modified":"本地文件与官方发布清单不一致（可能被修改）",
+    "git-unavailable":"无法识别 Git 仓库",
+    "git-remote-untrusted":"Git 远程不是官方仓库",
+    "git-worktree-modified":"Git 工作树有改动",
+    "git-not-at-release-tag":"Git 不在正式 Release Tag",
+    "git-status-unavailable":"无法读取 Git 状态",
+    "source-baseline-missing":"缺少源码基线文件（release-baseline.txt）",
+    "source-baseline-invalid":"源码基线版本号无效",
+  };
+  return map[reason]||("未知（"+String(reason||"unknown")+"）");
+}
 function renderUpdateInfo(){
   const current=updateInfo&&updateInfo.current;
   const latest=updateInfo&&updateInfo.latest;
@@ -5531,17 +5584,34 @@ function renderUpdateInfo(){
   if(currentEl)currentEl.textContent=currentLabel;
   const provenanceEl=document.getElementById("cfgBuildProvenance");
   if(provenanceEl)provenanceEl.textContent="来源："+provenanceLabel;
+  const latestEl=document.getElementById("cfgLatestRelease");
+  if(latestEl)latestEl.textContent=latest?latest.tag:"未知";
+  const gapEl=document.getElementById("cfgVersionGap");
+  if(gapEl){
+    if(latest&&current&&current.comparable){
+      if(updateInfo.updateAvailable)gapEl.textContent="（可升级至 "+latest.tag+"）";
+      else gapEl.textContent="（已是最新）";
+    }else if(latest){
+      gapEl.textContent="（无法判断差距）";
+    }else{
+      gapEl.textContent="";
+    }
+  }
   const badge=document.getElementById("updateBadge");
   const hasUpdate=!!(updateInfo&&updateInfo.updateAvailable&&latest);
   if(badge){
-    badge.classList.toggle("on",hasUpdate);
-    badge.title=hasUpdate?"发现 "+latest.tag+"，点击查看 Release 说明与安全升级方法":(currentComparable?"当前没有可升级的正式 Release":"本地来源未验证；仅展示 GitHub Release 信息");
+    badge.classList.remove("on","neutral");
+    if(hasUpdate)badge.classList.add("on");
+    else if(!currentComparable)badge.classList.add("neutral");
+    if(hasUpdate)badge.title="发现 "+latest.tag+"，点击查看 Release 说明与安全升级方法";
+    else if(currentComparable)badge.title="当前没有可升级的正式 Release";
+    else badge.title="无法判断本机版本基线（"+describeBuildReason(current&&current.reason)+"）。点击查看 GitHub 最新 Release。";
   }
   const status=document.getElementById("cfgUpdateStatus");
   if(status){
     if(!updateInfo)status.textContent="正在检查 GitHub Release…";
     else if(updateInfo.lastError&&!latest)status.textContent="检查失败："+updateInfo.lastError;
-    else if(latest&&!currentComparable)status.textContent="本地来源未验证；仅展示 Release（检查于 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
+    else if(latest&&!currentComparable)status.textContent="基线未知（"+describeBuildReason(current&&current.reason)+"）；仅展示 Release（检查于 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
     else if(hasUpdate)status.textContent="发现新版本 "+latest.tag+"（已检查 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
     else status.textContent="已确认基线不低于最新 Release（检查于 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
   }
@@ -5554,10 +5624,16 @@ function renderUpdateModal(){
   const notes=document.getElementById("updateReleaseNotes");
   const safety=document.getElementById("updateSafety");
   const link=document.getElementById("updateReleaseLink");
+  const currentVersionEl=document.getElementById("updateCurrentVersion");
+  const latestVersionEl=document.getElementById("updateLatestVersion");
+  const gapEl=document.getElementById("updateVersionGap");
   if(!updateInfo){
     summary.textContent="正在读取 GitHub Release 信息…";
     notes.textContent="正在读取更新说明…";
     safety.textContent="自动覆盖升级不会在后台执行。";
+    if(currentVersionEl)currentVersionEl.textContent="…";
+    if(latestVersionEl)latestVersionEl.textContent="…";
+    if(gapEl)gapEl.textContent="";
     return;
   }
   const currentInfo=updateInfo.current||{};
@@ -5565,6 +5641,12 @@ function renderUpdateModal(){
   const currentComparable=currentInfo.comparable===true;
   const provenanceLabel=currentInfo.provenanceLabel||"本地来源未验证";
   const latest=updateInfo.latest;
+  if(currentVersionEl)currentVersionEl.textContent=current;
+  if(latestVersionEl)latestVersionEl.textContent=latest?latest.tag:"—";
+  if(gapEl){
+    if(latest&&currentComparable)gapEl.textContent=updateInfo.updateAvailable?"（可升级至 "+latest.tag+"）":"（已是最新）";
+    else gapEl.textContent="";
+  }
   if(latest){
     const published=formatUpdatePublishedAt(latest.publishedAt);
     const releaseMeta=published?" 发布于 "+published+"。":"";
@@ -5580,7 +5662,7 @@ function renderUpdateModal(){
     notes.textContent=updateInfo.lastError||"请稍后重新检查，或直接在 GitHub 查看 Release。";
     link.href="https://github.com/aipayim/codex-proxy/releases";
   }
-  safety.textContent="官方发布包会通过随包构建元数据和文件清单自动识别；官方 Git 工作树只有在干净且正好位于正式 Tag 时才自动识别。当前构建可能包含本地修改，因此自动覆盖式一键升级仍禁用。定制构建如需比较，可在系统配置填写已人工确认的正式 Release Tag；否则只查看 Release。升级前备份当前代理目录及配置/状态，审核变更、执行 node -c proxy.js 后，再于维护窗口重启代理。";
+  safety.textContent="官方发布包会通过随包构建元数据和文件清单自动识别；源码安装会通过 release-baseline.txt 记录的本机版本基线自动识别；官方 Git 工作树只有在干净且正好位于正式 Tag 时才自动识别。当前构建可能包含本地修改，因此自动覆盖式一键升级仍禁用。定制构建如需比较，可在系统配置填写已人工确认的正式 Release Tag；否则只查看 Release。升级前备份当前代理目录及配置/状态，审核变更、执行 node -c proxy.js 后，再于维护窗口重启代理。";
 }
 async function checkForUpdates(force){
   const refresh=document.getElementById("updateRefreshBtn");

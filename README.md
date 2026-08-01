@@ -525,7 +525,7 @@ SQLite 删除行后通常只会把页留给后续写入复用，物理文件不�
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag 自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag/源码基线文件自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -551,7 +551,7 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__restart-status` | GET | 重启进度：返回实例 ID、启动时间、阶段（`ready` / `draining` / `stopping`）、在途与排队请求数，以及 `restartId`、`canCancel`、`canForce`、`forceAvailableInMs`；供 Dashboard 轮询，不含敏感信息 |
 | `/__restart/cancel` | POST | 仅在 `draining` 时可取消本次安全重启并恢复新请求接入；已返回 `503` 的排队请求不会重新入队；成功返回 `200`，其他阶段返回 `409` |
 | `/__restart/force` | POST | 仅在 `draining` 已持续至少 30 秒后可强制退出；会中断活跃流和在途请求，成功返回 `202`，其他阶段或等待时间未到返回 `409` |
-| `/__update-status` | GET | 查询 `aipayim/codex-proxy` 的最新正式 GitHub Release；服务端缓存 6 小时、支持 `?refresh=1` 手工复查（至少间隔 60 秒）。官方发布包或干净官方 Git Tag 自动比较；定制构建仅在配置了有效手动基线 Tag 时比较；不下载或执行远端代码 |
+| `/__update-status` | GET | 查询 `aipayim/codex-proxy` 的最新正式 GitHub Release；服务端缓存 1 小时、支持 `?refresh=1` 手工复查（至少间隔 60 秒）。官方发布包、干净官方 Git Tag 或源码基线文件（`release-baseline.txt`）自动比较；定制构建仅在配置了有效手动基线 Tag 时比较；不下载或执行远端代码 |
 | `/__auth_check` | GET | 检查管理 Token 是否已配置，返回 `{configured: true/false}`（不暴露实际 Token） |
 | `/__config` `_groupAction` | PUT | 端口分组管理：`{"_groupAction":"addGroup","_groupName":"B","_groupPort":3457}` 或 `"removeGroup"` / `"setGroupPort"` / `{"_groupAction":"toggleGroup","_groupName":"B","_groupEnabled":false}` |
 | `/__test_port?port=3457` | GET | 检测分组端口是否运行（查询内存中 `servers` 注册表） |
@@ -722,18 +722,19 @@ WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
 
 ## 版本检查与升级
 
-Dashboard 打开后会检查一次 [官方 GitHub Release](https://github.com/aipayim/codex-proxy/releases)，前端每 30 分钟复查；服务端使用 ETag 和 6 小时缓存。Release 元数据始终可以查看，但只有确定了本地构建基线后才会比较版本并在顶部「配置」右侧显示闪烁的 ⬆ 标识。
+Dashboard 打开后会检查一次 [官方 GitHub Release](https://github.com/aipayim/codex-proxy/releases)，前端每 30 分钟复查；服务端使用 ETag 和 1 小时缓存。Release 元数据始终可以查看，但只有确定了本地构建基线后才会比较版本并在顶部「配置」右侧显示闪烁的 ⬆ 标识。
 
-代理识别的是**构建来源**，不会根据目录名、磁盘、主机名、Windows/WSL 环境猜测“开发机”，也不会在源码中写死本机路径或 Release 版本。启动时只执行一次本地判定，不在代理请求热路径运行：
+代理识别的是**构建来源**，不会根据目录名、磁盘、主机名、Windows/WSL 环境猜测"开发机"，也不会在源码中写死本机路径或 Release 版本。启动时只执行一次本地判定，不在代理请求热路径运行：
 
 | 优先级 | 本地状态 | 比较行为 |
 |---|---|---|
 | 1 | 系统配置填写了 `updateBaselineTag` | 作为定制构建的显式基线 |
 | 2 | 官方发布资产中的 `build-info.json` 与 `release-manifest.json` 校验通过 | 自动使用发布 Tag |
 | 3 | 官方 GitHub 远程、工作树干净且 `HEAD` 恰好位于稳定 Release Tag | 自动使用该 Git Tag |
-| 4 | 开发分支、本地修改、未知远程、缺少 Git/发布元数据或清单校验失败 | 基线未知，只展示 Release，不提示更新 |
+| 4 | 源码安装目录中的 `release-baseline.txt` 记录了有效基线（克隆/复制源码仓库或源码 ZIP 的场景） | 自动使用文件中的版本号 |
+| 5 | 开发分支、本地修改、未知远程、缺少 Git/发布元数据/基线文件或清单校验失败 | 基线未知，只展示 Release，不提示更新 |
 
-`updateBaselineTag` 是高级定制选项，格式为 `vX.Y.Z` 或 `X.Y.Z`，例如 `v1.2.3`。普通用户不需要填写它：未修改的官方发布资产会自动识别；定制构建留空是正确默认值。若 GitHub 的最新正式 Release 高于已确定基线，才显示更新标识。
+`release-baseline.txt` 是随源码仓库与 Release 资产同步维护的版本基线文件（单行 `vX.Y.Z`），让没有构建元数据的源码安装也能显示本机版本号并判断是否可升级。`updateBaselineTag` 是高级定制选项，格式为 `vX.Y.Z` 或 `X.Y.Z`，例如 `v1.2.3`。普通用户不需要填写它：未修改的官方发布资产会自动识别；定制构建留空是正确默认值。若 GitHub 的最新正式 Release 高于已确定基线，才显示更新标识。
 
 ### 生成官方发布资产
 
@@ -883,7 +884,7 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `codexLogMaintenance.checkIntervalMinutes` | 后台检查周期，默认 15 分钟，范围 5–1440。每轮最多 5 x 1000 行短事务；SQLite 忙时跳过并等待下一周期。 |
 | `logDetail` | 日志详情级别：`"full"`（完整，含模型名）或 `"basic"`（简洁，不含模型名） |
 | `logIncidents` | 日志事件规则对象。可配置是否启用/通知、观察窗口、最低请求数、失败次数及失败率、流失败次数、可选 P95 请求/首字节阈值、自动恢复时间和默认静默分钟数；默认只告警，不会自动暂停分组、重启或变更 Key |
-| `updateBaselineTag` | 高级可选项。定制构建的已人工确认上游稳定 Release Tag，格式 `vX.Y.Z` 或 `X.Y.Z`。官方发布资产和干净官方 Git Tag 自动识别，无需填写；来源未知的定制构建留空时只显示 Release 信息，不比较更新 |
+| `updateBaselineTag` | 高级可选项。定制构建的已人工确认上游稳定 Release Tag，格式 `vX.Y.Z` 或 `X.Y.Z`。官方发布资产、干净官方 Git Tag 和源码基线文件（`release-baseline.txt`）自动识别，无需填写；来源未知的定制构建留空时只显示 Release 信息，不比较更新 |
 | `groups` | 端口分组映射，如 `{"A": 3456, "B": 3457}`。A 组始终运行且不可删除，B/C/D 等通过面板动态管理 |
 | `groupEnabled` | 分组开关状态，如 `{"B": true, "C": false}`。关闭的分组重启后不启动端口。默认全部启用 |
 
@@ -1373,7 +1374,7 @@ A: 新版会在点击后显示重启进度，并在新实例就绪后自动刷�
 A: 管理 Token 仅保存在当前页面内存，不写入浏览器持久化或会话存储。刷新、关闭页面或 WebSocket 认证失效后需要重新认证。
 
 **Q: 为什么没有出现更新标识，或「一键升级」被禁用？**
-A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正式 Release 时会显示标识。开发分支、本地修改或来源未知的副本默认不显示标识，只展示 Release；这时可保持空白，或在确有把握时填写「定制构建基线 Tag（高级）」。可在系统配置中点击「检查更新」复查。为避免覆盖本地修改，面板只提供 Release 信息和安全升级步骤，不会自动替换源码。
+A: 未修改的官方 Release 资产会自动识别版本；源码安装（克隆/复制源码仓库或源码 ZIP）会通过 `release-baseline.txt` 记录的本机版本自动识别；干净官方 Git Tag 也会自动识别。GitHub 有更高正式 Release 时会显示标识。开发分支、本地修改或来源未知的副本默认不显示标识，只展示 Release；这时可保持空白，或在确有把握时填写「定制构建基线 Tag（高级）」。可在系统配置中点击「检查更新」复查，弹窗和版本盒会显示本机版本号与最新正式 Release 的差距。为避免覆盖本地修改，面板只提供 Release 信息和安全升级步骤，不会自动替换源码。
 
 ## 贡献者致谢
 
@@ -1385,6 +1386,7 @@ A: 未修改的官方 Release 资产会自动识别版本，GitHub 有更高正�
 
 ## 更新日志
 
+- **2026-08-01 版本基线识别与升级提示**：新增 `release-baseline.txt` 版本基线文件，使源码安装（克隆/复制源码仓库或源码 ZIP，无构建元数据）也能显示本机版本号并判断是否可升级。每次发布 vX.Y.Z 时同步更新该文件（源码仓库 git 跟踪，并随 Release 资产内置，内容与发布 Tag 一致）。来源识别优先级扩展为：官方发布包（build-info 清单校验）> 干净官方 Git Tag > 源码基线文件 > 未知（带原因）。「系统配置 → 检查更新」弹窗新增「本机版本 / 最新正式 Release / 差距」显式信息条，本机版本号一目了然；版本盒同时显示本机版本、来源与最新正式 Release 及差距文案。徽标三态：有更新琥珀脉冲 `⬆`、无更新隐藏、基线未知灰色中性 `⬆`（均可打开弹窗查看最新 Release）。GitHub 缓存 TTL 由 6 小时缩短为 1 小时。
 - **2026-08-01 闲置恢复 TTY 与残留进程清理 + 容量/429 瞬态退避**：闲置恢复启动器此前已能打开窗口并启动 runner，但失败仍频繁（退出码 2）。根因排查发现三层问题并逐一修复。① 命令错误：配置里 `resume --last -p '<prompt>'` 的 `-p` 是 codex 的 `--profile` 标志（并非 prompt），被解析为 `invalid value ... for '--profile'` 立即退出 2；codex 的 prompt 是位置参数，已改为 `resume --last '<prompt>'`。② runner 内 `setsid bash -lc` 把命令从终端剥离，`codex resume` 交互 TUI 需要 PTY；改用 `script -qec` 为命令分配伪终端（保留 `setsid` 进程组隔离，`-e` 回传子命令退出码）。③ 项目路径下残留的 codex CLI 会锁住会话/线程（`state_5.sqlite` threads 表），导致新 resume 被强制解析回旧线程；`triggerResume` 现在启动前按 cwd+命令行扫描并终止项目路径下所有残留 codex 进程及其后代。④ 重触发保护：空闲恢复生效后，巨型会话（数百 MB / 数十万行）加载需数分钟，期间无 Key 使用导致闲置时间持续超阈值，每 debounce 周期（默认 10 分钟）的自动重触发会把仍在加载的上一次 resume 当作旧命令替换终止，形成"永远跑不完"的循环；现在 `triggerResume` 在项目已有存活恢复进程（按 pid 文件存活探测）或 30 秒内刚发起过启动时直接跳过，不再替换正在运行的恢复。另新增 `capacityBackoffSeconds`（默认 60 秒）与 `capacityMaxWaitSeconds`（默认 300 秒）：HTTP 429 与 `model_at_capacity` 错误改为瞬态退避（仅设 `capUntil`，不写 `failCode`），不再把 reset:"never" 的 Key 冷却到整个周期、也不会一次容量波动级联禁用全部 Key；容量失败请求直接重新入队而非热轮询刷遍全部 Key，队列等待上限按 `capacityMaxWaitSeconds` 豁免默认 30 秒超时；`checkAllFailed` 忽略纯退避 Key，避免误报 all_keys_failed。新增容量退避生命周期回归测试。
 - **2026-08-01 修复闲置恢复启动器失败**：闲置恢复此前每次触发都失败——`resume-codex.sh` 用 `cmd.exe /c start` 打开可见 Windows 终端时，WSL 路径（`/mnt/c/...`）以 `/` 开头会被 cmd 解析成开关（`无效开关 - "/mnt"`），`start` 立即返回退出码 1，runner 从未启动、命令从未执行。修复：启动前用 `wslpath -w` 把 WSL 路径转为 Windows 反斜杠形式再交给 `start`，并保留可见终端窗口；启动器失败时把 cmd 的 stderr（GBK 转 UTF-8）写回状态文件第 5 字段，代理将其显示为 `launcherError` 并带进 `auto_resume_launcher_failed` 事件消息。端到端实测通过：状态机 `starting → running → exited` 完整走通，命令真实执行。
 - **2026-07-31 模型级费用估算**：系统配置新增 `modelPricing` 规则数组，可按最终转发的精确模型名分别设置输入/输出单价和 `bytesPerToken`；未命中模型继续回退全局价格。每个请求在开始转发时冻结规则，后续变更不回算进行中或既有统计、趋势及历史日志费用。

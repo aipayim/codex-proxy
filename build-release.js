@@ -23,6 +23,7 @@ const RELEASE_CONTENT_FILES = [
   "log-query-worker.js",
   "proxy-log-rotator.js",
   "codex-sqlite-log-maintainer.py",
+  "release-baseline.txt",
 ];
 const RELEASE_INTEGRITY_FILES = [
   "proxy.js",
@@ -152,6 +153,7 @@ function buildRelease(options) {
       if (!copied.has(required)) fail(`Required release file is missing: ${required}`);
     }
     setReleasePackageVersion(releaseDir, options.tag);
+    fs.writeFileSync(path.join(releaseDir, "release-baseline.txt"), `${options.tag}\n`, { mode: 0o644 });
 
     const files = {};
     for (const relativePath of RELEASE_INTEGRITY_FILES) {

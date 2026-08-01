@@ -101,6 +101,8 @@ function testReleaseArtifact(releaseDir) {
   assert.ok(manifest.files["proxy-log-rotator.js"]);
   assert.ok(fs.existsSync(path.join(releaseDir, "codex-sqlite-log-maintainer.py")));
   assert.ok(manifest.files["codex-sqlite-log-maintainer.py"]);
+  assert.ok(fs.existsSync(path.join(releaseDir, "release-baseline.txt")));
+  assert.strictEqual(fs.readFileSync(path.join(releaseDir, "release-baseline.txt"), "utf8"), "v1.2.3\n");
   for (const privateFile of ["config.json", "keys.json", "state.json", "proxy.log", "proxy.pid"]) {
     assert.ok(!fs.existsSync(path.join(releaseDir, privateFile)), `release must not contain ${privateFile}`);
   }
@@ -126,8 +128,10 @@ function testReleaseArtifact(releaseDir) {
   const modified = loadProxyHarness(releaseDir);
   setLatest(modified);
   const modifiedStatus = modified.buildUpdateStatus();
-  assert.strictEqual(modifiedStatus.current.comparable, false);
-  assert.strictEqual(modifiedStatus.updateAvailable, false);
+  assert.strictEqual(modifiedStatus.current.source, "source-baseline");
+  assert.strictEqual(modifiedStatus.current.version, "v1.2.3");
+  assert.strictEqual(modifiedStatus.current.comparable, true);
+  assert.strictEqual(modifiedStatus.updateAvailable, true);
 
   modified.setBaseline("v1.2.3");
   const manualStatus = modified.buildUpdateStatus();
@@ -162,7 +166,47 @@ function testGitFallback(releaseDir, tempDir) {
   fs.appendFileSync(path.join(gitDir, "proxy.js"), "\n// dirty worktree test\n");
   const dirty = loadProxyHarness(gitDir);
   setLatest(dirty);
-  assert.strictEqual(dirty.buildUpdateStatus().current.comparable, false);
+  const dirtyStatus = dirty.buildUpdateStatus();
+  assert.strictEqual(dirtyStatus.current.source, "source-baseline");
+  assert.strictEqual(dirtyStatus.current.version, "v1.2.3");
+  assert.strictEqual(dirtyStatus.current.comparable, true);
+}
+
+function testSourceBaseline(releaseDir, tempDir) {
+  const baselineDir = path.join(tempDir, "source-baseline");
+  copyTree(releaseDir, baselineDir);
+  fs.rmSync(path.join(baselineDir, "build-info.json"));
+  fs.rmSync(path.join(baselineDir, "release-manifest.json"));
+
+  const harness = loadProxyHarness(baselineDir);
+  setLatest(harness);
+  const status = harness.buildUpdateStatus();
+  assert.strictEqual(status.current.source, "source-baseline");
+  assert.strictEqual(status.current.version, "v1.2.3");
+  assert.strictEqual(status.current.comparable, true);
+  assert.strictEqual(status.updateAvailable, true);
+
+  setLatest(harness, "v1.2.3");
+  const upToDate = harness.buildUpdateStatus();
+  assert.strictEqual(upToDate.updateAvailable, false);
+
+  const missingDir = path.join(tempDir, "source-no-baseline");
+  copyTree(releaseDir, missingDir);
+  fs.rmSync(path.join(missingDir, "build-info.json"));
+  fs.rmSync(path.join(missingDir, "release-manifest.json"));
+  fs.rmSync(path.join(missingDir, "release-baseline.txt"));
+  const missing = loadProxyHarness(missingDir);
+  setLatest(missing);
+  assert.strictEqual(missing.buildUpdateStatus().current.comparable, false);
+
+  const invalidDir = path.join(tempDir, "source-invalid-baseline");
+  copyTree(releaseDir, invalidDir);
+  fs.rmSync(path.join(invalidDir, "build-info.json"));
+  fs.rmSync(path.join(invalidDir, "release-manifest.json"));
+  fs.writeFileSync(path.join(invalidDir, "release-baseline.txt"), "not-a-version\n", "utf8");
+  const invalid = loadProxyHarness(invalidDir);
+  setLatest(invalid);
+  assert.strictEqual(invalid.buildUpdateStatus().current.comparable, false);
 }
 
 function main() {
@@ -175,6 +219,7 @@ function main() {
     });
     testReleaseArtifact(result.releaseDir);
     testGitFallback(result.releaseDir, tempDir);
+    testSourceBaseline(result.releaseDir, tempDir);
     console.log("release metadata and provenance: PASS");
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
