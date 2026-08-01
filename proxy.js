@@ -191,7 +191,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE } };
+  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300 };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -793,6 +793,8 @@ function loadConfig() {
     config.autoResumeIdleMinutes = Math.max(1, parseInt(c.autoResumeIdleMinutes) || 10);
     config.autoResumeDebounceMinutes = Math.max(1, parseInt(c.autoResumeDebounceMinutes) || 3);
     config.autoResumeProjects = Array.isArray(c.autoResumeProjects) ? c.autoResumeProjects.slice(0, 10) : [];
+    config.capacityBackoffSeconds = Math.max(1, parseInt(c.capacityBackoffSeconds) || 60);
+    config.capacityMaxWaitSeconds = Math.max(30, parseInt(c.capacityMaxWaitSeconds) || 300);
     config.cmdPath = c.cmdPath || "/mnt/c/Windows/System32/cmd.exe";
     config.weeklySortBy = c.weeklySortBy === "expiry" ? "expiry" : "priority";
     config.roundRobin = c.roundRobin === true;
@@ -1344,6 +1346,16 @@ function readAutoResumePid(pidFile) {
   }
 }
 
+function isProcessAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function stopAutoResumeProcess(pidInfo) {
   if (!pidInfo) return false;
   if (pidInfo.processGroup) {
@@ -1444,15 +1456,103 @@ function checkAutoResume(now = Date.now()) {
   }
 }
 
+function collectCodexDescendantPids(rootPid) {
+  const found = new Set([rootPid]);
+  const queue = [rootPid];
+  for (let i = 0; i < queue.length; i++) {
+    let children;
+    try {
+      children = fs.readdirSync(`/proc/${queue[i]}/task/${queue[i]}/children`);
+    } catch {
+      continue;
+    }
+    for (const child of children) {
+      const pid = parseInt(child, 10);
+      if (Number.isSafeInteger(pid) && pid > 1 && !found.has(pid)) {
+        found.add(pid);
+        queue.push(pid);
+      }
+    }
+  }
+  return found;
+}
+
+// A previous codex CLI that is still alive in the project directory holds the
+// session/thread lock, so a fresh resume cannot take over. Scan /proc for codex
+// processes whose cwd is the project path and terminate them (with their
+// descendants) before launching a new one.
+function cleanupStaleCodexProcesses(projectPath, label) {
+  let projectRealPath = null;
+  try {
+    projectRealPath = typeof fs.realpathSync.native === "function" ? fs.realpathSync.native(projectPath) : fs.realpathSync(projectPath);
+  } catch {
+    projectRealPath = projectPath;
+  }
+  const staleRoots = [];
+  try {
+    for (const entry of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = parseInt(entry, 10);
+      if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) continue;
+      let cwd;
+      let cmdline;
+      try {
+        cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+        cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
+      } catch {
+        continue;
+      }
+      let cwdMatches = cwd === projectPath || cwd === projectRealPath;
+      if (!cwdMatches && projectRealPath) {
+        try {
+          const cwdReal = typeof fs.realpathSync.native === "function" ? fs.realpathSync.native(cwd) : fs.realpathSync(cwd);
+          cwdMatches = cwdReal === projectPath || cwdReal === projectRealPath;
+        } catch { /* keep prior result */ }
+      }
+      if (!cwdMatches) continue;
+      if (!/codex/.test(cmdline)) continue;
+      staleRoots.push(pid);
+    }
+  } catch { /* /proc unavailable */ }
+
+  const targeted = [];
+  for (const root of staleRoots) {
+    for (const pid of collectCodexDescendantPids(root)) {
+      try {
+        process.kill(pid, "SIGTERM");
+        targeted.push(pid);
+      } catch { /* already gone */ }
+    }
+  }
+  if (targeted.length > 0) {
+    const unique = [...new Set(targeted)];
+    setTimeout(() => {
+      for (const pid of unique) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+      }
+    }, 4000).unref();
+    addEventLog("auto_resume_stale_killed", 0, `闲置恢复：${label} 清理 ${unique.length} 个残留 codex 进程`, "");
+    console.log(`[proxy] autoResume cleaned ${unique.length} stale codex process(es) for ${label}`);
+  }
+  return targeted.length;
+}
+
 function triggerResume(proj, index) {
   const label = autoResumeProjectLabel(proj, index);
   const files = autoResumeProjectFiles(proj, index);
   const normalizedPath = normalizePath(proj.path);
   if (autoResumeLaunches.has(files.id)) return;
 
+  const currentState = getAutoResumeRuntimeState().projects[files.id] || {};
+  const livePid = readAutoResumePid(files.pidFile);
+  if (livePid && isProcessAlive(livePid.pid)) return;
+  if (currentState.phase === "launching" && (Date.now() - (currentState.launchRequestedAt || 0)) < 30000) return;
+
   try {
     if (!fs.statSync(normalizedPath).isDirectory()) throw new Error("project directory is unavailable");
     if (!fs.existsSync(RESUME_SCRIPT)) throw new Error("resume launcher is unavailable");
+
+    cleanupStaleCodexProcesses(normalizedPath, label);
 
     const oldPid = readAutoResumePid(files.pidFile);
     if (oldPid) {
@@ -3394,10 +3494,11 @@ function persistActivatedAt(idx, val) {
 }
 
 function getKeyState(idx) {
-  while (state.keys.length <= idx) state.keys.push({ failCode: null, failTime: null, failPeriod: null, failCount: 0, status: "active", stats: null, lastStatus: null, lastTime: null, lastModel: null });
+  while (state.keys.length <= idx) state.keys.push({ failCode: null, failTime: null, failPeriod: null, failCount: 0, status: "active", stats: null, lastStatus: null, lastTime: null, lastModel: null, capUntil: 0 });
   const ks = state.keys[idx];
   if (ks.status === undefined) ks.status = "active";
   if (ks.failPeriod === undefined) ks.failPeriod = null;
+  if (ks.capUntil === undefined) ks.capUntil = 0;
   if (ks.activatedAt === undefined) {
     ks.activatedAt = Date.now();
     try {
@@ -3591,10 +3692,25 @@ function markSuccess(idx) {
   ks.failCode = null;
   ks.failTime = null;
   ks.failCount = 0;
+  ks.capUntil = 0;
   allFailedNotified = false;
   saveState();
   processQueue();
   broadcastStatus();
+}
+
+// Transient capacity pressure (HTTP 429 / model_at_capacity) backs the key off
+// for capacityBackoffSeconds WITHOUT recording a hard failure. Unlike
+// markFailure it never sets failCode, so reset:"never" keys stay permanently
+// usable after the backoff window instead of being cooled down for a whole
+// period, and one upstream capacity spike cannot cascade-disable every key.
+function markCapacityBackoff(idx) {
+  const ks = getKeyState(idx);
+  const seconds = Math.max(1, Number(config.capacityBackoffSeconds)) || 60;
+  ks.capUntil = Date.now() + seconds * 1000;
+  saveState();
+  broadcastStatus();
+  setTimeout(() => { try { processQueue(); } catch (e) {} }, seconds * 1000 + 100).unref();
 }
 
 function markFailure(idx, code) {
@@ -3649,6 +3765,10 @@ function markFailure(idx, code) {
 function checkAllFailed() {
   for (let i = 0; i < accounts.length; i++) {
     if (accounts[i].status !== "active") continue;
+    const ks = getKeyState(i);
+    // A key that is only transiently backed off (capUntil, no failCode) is not
+    // a hard failure and must not trigger all_keys_failed webhooks.
+    if (!ks.failCode) return false;
     if (!inCooldown(i)) return false;
   }
   return true;
@@ -3658,6 +3778,7 @@ function inCooldown(idx) {
   const acct = accounts[idx];
   const ks = getKeyState(idx);
   if (ks.status === "discarded" || ks.status === "locked") return true;
+  if (ks.capUntil && ks.capUntil > Date.now()) return true;
   if (acct.reset === "never") return !!ks.failCode;
   if (!ks.failCode || !ks.failPeriod) return false;
   const curr = keyPeriod(acct.reset, idx);
@@ -3878,7 +3999,7 @@ function pickKey(model, group) {
 }
 
 // --- Request Queue ---
-function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, failureContext) {
+function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, failureContext, capacity) {
   if (restartState.phase !== "ready") {
     if (!clientRes.destroyed && !clientRes.headersSent) {
       clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
@@ -3887,7 +4008,7 @@ function enqueueRequest(method, headers, body, clientRes, pathname, group, extra
     return;
   }
   group = group || "A";
-  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform, failureContext: failureContext || null });
+  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform, failureContext: failureContext || null, capacity: capacity === true });
   console.log(`[proxy] Queue depth: ${requestQueue.length}`);
   clientRes.on("close", () => {
     const i = requestQueue.findIndex(r => r.clientRes === clientRes);
@@ -3902,18 +4023,22 @@ function processQueue() {
   }
   if (queueProcessing) return;
   queueProcessing = true;
-  const now = Date.now();
-  const batch = [...requestQueue];
-  requestQueue = [];
-  for (const r of batch) {
-    if (restartState.phase !== "ready") {
-      if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
-        r.clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
-        r.clientRes.end(JSON.stringify({ error: "proxy is restarting" }));
+    const now = Date.now();
+    const batch = [...requestQueue];
+    requestQueue = [];
+    for (const r of batch) {
+      if (restartState.phase !== "ready") {
+        if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
+          r.clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
+          r.clientRes.end(JSON.stringify({ error: "proxy is restarting" }));
+        }
+        continue;
       }
-      continue;
-    }
-    if (now - r.time > QUEUE_TIMEOUT) {
+      // Requests waiting on transient capacity pressure get a much longer queue
+      // window than the normal 30s timeout; otherwise a single upstream spike
+      // would 503 every request in the queue.
+      const maxWait = r.capacity ? Math.max(1, Number(config.capacityMaxWaitSeconds)) * 1000 : QUEUE_TIMEOUT;
+      if (now - r.time > maxWait) {
       if (!r.clientRes.destroyed && !r.clientRes.headersSent) {
         let timedOutModel = null;
         try { timedOutModel = JSON.parse(r.body.toString()).model || null; } catch (e) {}
@@ -3983,6 +4108,7 @@ function processQueue() {
     forwardRequest(idx, r.method, r.headers, r.body, r.clientRes, r.pathname, (result) => {
       if (result.switched) {
         r.failureContext = result;
+        if (result.capacityRetry) r.capacity = true;
         requestQueue.push(r);
       }
     }, r.extraTransform);
@@ -4025,7 +4151,7 @@ function loadAccounts() {
       const ks = getKeyState(i), tag = a.remark ? ` (${a.remark})` : "";
       const disc = ks.status === "discarded" ? "废弃" : "";
       const user = a.status !== "active" ? a.status : "";
-      const st = user ? `✗ ${user}` : (disc ? `✗ ${disc}` : (inCooldown(i) ? `✗ 冷却中 (${ks.failCode})` : "✓ 可用"));
+      const st = user ? `✗ ${user}` : (disc ? `✗ ${disc}` : (inCooldown(i) ? `✗ 冷却中 (${ks.failCode || (ks.capUntil && ks.capUntil > Date.now() ? "容量退避" : "")})` : "✓ 可用"));
       const s = ks.stats;
       const t = s ? ` | ${s.totalRequests}次请求 ${fmtBytes(s.inputBytes+s.outputBytes)}` : "";
       console.log(`       ${i+1}. ${m ? m[1] : a.key.slice(0,12)}... → ${a.url} [${resetLabels[a.reset] || a.reset}]${tag} ${st}${t}`);
@@ -4117,8 +4243,16 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         const reason = errorMessage
           ? classifyUpstreamErrorMessage(errorMessage)
           : (statusCode === 402 ? "insufficient_quota" : "upstream_api_error");
+        // 429 and message-classified capacity errors are transient: back the key
+        // off briefly and let the caller retry, instead of marking a hard
+        // failure that cascades into whole-period cooldown for every key.
+        const isCapacity = statusCode === 429 || reason === "model_at_capacity";
         activeDecr(idx);
-        markFailure(idx, statusCode);
+        if (isCapacity) {
+          markCapacityBackoff(idx);
+        } else {
+          markFailure(idx, statusCode);
+        }
         recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode, client, requestPricing);
         recordPath(pathname, method, 0, 0, dur);
         Object.assign(logEntry, {
@@ -4133,7 +4267,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         });
         addLog(logEntry);
         const _ks1=getKeyState(idx);_ks1.lastStatus=statusCode;_ks1.lastTime=Date.now();_ks1.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
-        onDone({ switched: true, idx, code: statusCode, reason, errorMessage, source: "upstream_http_error" });
+        onDone({ switched: true, idx, code: statusCode, reason, errorMessage, source: "upstream_http_error", capacityRetry: isCapacity });
       });
       return;
     }
@@ -4429,6 +4563,15 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     console.log(`[proxy] → #${idx + 1}${tag} ${a.url}`);
     forwardRequest(idx, method, headers, body, clientRes, pathname, (r) => {
       if (r.switched) lastFailure = r;
+      if (r.capacityRetry) {
+        // Transient capacity: requeue the request instead of hot-cycling every
+        // key (each of which would just 429 again). It waits in the queue up to
+        // capacityMaxWaitSeconds and retries as soon as a key is backed off.
+        console.log(`[proxy] #${idx+1} → 429/capacity, queueing for retry`);
+        enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, r, true);
+        responded = true;
+        return;
+      }
       if (r.switched && usedKeys.size < activeCount) { console.log(`[proxy] #${idx+1} → ${r.code||"err"}, switching...`); return attempt(); }
       if (r.switched) reportFinalFailure(r, "All keys exhausted");
       else responded = true;
@@ -4517,6 +4660,7 @@ function buildStatusData() {
       failTime: ks.failTime,
       failPeriod: ks.failPeriod,
       failCount: ks.failCount,
+      capUntil: ks.capUntil || 0,
       locked: ks.status === "locked",
       shielded: a.status === "shielded",
       active: (activeRequests[i] || []).length > 0,
@@ -5071,6 +5215,11 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"> 两次触发最小间隔</div>
   <div style="color:#94a3b8;padding:4px 0">cmd.exe 路径</div>
   <div><input id="cfgCmdPath" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="/mnt/c/Windows/System32/cmd.exe"></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🚦 容量/429 瞬态退避（capacityBackoff）</div>
+  <div style="color:#94a3b8;padding:4px 0">瞬态退避时长（秒）</div>
+  <div><input id="cfgCapacityBackoffSeconds" type="number" min="1" max="3600" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:70px" value="60"> 429/容量错误后该 Key 短暂跳过，不记为整周期故障</div>
+  <div style="color:#94a3b8;padding:4px 0">容量等待上限（秒）</div>
+  <div><input id="cfgCapacityMaxWaitSeconds" type="number" min="30" max="3600" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:70px" value="300"> 仅剩容量退避时，请求在队列中最多等待秒数（默认 30 秒的超时会被此值替换）</div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;margin-bottom:4px">项目列表（最多 10 个）<button class="btn" style="font-size:10px;margin-left:6px" onclick="addResumeProject()">+ 添加项目</button></div>
   <div id="cfgResumeProjects" style="grid-column:1/-1"></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">📋 日志配置</div>
@@ -5588,6 +5737,8 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoResumeIdle").value=c.autoResumeIdleMinutes||10;
     document.getElementById("cfgAutoResumeDebounce").value=c.autoResumeDebounceMinutes||3;
     document.getElementById("cfgCmdPath").value=c.cmdPath||"/mnt/c/Windows/System32/cmd.exe";
+    document.getElementById("cfgCapacityBackoffSeconds").value=c.capacityBackoffSeconds||60;
+    document.getElementById("cfgCapacityMaxWaitSeconds").value=c.capacityMaxWaitSeconds||300;
     renderResumeProjects(c.autoResumeProjects||[]);
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(c.autoRecoverDailyNextTime)autoRecoverDailyNextTime=parseInt(c.autoRecoverDailyNextTime);else autoRecoverDailyNextTime=0;
@@ -7865,6 +8016,8 @@ async function saveConfig(){
     autoResumeIdleMinutes:parseInt(document.getElementById("cfgAutoResumeIdle").value)||10,
     autoResumeDebounceMinutes:parseInt(document.getElementById("cfgAutoResumeDebounce").value)||3,
     cmdPath:document.getElementById("cfgCmdPath").value.trim()||"/mnt/c/Windows/System32/cmd.exe",
+    capacityBackoffSeconds:parseInt(document.getElementById("cfgCapacityBackoffSeconds").value)||60,
+    capacityMaxWaitSeconds:parseInt(document.getElementById("cfgCapacityMaxWaitSeconds").value)||300,
     autoResumeProjects:collectResumeProjects()
   };
   if(c.codexLogMaintenance.enabled&&!(await checkCodexLogMaintenancePath())){

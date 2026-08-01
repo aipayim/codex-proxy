@@ -81,7 +81,14 @@ if ! cd -- "$PROJECT_PATH"; then
 fi
 
 write_status "starting" 0 ""
-setsid bash -lc "$COMMAND" &
+# codex CLI's resume TUI requires a terminal; setsid strips the console, so wrap
+# the command with `script` to allocate a pseudo-terminal. -e propagates the
+# child exit code so the runner still records failed/exited correctly.
+if command -v script >/dev/null 2>&1; then
+  setsid script -qec "$COMMAND" /dev/null &
+else
+  setsid bash -lc "$COMMAND" &
+fi
 command_pid=$!
 printf 'pgid:%s\n' "$command_pid" > "$PID_FILE"
 write_status "running" "$command_pid" ""
