@@ -44,6 +44,8 @@ const RELEASE_MANIFEST_MAX_BYTES = 64 * 1024;
 const RELEASE_BASELINE_MAX_BYTES = 4 * 1024;
 const RELEASE_INTEGRITY_FILE_MAX_BYTES = 8 * 1024 * 1024;
 const AUTO_RESUME_RUNTIME_FILE_MAX_BYTES = 8 * 1024;
+const AUTO_RESUME_LAUNCH_TIMEOUT_MS = 120000;
+const AUTO_RESUME_STATUS_MAX_BYTES = 64 * 1024;
 const GIT_PROBE_TIMEOUT_MS = 1000;
 const RELEASE_INTEGRITY_FILES = new Set([
   "proxy.js",
@@ -193,7 +195,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300 };
+  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300 };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -818,7 +820,7 @@ function loadConfig() {
     config.autoResume = c.autoResume === true;
     config.autoResumeIdleMinutes = Math.max(1, parseInt(c.autoResumeIdleMinutes) || 10);
     config.autoResumeDebounceMinutes = Math.max(1, parseInt(c.autoResumeDebounceMinutes) || 3);
-    config.autoResumeProjects = Array.isArray(c.autoResumeProjects) ? c.autoResumeProjects.slice(0, 10) : [];
+    config.autoResumeProjects = normalizeAutoResumeProjects(c.autoResumeProjects);
     config.capacityBackoffSeconds = Math.max(1, parseInt(c.capacityBackoffSeconds) || 60);
     config.capacityMaxWaitSeconds = Math.max(30, parseInt(c.capacityMaxWaitSeconds) || 300);
     config.cmdPath = c.cmdPath || "/mnt/c/Windows/System32/cmd.exe";
@@ -1223,6 +1225,25 @@ function normalizePath(p) {
   s = s.replace(/\/+$/, '');
   return s;
 }
+function normalizeAutoResumeProjects(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 10).map(project => {
+    if (!project || typeof project !== "object" || Array.isArray(project)) return null;
+    const name = String(project.name || "").trim().slice(0, 80);
+    const projectPath = String(project.path || "").trim().slice(0, 2048);
+    const cmd = String(project.cmd || "").trim().slice(0, 8192);
+    const sessionId = normalizeAutoResumeSessionId(project.sessionId);
+    const resumeMode = project.resumeMode === "fixed_session" ? "fixed_session" : "command";
+    if (!projectPath && !cmd) return null;
+    return {
+      name,
+      path: projectPath,
+      cmd,
+      resumeMode,
+      ...(sessionId ? { sessionId } : {}),
+    };
+  }).filter(Boolean);
+}
 function checkAdminAuth(req) {
   if (!config.adminToken) return true;
   const auth = req.headers.authorization || "";
@@ -1326,6 +1347,18 @@ function recordKeyUse(idx, at = Date.now()) {
     const runtime = getAutoResumeRuntimeState();
     runtime.lastKeyUseTime = lastKeyUseTime;
     runtime.lastKeyIndex = idx + 1;
+    for (let projectIndex = 0; projectIndex < (config.autoResumeProjects || []).length; projectIndex++) {
+      const projectId = autoResumeProjectId(config.autoResumeProjects[projectIndex], projectIndex);
+      const projectState = runtime.projects[projectId];
+      if (!projectState || projectState.idleEpochKeyUseTime === lastKeyUseTime) continue;
+      runtime.projects[projectId] = {
+        ...projectState,
+        idleEpochKeyUseTime: lastKeyUseTime,
+        attemptCount: 0,
+        lastAttemptAt: 0,
+        lastAttemptOutcome: "",
+      };
+    }
   }
   // Keep this small heartbeat durable even when the full state write is throttled.
   persistAutoResumeRuntime();
@@ -1352,6 +1385,86 @@ function autoResumeProjectFiles(proj, index) {
   };
 }
 
+function normalizeAutoResumeSessionId(value) {
+  const sessionId = String(value || "").trim();
+  if (!sessionId || sessionId.length > 128) return "";
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(sessionId) ? sessionId : "";
+}
+
+function usesFixedAutoResumeSession(proj) {
+  if (!proj || proj.resumeMode !== "fixed_session") return false;
+  const command = String(proj.cmd || "").trim();
+  return Boolean(normalizeAutoResumeSessionId(proj.sessionId) && command.includes("{sessionId}"));
+}
+
+function validateAutoResumeProjects(value) {
+  if (!Array.isArray(value)) return;
+  for (const project of value.slice(0, 10)) {
+    if (!project || typeof project !== "object" || Array.isArray(project) || project.resumeMode !== "fixed_session") continue;
+    if (!usesFixedAutoResumeSession(project)) {
+      throw new Error("fixed-session recovery requires a valid sessionId and {sessionId} command placeholder");
+    }
+  }
+}
+
+function autoResumeCommandHash(command) {
+  return crypto.createHash("sha256").update(String(command || ""), "utf8").digest("hex").slice(0, 16);
+}
+
+function autoResumeProjectFingerprint(proj) {
+  const descriptor = {
+    path: normalizePath(proj && proj.path) || "",
+    command: String((proj && proj.cmd) || "").trim(),
+    resumeMode: proj && proj.resumeMode === "fixed_session" ? "fixed_session" : "command",
+    sessionId: normalizeAutoResumeSessionId(proj && proj.sessionId),
+  };
+  return autoResumeCommandHash(JSON.stringify(descriptor));
+}
+
+function shellQuote(value) {
+  return `'${String(value || "").replace(/'/g, "'\\''")}'`;
+}
+
+function buildAutoResumeCommand(proj) {
+  const command = String((proj && proj.cmd) || "").trim();
+  // Only the explicit fixed-session mode may expand the placeholder. A
+  // command-mode project can safely retain a literal {sessionId} token.
+  if (usesFixedAutoResumeSession(proj)) {
+    return command.replace(/\{sessionId\}/g, shellQuote(normalizeAutoResumeSessionId(proj.sessionId)));
+  }
+  return command;
+}
+
+function getAutoResumeCommandWarning(proj, command) {
+  if (/\bresume\s+--last\b/.test(command) && !usesFixedAutoResumeSession(proj)) {
+    return "resume --last selects the most recent session; configure fixed_session with sessionId/{sessionId} for deterministic recovery";
+  }
+  return "";
+}
+
+function autoResumeProjectState(proj, index) {
+  const id = autoResumeProjectId(proj, index);
+  const runtime = getAutoResumeRuntimeState();
+  const previous = runtime.projects[id] || {};
+  const epoch = normalizeAutoResumeTimestamp(lastKeyUseTime);
+  const fingerprint = autoResumeProjectFingerprint(proj);
+  if (previous.idleEpochKeyUseTime === epoch &&
+      (!previous.projectFingerprint || previous.projectFingerprint === fingerprint)) {
+    return { id, state: previous };
+  }
+  const next = {
+    ...previous,
+    idleEpochKeyUseTime: epoch,
+    projectFingerprint: fingerprint,
+    attemptCount: 0,
+    lastAttemptAt: 0,
+    lastAttemptOutcome: "",
+  };
+  runtime.projects[id] = next;
+  if (autoResumeStateReady) saveState(true);
+  return { id, state: next };
+}
+
 function updateAutoResumeProjectState(id, patch, forceSave) {
   if (!autoResumeStateReady) return;
   const runtime = getAutoResumeRuntimeState();
@@ -1359,14 +1472,41 @@ function updateAutoResumeProjectState(id, patch, forceSave) {
   saveState(forceSave === true);
 }
 
+function readProcStartTicks(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) return null;
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8").trim();
+    const end = raw.lastIndexOf(") ");
+    if (end < 0) return null;
+    const fields = raw.slice(end + 2).trim().split(/\s+/);
+    const value = Number(fields[19]); // /proc stat field 22 (start time)
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function readAutoResumePid(pidFile) {
   try {
     const raw = fs.readFileSync(pidFile, "utf8").trim();
+    if (raw.startsWith("{")) {
+      const lease = JSON.parse(raw);
+      const pid = Number(lease && lease.pid);
+      const pgid = Number(lease && lease.pgid);
+      const processStartTicks = Number(lease && lease.processStartTicks);
+      const runId = normalizeAutoResumeSessionId(lease && lease.runId);
+      if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid ||
+          !Number.isSafeInteger(pgid) || pgid <= 1 || !runId ||
+          !Number.isSafeInteger(processStartTicks) || processStartTicks <= 0) return null;
+      return { pid, pgid, processGroup: true, runId, processStartTicks, createdAt: normalizeAutoResumeTimestamp(lease.createdAt), schema: Number(lease.schema) || 1 };
+    }
+    // Read leases created by older versions, but never signal one: it has no
+    // identity/start-time proof and may refer to a reused PID.
     const match = /^(pgid:)?(\d+)$/.exec(raw);
     if (!match) return null;
     const pid = parseInt(match[2], 10);
     if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return null;
-    return { pid, processGroup: Boolean(match[1]) };
+    return { pid, pgid: pid, processGroup: Boolean(match[1]), legacy: true };
   } catch {
     return null;
   }
@@ -1382,25 +1522,43 @@ function isProcessAlive(pid) {
   }
 }
 
-function stopAutoResumeProcess(pidInfo) {
-  if (!pidInfo) return false;
-  if (pidInfo.processGroup) {
-    try {
-      process.kill(-pidInfo.pid, "SIGTERM");
-      return true;
-    } catch { /* fall through to the leader process */ }
-  }
-  try {
-    process.kill(pidInfo.pid, "SIGTERM");
-    return true;
-  } catch {
-    return false;
-  }
+function isOwnedAutoResumeProcess(pidInfo) {
+  if (!pidInfo || pidInfo.legacy || !pidInfo.runId || !pidInfo.processStartTicks) return false;
+  if (!isProcessAlive(pidInfo.pid)) return false;
+  const currentTicks = readProcStartTicks(pidInfo.pid);
+  return currentTicks !== null && currentTicks === pidInfo.processStartTicks;
 }
 
 function readAutoResumeRunnerStatus(statusFile) {
   try {
-    const fields = fs.readFileSync(statusFile, "utf8").trim().split("\t");
+    const raw = fs.readFileSync(statusFile, "utf8");
+    if (Buffer.byteLength(raw, "utf8") > AUTO_RESUME_STATUS_MAX_BYTES) return null;
+    const text = raw.trim();
+    if (!text) return null;
+    if (text.startsWith("{")) {
+      const value = JSON.parse(text);
+      const phase = String(value.phase || "");
+      const allowed = new Set(["starting", "running", "exited", "failed", "terminated", "cd_failed", "launcher_failed"]);
+      if (!allowed.has(phase)) return null;
+      const pid = Number(value.pid);
+      const updatedAt = normalizeAutoResumeTimestamp(value.updatedAt);
+      const exitCode = value.exitCode === null || value.exitCode === undefined || value.exitCode === "" ? null : Number(value.exitCode);
+      if (!updatedAt || !Number.isSafeInteger(pid) || pid < 0 ||
+          (exitCode !== null && !Number.isSafeInteger(exitCode))) return null;
+      return {
+        phase,
+        pid,
+        updatedAt,
+        exitCode,
+        runId: normalizeAutoResumeSessionId(value.runId),
+        startedAt: normalizeAutoResumeTimestamp(value.startedAt),
+        signal: String(value.signal || "").slice(0, 32),
+        origin: String(value.origin || "runner").slice(0, 64),
+        detail: String(value.detail || "").slice(0, 240),
+      };
+    }
+    // Backward-compatible reader for the pre-lease TSV status format.
+    const fields = text.split("\t");
     const [phase, rawPid, rawUpdatedAt, rawExitCode, rawLauncherError] = fields;
     const allowed = new Set(["starting", "running", "exited", "failed", "terminated", "cd_failed", "launcher_failed"]);
     if (!allowed.has(phase)) return null;
@@ -1408,35 +1566,64 @@ function readAutoResumeRunnerStatus(statusFile) {
     const updatedAt = normalizeAutoResumeTimestamp(rawUpdatedAt);
     const exitCode = rawExitCode === "" || rawExitCode === undefined ? null : parseInt(rawExitCode, 10);
     if (!updatedAt || (rawPid && (!Number.isSafeInteger(pid) || pid < 0))) return null;
-    return { phase, pid: Number.isSafeInteger(pid) ? pid : 0, updatedAt, exitCode: Number.isSafeInteger(exitCode) ? exitCode : null, launcherError: rawLauncherError ? String(rawLauncherError).slice(0, 200) : null };
+    return { phase, pid: Number.isSafeInteger(pid) ? pid : 0, updatedAt, exitCode: Number.isSafeInteger(exitCode) ? exitCode : null, runId: "", startedAt: 0, signal: "", origin: "legacy", detail: rawLauncherError ? String(rawLauncherError).slice(0, 240) : "" };
   } catch {
     return null;
   }
 }
 
 function refreshAutoResumeProjectStatus(proj, index) {
-  const { id, statusFile } = autoResumeProjectFiles(proj, index);
+  const { id, pidFile, statusFile } = autoResumeProjectFiles(proj, index);
   const status = readAutoResumeRunnerStatus(statusFile);
   if (!status || !autoResumeStateReady) return;
   const runtime = getAutoResumeRuntimeState();
   const previous = runtime.projects[id] || {};
-  if (previous.runnerUpdatedAt === status.updatedAt && previous.phase === status.phase) return;
+  // Once this proxy has issued a run id, only that exact runner may update
+  // its state. Legacy TSV files have no identity proof and must not overwrite
+  // a newer launch after restart or upgrade.
+  if (previous.runnerRunId && previous.runnerRunId !== status.runId) return;
+  if (previous.runnerUpdatedAt === status.updatedAt && previous.phase === status.phase &&
+      previous.runnerSignal === status.signal && previous.runnerExitCode === status.exitCode) return;
+
+  const lease = readAutoResumePid(pidFile);
+  const processStartTicks = lease && lease.runId === status.runId ? lease.processStartTicks : null;
 
   updateAutoResumeProjectState(id, {
     phase: status.phase,
     runnerPid: status.pid || null,
     runnerUpdatedAt: status.updatedAt,
-    exitCode: status.exitCode,
-    launcherError: status.launcherError || null,
+    runnerRunId: status.runId || previous.runnerRunId || null,
+    processStartTicks: processStartTicks || previous.processStartTicks || null,
+    runnerExitCode: status.exitCode,
+    runnerSignal: status.signal || "",
+    runnerOrigin: status.origin || "runner",
+    runnerDetail: status.detail || "",
+    launcherError: status.origin === "cmd_start" ? status.detail || null : (previous.launcherError || null),
   }, true);
 
   const label = autoResumeProjectLabel(proj, index);
-  if (status.phase === "running") addEventLog("auto_resume_running", 0, `闲置恢复：${label} 已开始执行`, "");
+  if (status.phase === "running") addEventLog("auto_resume_running", 0, `闲置恢复：${label} runner 已启动（CLI 状态待确认）`, "");
   else if (status.phase === "exited") addEventLog("auto_resume_exited", 0, `闲置恢复：${label} 已退出（代码 ${status.exitCode ?? 0}）`, "");
-  else if (status.phase === "terminated") addEventLog("auto_resume_terminated", 0, `闲置恢复：${label} 已被下一次恢复终止`, "");
+  else if (status.phase === "terminated") addEventLog("auto_resume_terminated", 0, `闲置恢复：${label} 进程终止（信号 ${status.signal || "未知"}，来源 ${status.origin || "未知"}）`, "");
   else if (status.phase === "cd_failed") addEventLog("auto_resume_command_failed", 0, `闲置恢复：${label} 无法进入项目目录`, "");
   else if (status.phase === "failed") addEventLog("auto_resume_command_failed", 0, `闲置恢复：${label} 命令退出失败（代码 ${status.exitCode ?? "未知"}）`, "");
-  else if (status.phase === "launcher_failed") addEventLog("auto_resume_launcher_failed", 0, `闲置恢复：${label} 启动器退出失败${status.launcherError ? "（"+status.launcherError+"）" : ""}`, "");
+  else if (status.phase === "launcher_failed") addEventLog("auto_resume_launcher_failed", 0, `闲置恢复：${label} 启动器失败${status.detail ? "（"+status.detail+"）" : ""}`, "");
+}
+
+function refreshAutoResumeLaunchTimeout(proj, index, now = Date.now()) {
+  if (!autoResumeStateReady) return;
+  const id = autoResumeProjectId(proj, index);
+  const projectState = getAutoResumeRuntimeState().projects[id] || {};
+  const launchedAt = normalizeAutoResumeTimestamp(projectState.launchRequestedAt);
+  if (projectState.phase !== "launching" || !launchedAt || now - launchedAt < AUTO_RESUME_LAUNCH_TIMEOUT_MS || projectState.launchTimeoutAt) return;
+  updateAutoResumeProjectState(id, {
+    phase: "launcher_timeout",
+    launcherPhase: "timeout",
+    launchTimeoutAt: now,
+    lastAttemptOutcome: "launcher_timeout",
+    runnerDetail: "no runner status arrived before launch timeout",
+  }, true);
+  addEventLog("auto_resume_launcher_timeout", 0, `闲置恢复：${autoResumeProjectLabel(proj, index)} 启动请求超时，未收到 runner 状态`, "");
 }
 
 function configureAutoResumeTimer() {
@@ -1460,107 +1647,43 @@ function checkAutoResume(now = Date.now()) {
   if (!config.autoResume || !autoResumeStateReady || !config.autoResumeProjects || config.autoResumeProjects.length === 0) return;
   for (let index = 0; index < config.autoResumeProjects.length; index++) {
     refreshAutoResumeProjectStatus(config.autoResumeProjects[index], index);
+    refreshAutoResumeLaunchTimeout(config.autoResumeProjects[index], index, now);
   }
   initializeAutoResumeKeyUseTime();
   const idleMinutes = (now - lastKeyUseTime) / 60000;
   if (idleMinutes < config.autoResumeIdleMinutes) return;
-  const sinceLastResume = (now - lastResumeTime) / 60000;
-  if (sinceLastResume < config.autoResumeDebounceMinutes) return;
-
-  lastResumeTime = now;
-  const runtime = getAutoResumeRuntimeState();
-  runtime.lastResumeTime = lastResumeTime;
-  runtime.lastTriggerIdleMinutes = Math.round(idleMinutes);
-  persistAutoResumeRuntime();
-  saveState(true);
-  broadcastStatus();
-  console.log("[proxy] autoResume triggered after " + Math.round(idleMinutes) + "min without key use");
-  addEventLog("auto_resume_triggered", 0, `闲置恢复触发：Key 已 ${Math.round(idleMinutes)} 分钟未使用`, "");
+  // A long-running request proves that the downstream task is still inside
+  // the proxy. Wait for it to finish before opening another Codex terminal;
+  // the Key heartbeat remains unchanged and will be evaluated on the next
+  // check, so a completed/stalled task still reaches the configured threshold.
+  if (getActiveRequestCount() > 0) return;
+  let attempted = false;
   for (let index = 0; index < config.autoResumeProjects.length; index++) {
     const proj = config.autoResumeProjects[index];
-    if (proj.path && proj.cmd) triggerResume(proj, index);
+    if (!proj.path || !proj.cmd) continue;
+    const { id, state: projectState } = autoResumeProjectState(proj, index);
+    const sinceAttempt = (now - Number(projectState.lastAttemptAt || 0)) / 60000;
+    // One attempt per continuous idle episode. A subsequent real Key use
+    // resets the episode; failed runners must not be replayed forever.
+    if (projectState.attemptCount > 0 || sinceAttempt < config.autoResumeDebounceMinutes) continue;
+    projectState.attemptCount = 1;
+    projectState.lastAttemptAt = now;
+    projectState.lastAttemptOutcome = "launching";
+    updateAutoResumeProjectState(id, projectState, true);
+    triggerResume(proj, index);
+    attempted = true;
   }
-}
-
-function collectCodexDescendantPids(rootPid) {
-  const found = new Set([rootPid]);
-  const queue = [rootPid];
-  for (let i = 0; i < queue.length; i++) {
-    let children;
-    try {
-      children = fs.readdirSync(`/proc/${queue[i]}/task/${queue[i]}/children`);
-    } catch {
-      continue;
-    }
-    for (const child of children) {
-      const pid = parseInt(child, 10);
-      if (Number.isSafeInteger(pid) && pid > 1 && !found.has(pid)) {
-        found.add(pid);
-        queue.push(pid);
-      }
-    }
+  if (attempted) {
+    lastResumeTime = now;
+    const runtime = getAutoResumeRuntimeState();
+    runtime.lastResumeTime = lastResumeTime;
+    runtime.lastTriggerIdleMinutes = Math.round(idleMinutes);
+    persistAutoResumeRuntime();
+    saveState(true);
+    broadcastStatus();
+    console.log("[proxy] autoResume triggered after " + Math.round(idleMinutes) + "min without key use");
+    addEventLog("auto_resume_triggered", 0, `闲置恢复触发：Key 已 ${Math.round(idleMinutes)} 分钟未使用（本闲置周期仅尝试一次）`, "");
   }
-  return found;
-}
-
-// A previous codex CLI that is still alive in the project directory holds the
-// session/thread lock, so a fresh resume cannot take over. Scan /proc for codex
-// processes whose cwd is the project path and terminate them (with their
-// descendants) before launching a new one.
-function cleanupStaleCodexProcesses(projectPath, label) {
-  let projectRealPath = null;
-  try {
-    projectRealPath = typeof fs.realpathSync.native === "function" ? fs.realpathSync.native(projectPath) : fs.realpathSync(projectPath);
-  } catch {
-    projectRealPath = projectPath;
-  }
-  const staleRoots = [];
-  try {
-    for (const entry of fs.readdirSync("/proc")) {
-      if (!/^\d+$/.test(entry)) continue;
-      const pid = parseInt(entry, 10);
-      if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) continue;
-      let cwd;
-      let cmdline;
-      try {
-        cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
-        cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
-      } catch {
-        continue;
-      }
-      let cwdMatches = cwd === projectPath || cwd === projectRealPath;
-      if (!cwdMatches && projectRealPath) {
-        try {
-          const cwdReal = typeof fs.realpathSync.native === "function" ? fs.realpathSync.native(cwd) : fs.realpathSync(cwd);
-          cwdMatches = cwdReal === projectPath || cwdReal === projectRealPath;
-        } catch { /* keep prior result */ }
-      }
-      if (!cwdMatches) continue;
-      if (!/codex/.test(cmdline)) continue;
-      staleRoots.push(pid);
-    }
-  } catch { /* /proc unavailable */ }
-
-  const targeted = [];
-  for (const root of staleRoots) {
-    for (const pid of collectCodexDescendantPids(root)) {
-      try {
-        process.kill(pid, "SIGTERM");
-        targeted.push(pid);
-      } catch { /* already gone */ }
-    }
-  }
-  if (targeted.length > 0) {
-    const unique = [...new Set(targeted)];
-    setTimeout(() => {
-      for (const pid of unique) {
-        try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
-      }
-    }, 4000).unref();
-    addEventLog("auto_resume_stale_killed", 0, `闲置恢复：${label} 清理 ${unique.length} 个残留 codex 进程`, "");
-    console.log(`[proxy] autoResume cleaned ${unique.length} stale codex process(es) for ${label}`);
-  }
-  return targeted.length;
 }
 
 function triggerResume(proj, index) {
@@ -1571,33 +1694,62 @@ function triggerResume(proj, index) {
 
   const currentState = getAutoResumeRuntimeState().projects[files.id] || {};
   const livePid = readAutoResumePid(files.pidFile);
-  if (livePid && isProcessAlive(livePid.pid)) return;
-  if (currentState.phase === "launching" && (Date.now() - (currentState.launchRequestedAt || 0)) < 30000) return;
+  if (livePid && isProcessAlive(livePid.pid)) {
+    const owned = isOwnedAutoResumeProcess(livePid);
+    updateAutoResumeProjectState(files.id, {
+      phase: owned ? "running" : "ownership_unknown",
+      runnerPid: livePid.pid,
+      runnerRunId: livePid.runId || null,
+      processStartTicks: livePid.processStartTicks || null,
+      runnerDetail: owned ? "managed runner is already alive" : "existing PID lease cannot be verified; no signal sent",
+    }, true);
+    addEventLog(owned ? "auto_resume_already_running" : "auto_resume_ownership_unknown", 0,
+      owned ? `闲置恢复：${label} 已有本功能启动的 runner，跳过重复启动` : `闲置恢复：${label} 发现无法验证归属的进程，未终止、跳过启动`, "");
+    return;
+  }
+  // A dead lease is safe to remove. No signal is ever sent to an unverified
+  // or directory-matched process.
+  if (livePid) {
+    try { fs.unlinkSync(files.pidFile); } catch { /* already removed */ }
+  }
+  if (currentState.phase === "launching" && (Date.now() - (currentState.launchRequestedAt || 0)) < AUTO_RESUME_LAUNCH_TIMEOUT_MS) return;
 
   try {
     if (!fs.statSync(normalizedPath).isDirectory()) throw new Error("project directory is unavailable");
     if (!fs.existsSync(RESUME_SCRIPT)) throw new Error("resume launcher is unavailable");
-
-    cleanupStaleCodexProcesses(normalizedPath, label);
-
-    const oldPid = readAutoResumePid(files.pidFile);
-    if (oldPid) {
-      const stopped = stopAutoResumeProcess(oldPid);
-      addEventLog("auto_resume_replacing", 0, `闲置恢复：${label}${stopped ? " 正在停止上一次命令" : " 发现上一次命令已结束"}`, "");
-    }
     try { fs.unlinkSync(files.statusFile); } catch { /* stale status is optional */ }
 
     const startedAt = Date.now();
-    updateAutoResumeProjectState(files.id, { phase: "launching", launchRequestedAt: startedAt, launcherExitCode: null }, true);
+    const runId = crypto.randomUUID();
+    const command = buildAutoResumeCommand(proj);
+    const usesFixedSession = usesFixedAutoResumeSession(proj);
+    if (proj.resumeMode === "fixed_session" && !usesFixedSession) {
+      throw new Error("fixed-session recovery requires a valid sessionId and {sessionId} command placeholder");
+    }
+    const commandWarning = getAutoResumeCommandWarning(proj, command);
+    updateAutoResumeProjectState(files.id, {
+      phase: "launching",
+      launchRequestedAt: startedAt,
+      launchTimeoutAt: null,
+      launcherPhase: "pending",
+      launcherExitCode: null,
+      launcherSignal: null,
+      runnerRunId: runId,
+      commandHash: autoResumeCommandHash(command),
+      commandWarning,
+      runnerDetail: "waiting for runner status",
+    }, true);
     addEventLog("auto_resume_launching", 0, `闲置恢复：正在启动 ${label}`, "");
+    if (commandWarning) addEventLog("auto_resume_session_ambiguous", 0, `闲置恢复：${label} 使用 resume --last，无法保证恢复到指定会话`, "");
     const child = spawn("/bin/bash", [
       RESUME_SCRIPT,
       normalizedPath,
-      String(proj.cmd),
+      command,
       files.pidFile,
       files.statusFile,
       `Codex Resume - ${files.id}`,
       config.cmdPath || "/mnt/c/Windows/System32/cmd.exe",
+      runId,
     ], { detached: true, stdio: "ignore" });
     autoResumeLaunches.set(files.id, child);
     let settled = false;
@@ -1605,24 +1757,24 @@ function triggerResume(proj, index) {
       if (settled) return;
       settled = true;
       autoResumeLaunches.delete(files.id);
-      updateAutoResumeProjectState(files.id, { phase, launcherUpdatedAt: Date.now(), ...extra }, true);
+      updateAutoResumeProjectState(files.id, { launcherPhase: phase, launcherUpdatedAt: Date.now(), ...extra }, true);
       addEventLog(eventType, 0, message, "");
       broadcastStatus();
     };
     child.once("error", error => {
-      finish("launcher_failed", { launcherError: String(error.message || error).slice(0, 160) }, "auto_resume_launcher_failed", `闲置恢复：${label} 启动器失败`);
+      finish("failed", { launcherError: String(error.message || error).slice(0, 160) }, "auto_resume_launcher_failed", `闲置恢复：${label} 启动器失败`);
     });
     child.once("close", (code, signal) => {
       if (code === 0) {
-        finish("launcher_accepted", { launcherExitCode: 0, launcherSignal: null }, "auto_resume_launcher_accepted", `闲置恢复：${label} 启动器已接受`);
+        finish("returned", { launcherExitCode: 0, launcherSignal: null }, "auto_resume_launcher_returned", `闲置恢复：${label} Windows 启动请求已返回，等待 runner/CLI 状态`);
       } else {
-        finish("launcher_failed", { launcherExitCode: Number.isInteger(code) ? code : null, launcherSignal: signal || null }, "auto_resume_launcher_failed", `闲置恢复：${label} 启动器退出失败`);
+        finish("failed", { launcherExitCode: Number.isInteger(code) ? code : null, launcherSignal: signal || null }, "auto_resume_launcher_failed", `闲置恢复：${label} 启动器退出失败`);
       }
     });
     child.unref();
     console.log(`[proxy] autoResume launch requested: ${label}`);
   } catch (error) {
-    updateAutoResumeProjectState(files.id, { phase: "launcher_failed", launcherUpdatedAt: Date.now(), launcherError: String(error.message || error).slice(0, 160) }, true);
+    updateAutoResumeProjectState(files.id, { phase: "launcher_failed", launcherPhase: "failed", launcherUpdatedAt: Date.now(), launcherError: String(error.message || error).slice(0, 160), lastAttemptOutcome: "launcher_failed" }, true);
     addEventLog("auto_resume_launcher_failed", 0, `闲置恢复：${label} 无法启动`, "");
     console.error(`[proxy] autoResume launcher error for ${label}: ${error.message}`);
   }
@@ -5242,7 +5394,7 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div style="color:#94a3b8;padding:4px 0">Key 闲置阈值（分钟）</div>
   <div><input id="cfgAutoResumeIdle" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="10"> 分钟无请求视为空闲</div>
   <div style="color:#94a3b8;padding:4px 0">防抖间隔（分钟）</div>
-  <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"> 两次触发最小间隔</div>
+  <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"> 兼容间隔（同一闲置周期仅一次）</div>
   <div style="color:#94a3b8;padding:4px 0">cmd.exe 路径</div>
   <div><input id="cfgCmdPath" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="/mnt/c/Windows/System32/cmd.exe"></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🚦 容量/429 瞬态退避（capacityBackoff）</div>
@@ -6061,10 +6213,13 @@ function renderResumeProjects(projects){
   const list=projects&&projects.length?projects:[{name:"",path:"",cmd:""}];
   for(let i=0;i<list.length&&i<10;i++){
     const p=list[i];
+    const mode=p.resumeMode==="fixed_session"?"fixed_session":"command";
     html+='<div class="resume-proj-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px">'+
       '<input placeholder="项目名" class="rp-name" value="'+esc(p.name||'')+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
       '<input placeholder="WSL 路径 /mnt/d/..." class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
       '<input placeholder="命令 codex ..." class="rp-cmd" value="'+esc(p.cmd||'')+'" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+      '<select class="rp-mode" title="固定会话模式会将命令中的 {sessionId} 替换为下方会话 ID" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command"'+(mode==="command"?" selected":"")+'>命令</option><option value="fixed_session"'+(mode==="fixed_session"?" selected":"")+'>固定会话</option></select>'+
+      '<input placeholder="会话 ID" class="rp-session" value="'+esc(p.sessionId||'')+'" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="固定会话模式需要合法 Codex 会话 ID，且命令中必须含 {sessionId}">'+
       '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button></div>';
   }
   html+='</div>';
@@ -6081,6 +6236,8 @@ function addResumeProject(){
   div.innerHTML='<input placeholder="项目名" class="rp-name" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
     '<input placeholder="WSL 路径 /mnt/d/..." class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
     '<input placeholder="命令 codex ..." class="rp-cmd" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+    '<select class="rp-mode" title="固定会话模式会将命令中的 {sessionId} 替换为下方会话 ID" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command">命令</option><option value="fixed_session">固定会话</option></select>'+
+    '<input placeholder="会话 ID" class="rp-session" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="固定会话模式需要合法 Codex 会话 ID，且命令中必须含 {sessionId}">'+
     '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button>';
   container.querySelector("div").appendChild(div);
 }
@@ -6091,7 +6248,9 @@ function collectResumeProjects(){
     const name=row.querySelector(".rp-name").value.trim();
     const path=row.querySelector(".rp-path").value.trim();
     const cmd=row.querySelector(".rp-cmd").value.trim();
-    if(path&&cmd)projects.push({name:name||path.split("/").pop(),path,cmd});
+    const resumeMode=(row.querySelector(".rp-mode")||{}).value||"command";
+    const sessionId=(row.querySelector(".rp-session")||{}).value||"";
+    if(path&&cmd)projects.push({name:name||path.split("/").pop(),path,cmd,resumeMode,sessionId:sessionId.trim()});
   }
   return projects;
 }
@@ -8116,6 +8275,11 @@ async function saveConfig(){
     capacityMaxWaitSeconds:parseInt(document.getElementById("cfgCapacityMaxWaitSeconds").value)||300,
     autoResumeProjects:collectResumeProjects()
   };
+  const invalidResumeProject=c.autoResumeProjects.find(p=>p.resumeMode==="fixed_session"&&(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(p.sessionId||"")||!String(p.cmd||"").includes("{sessionId}")));
+  if(invalidResumeProject){
+    document.getElementById("configStatus").textContent="保存失败: 固定会话模式需要合法会话 ID，且启动命令必须包含 {sessionId}";
+    return;
+  }
   if(c.codexLogMaintenance.enabled&&!(await checkCodexLogMaintenancePath())){
     document.getElementById("configStatus").textContent="保存失败: Codex SQLite 数据库路径或结构未通过检测";
     return;
@@ -9260,6 +9424,9 @@ function createGroupServer(groupName, port) {
         try {
           const c = JSON.parse(body);
           if (!c || typeof c !== "object" || Array.isArray(c)) throw new Error("configuration object is required");
+          if (Object.prototype.hasOwnProperty.call(c, "autoResumeProjects")) {
+            validateAutoResumeProjects(c.autoResumeProjects);
+          }
           await enqueueConfigSave(async () => {
             if (Object.prototype.hasOwnProperty.call(c, "updateBaselineTag")) {
               const rawBaselineTag = c.updateBaselineTag == null ? "" : String(c.updateBaselineTag).trim();

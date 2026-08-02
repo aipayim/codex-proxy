@@ -41,6 +41,7 @@ codex-proxy/
 ├── test-stream-lifecycle.js # Responses 流终态回归测试
 ├── test-restart-lifecycle.js # 重启排空、取消与强制重启回归测试
 ├── test-auto-resume-lifecycle.js # Key 心跳闲置恢复与 watchdog 重载回归测试
+├── test-resume-runner-lifecycle.js # 闲置恢复 runner 租约、退出与信号回归测试
 ├── test-log-operations-lifecycle.js # 日志游标、汇总与事件处置回归测试
 ├── test-runtime-storage-lifecycle.js # state/JSONL/proxy.log 容量治理回归测试
 ├── logs/                 # 自动生成，按天分段的 JSONL 日志及本地汇总/事件 sidecar
@@ -68,6 +69,7 @@ GitHub 源码仓库保留构建器和全部回归测试，供发布维护者在�
 | `test-stream-lifecycle.js` | Responses 流终态回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-restart-lifecycle.js` | 重启生命周期回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-auto-resume-lifecycle.js` | Key 心跳闲置恢复与 watchdog 重载回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-resume-runner-lifecycle.js` | 闲置恢复 runner 租约、退出与信号回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-log-operations-lifecycle.js` | 日志查询、汇总与事件处置回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-runtime-storage-lifecycle.js` | 状态、请求日志和控制台日志容量治理回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `proxy.js` | 核心代理（含内嵌面板） | 复制到目标目录即可 |
@@ -862,7 +864,7 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `defaultResetHours` | `hourly` 类型的默认重置周期（小时，默认 5）。可在 keys.json 中按 Key 覆盖（`resetHours`） |
 | `autoResume` | 是否启用闲置自动恢复（true/false，默认 false） |
 | `autoResumeIdleMinutes` | 空闲阈值（分钟，默认 10） |
-| `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3） |
+| `autoResumeDebounceMinutes` | 旧配置兼容字段（分钟，默认 3）；同一 Key 闲置周期仍只会尝试一次 |
 | `autoResumeProjects` | 项目列表数组，每项含 name/path/cmd，最多 10 个 |
 | `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
 | `weeklySortBy` | weekly 组排序方式：`"priority"`（按 priority+索引）或 `"expiry"`（按最先到期先使用） |
@@ -1133,10 +1135,12 @@ model = "o3#87"
 
 1. 代理仅在选中的上游 Key 已写入实际转发请求时记录 `lastKeyUseTime`。普通下游连接、管理接口、仪表盘/轮询请求、以及一个持续很久但没有再次应用 Key 的流都不会重置此计时
 2. 运行时心跳保存在 `.auto-resume-runtime.json`，并镜像到 `state.json`；因此完整状态写入被节流、代理安全重启或旧状态文件被覆盖时，最近一次 Key 应用时间不会丢失。首次运行且没有历史心跳时，以代理启动时刻建立基线，避免把未知历史误判为故障
-3. 启动和保存配置后立即检测一次，之后每 30 秒检测空闲时长；超过 `autoResumeIdleMinutes`（默认 10 分钟）且距上次恢复超过 `autoResumeDebounceMinutes`（默认 3 分钟）时触发
-4. `checkAutoResume()` 遍历 `autoResumeProjects` 列表，为每个项目执行 `triggerResume()`
-5. 通过 `cmd.exe /c start` 启动新的 Windows 可见 cmd 窗口 → 运行 wsl.exe → bash → 执行项目命令
-6. 每个项目启动时写入 PID 到 `/tmp/codex-resume-<项目名>.pid`，再次触发时自动 kill 旧进程
+3. 启动和保存配置后立即检测一次，之后每 30 秒检测空闲时长；超过 `autoResumeIdleMinutes`（默认 10 分钟）后进入一个新的 Key 闲置周期
+4. 仍有在途请求时暂缓打开新的 Codex 终端；请求结束后继续用同一个 Key 心跳判断，不会把正常长流误判为失效，也不依赖 `/goal`
+5. 每个项目在同一个闲置周期最多启动一次；只有代理再次实际应用 Key，或用户修改该项目的路径/命令/会话配置后，才会开启下一次尝试。失败 runner 不会按防抖间隔无限重复拉起
+6. `checkAutoResume()` 遍历 `autoResumeProjects` 列表，为每个项目执行 `triggerResume()`；通过 `cmd.exe /c start` 启动新的 Windows 可见 cmd 窗口 → 运行 wsl.exe → bash → 执行项目命令
+7. 每个 runner 写入原子 JSON 租约到 `/tmp/codex-resume-<项目名>.pid`，其中包含随机运行 ID、PGID 和 Linux 进程启动时间；只要租约仍可验证，就跳过重复启动
+8. 代理绝不按项目目录扫描、终止或 SIGKILL 任意外部 `codex` 进程。`cmd.exe start` 返回成功仅表示 Windows 接受启动请求；只有 runner 状态文件才能表示其已启动、退出或收到信号
 
 ### 配置字段
 
@@ -1147,7 +1151,8 @@ model = "o3#87"
   "autoResumeDebounceMinutes": 3,
   "autoResumeProjects": [
     {"name": "project-a", "path": "/mnt/d/projects/project-a", "cmd": "codex chat"},
-    {"name": "project-b", "path": "/mnt/d/projects/project-b", "cmd": "./run.sh"}
+    {"name": "project-b", "path": "/mnt/d/projects/project-b", "cmd": "./run.sh"},
+    {"name": "project-c", "path": "/mnt/d/projects/project-c", "resumeMode": "fixed_session", "sessionId": "<codex-session-id>", "cmd": "codex resume {sessionId} 'continue'"}
   ],
   "cmdPath": "/mnt/c/Windows/System32/cmd.exe"
 }
@@ -1157,8 +1162,10 @@ model = "o3#87"
 |------|------|
 | `autoResume` | 是否启用闲置自动恢复（true/false） |
 | `autoResumeIdleMinutes` | Key 应用阈值（分钟，默认 10）。最后一次实际应用 Key 超过此分钟后触发 |
-| `autoResumeDebounceMinutes` | 防抖间隔（分钟，默认 3）。防止频繁触发 |
-| `autoResumeProjects` | 项目列表，最多 10 个。每个项目包含 `name`（显示名）、`path`（WSL 路径，支持 `E:\xxx` 格式自动转换）、`cmd`（要执行的命令） |
+| `autoResumeDebounceMinutes` | 旧配置兼容字段（分钟，默认 3）。同一 Key 闲置周期内仍只尝试一次 |
+| `autoResumeProjects` | 项目列表，最多 10 个。每个项目包含 `name`（显示名）、`path`（WSL 路径，支持 `E:\xxx` 格式自动转换）、`cmd`（要执行的命令）；可选 `resumeMode` 和 `sessionId` |
+| `resumeMode` | 项目级可选模式：默认 `command` 原样执行 `cmd`；`fixed_session` 要求 `cmd` 含 `{sessionId}` 占位符 |
+| `sessionId` | `fixed_session` 的 Codex 会话 ID。启动时会安全替换命令中的 `{sessionId}`，避免 `resume --last` 选到不确定的分支/子会话 |
 | `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
 
 ### 面板状态
@@ -1176,16 +1183,16 @@ model = "o3#87"
 
 ### 依赖脚本
 
-`resume-codex.sh` 位于 `codex-proxy/` 目录，通过 `cmd.exe /c start` + `wsl.exe` 打开可见终端窗口。
-shell 命令中的单引号自动转义，确保安全执行。
+`resume-codex.sh` 位于 `codex-proxy/` 目录，通过 `cmd.exe /c start` + `wsl.exe` 打开可见终端窗口。它使用原子 JSON 状态文件记录 `starting`、`running`、`exited`、`failed`、`terminated`；runner 自身和命令进程组收到的 `HUP`/`INT`/`TERM` 会分别标明来源与信号。状态文件是诊断记录，不含 API Key 或命令正文。
 
 ### 注意事项
 
 - **仅适用于 WSL2**：依赖 `cmd.exe` 和 `wsl.exe` 创建 Windows 可见终端，纯 Linux 环境无效
 - **路径必须存在**：`path` 目录在 WSL 中必须可 `cd` 进入
-- **命令不含交互输入**：自动打开的进程无 stdin 交互，适合 `codex chat`（持续输出模式）或 `node server.js` 等长时间运行命令
-- **PID 文件**：存放于 `/tmp/codex-resume-*.pid`，系统重启后自动清理
-- **重入保护**：防抖机制确保两次触发间隔至少 `autoResumeDebounceMinutes`
+- **终端边界**：`codex resume` 仍是 TUI，Windows/WSL/PTY 链可能显示控制字符；这不等于任务已经恢复。日志中的 `runner 已启动` 只表示命令进程已创建，新的 Key 应用才表示观察到代理活动
+- **会话选择**：`resume --last` 在并行项目分支或子代理存在时不具确定性。需要可靠续接时，使用 `fixed_session`、会话 ID 和 `{sessionId}`；会话切换后应人工更新该 ID
+- **PID 租约**：存放于 `/tmp/codex-resume-*.pid`，只管理由本功能创建且运行 ID/启动时间可验证的进程。不会清理同目录的人工 Codex
+- **单次尝试**：同一 Key 闲置周期最多尝试一次；需要再次尝试时，应等待新的实际 Key 应用或人工处理，而不是让系统反复重放任务
 
 #### 快速恢复的工作原理
 
@@ -1388,8 +1395,9 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
+- **2026-08-02 闲置恢复安全租约与确定会话**：闲置恢复不再按项目目录扫描、终止或 `SIGKILL` 任意 `codex` 进程，避免误伤人工启动的 CLI、分支或子代理。每次恢复由随机运行 ID、PID、进程组和 `/proc` 启动时间组成的原子 JSON 租约标识；只有租约可验证时才会视为自身 runner，代理不会向外部进程发送终止信号。仍有在途请求时会暂缓打开新终端；每个项目在一次连续 Key 闲置周期只尝试一次，直到实际应用新的 Key 或修改该项目配置才允许下一次，修复失败后不断重放/相互终止的问题。启动器返回成功仅表示 Windows 已接受请求，runner 状态和真实退出信号才是诊断依据；120 秒未收到 runner 状态会明确记录超时。系统配置新增“固定会话”模式，只有该模式才替换 `{sessionId}`，普通命令模式保留原命令；`resume --last` 会记录会话不确定性提示。新增 runner 生命周期回归测试。
 - **2026-08-01 版本基线识别与升级提示**：新增 `release-baseline.txt` 版本基线文件，使源码安装（克隆/复制源码仓库或源码 ZIP，无构建元数据）也能显示本机版本号并判断是否可升级。每次发布 vX.Y.Z 时同步更新该文件（源码仓库 git 跟踪，并随 Release 资产内置，内容与发布 Tag 一致）。来源识别优先级扩展为：官方发布包（build-info 清单校验）> 干净官方 Git Tag > 源码基线文件 > 未知（带原因）。「系统配置 → 检查更新」弹窗新增「本机版本 / 最新正式 Release / 差距」显式信息条，本机版本号一目了然；版本盒同时显示本机版本、来源与最新正式 Release 及差距文案。徽标三态：有更新琥珀脉冲 `⬆`、无更新隐藏、基线未知灰色中性 `⬆`（均可打开弹窗查看最新 Release）。GitHub 缓存 TTL 由 6 小时缩短为 1 小时。
-- **2026-08-01 闲置恢复 TTY 与残留进程清理 + 容量/429 瞬态退避**：闲置恢复启动器此前已能打开窗口并启动 runner，但失败仍频繁（退出码 2）。根因排查发现三层问题并逐一修复。① 命令错误：配置里 `resume --last -p '<prompt>'` 的 `-p` 是 codex 的 `--profile` 标志（并非 prompt），被解析为 `invalid value ... for '--profile'` 立即退出 2；codex 的 prompt 是位置参数，已改为 `resume --last '<prompt>'`。② runner 内 `setsid bash -lc` 把命令从终端剥离，`codex resume` 交互 TUI 需要 PTY；改用 `script -qec` 为命令分配伪终端（保留 `setsid` 进程组隔离，`-e` 回传子命令退出码）。③ 项目路径下残留的 codex CLI 会锁住会话/线程（`state_5.sqlite` threads 表），导致新 resume 被强制解析回旧线程；`triggerResume` 现在启动前按 cwd+命令行扫描并终止项目路径下所有残留 codex 进程及其后代。④ 重触发保护：空闲恢复生效后，巨型会话（数百 MB / 数十万行）加载需数分钟，期间无 Key 使用导致闲置时间持续超阈值，每 debounce 周期（默认 10 分钟）的自动重触发会把仍在加载的上一次 resume 当作旧命令替换终止，形成"永远跑不完"的循环；现在 `triggerResume` 在项目已有存活恢复进程（按 pid 文件存活探测）或 30 秒内刚发起过启动时直接跳过，不再替换正在运行的恢复。另新增 `capacityBackoffSeconds`（默认 60 秒）与 `capacityMaxWaitSeconds`（默认 300 秒）：HTTP 429 与 `model_at_capacity` 错误改为瞬态退避（仅设 `capUntil`，不写 `failCode`），不再把 reset:"never" 的 Key 冷却到整个周期、也不会一次容量波动级联禁用全部 Key；容量失败请求直接重新入队而非热轮询刷遍全部 Key，队列等待上限按 `capacityMaxWaitSeconds` 豁免默认 30 秒超时；`checkAllFailed` 忽略纯退避 Key，避免误报 all_keys_failed。新增容量退避生命周期回归测试。
+- **2026-08-01 闲置恢复 TTY 与残留进程清理 + 容量/429 瞬态退避**：闲置恢复启动器此前已能打开窗口并启动 runner，但失败仍频繁（退出码 2）。根因排查发现三层问题并逐一修复。① 命令错误：配置里 `resume --last -p '<prompt>'` 的 `-p` 是 codex 的 `--profile` 标志（并非 prompt），被解析为 `invalid value ... for '--profile'` 立即退出 2；codex 的 prompt 是位置参数，已改为 `resume --last '<prompt>'`。② runner 内 `setsid bash -lc` 把命令从终端剥离，`codex resume` 交互 TUI 需要 PTY；改用 `script -qec` 为命令分配伪终端（保留 `setsid` 进程组隔离，`-e` 回传子命令退出码）。③ 早期版本曾尝试按项目路径扫描并终止残留 codex；该方案已由 2026-08-02 的身份租约方案取代，当前版本不会扫描或终止外部 CLI。④ 重触发保护：空闲恢复生效后，巨型会话（数百 MB / 数十万行）加载需数分钟，期间无 Key 使用导致闲置时间持续超阈值，每 debounce 周期（默认 10 分钟）的自动重触发会把仍在加载的上一次 resume 当作旧命令替换终止，形成"永远跑不完"的循环；当前版本改为同一闲置周期单次尝试，并在有在途请求时暂缓启动。另新增 `capacityBackoffSeconds`（默认 60 秒）与 `capacityMaxWaitSeconds`（默认 300 秒）：HTTP 429 与 `model_at_capacity` 错误改为瞬态退避（仅设 `capUntil`，不写 `failCode`），不再把 reset:"never" 的 Key 冷却到整个周期、也不会一次容量波动级联禁用全部 Key；容量失败请求直接重新入队而非热轮询刷遍全部 Key，队列等待上限按 `capacityMaxWaitSeconds` 豁免默认 30 秒超时；`checkAllFailed` 忽略纯退避 Key，避免误报 all_keys_failed。新增容量退避生命周期回归测试。
 - **2026-08-01 修复闲置恢复启动器失败**：闲置恢复此前每次触发都失败——`resume-codex.sh` 用 `cmd.exe /c start` 打开可见 Windows 终端时，WSL 路径（`/mnt/c/...`）以 `/` 开头会被 cmd 解析成开关（`无效开关 - "/mnt"`），`start` 立即返回退出码 1，runner 从未启动、命令从未执行。修复：启动前用 `wslpath -w` 把 WSL 路径转为 Windows 反斜杠形式再交给 `start`，并保留可见终端窗口；启动器失败时把 cmd 的 stderr（GBK 转 UTF-8）写回状态文件第 5 字段，代理将其显示为 `launcherError` 并带进 `auto_resume_launcher_failed` 事件消息。端到端实测通过：状态机 `starting → running → exited` 完整走通，命令真实执行。
 - **2026-07-31 模型级费用估算**：系统配置新增 `modelPricing` 规则数组，可按最终转发的精确模型名分别设置输入/输出单价和 `bytesPerToken`；未命中模型继续回退全局价格。每个请求在开始转发时冻结规则，后续变更不回算进行中或既有统计、趋势及历史日志费用。
 - **2026-07-31 Codex SQLite 日志维护**：系统配置新增可选的 Codex SQLite 日志维护开关、数据库路径检测、容量阈值、保留时长、检查周期和立即检查状态。启用保存前服务端会复验当前用户 `~/.codex/` 下的常规 `logs*.sqlite` 文件及 `logs(id, ts)` 结构；支持将 `\\wsl.localhost\发行版\...` / `\\wsl$\发行版\...` 自动转换为 WSL 内部路径。后台通过 Python 标准库的 SQLite 短事务限量删除过期行，忙时让步、不重启代理/watchdog/Codex CLI，且不主动执行 `VACUUM`、checkpoint 或操作 WAL/SHM。新增 SQLite 维护回归测试，Release 包包含运行 helper、继续排除所有测试源码。
