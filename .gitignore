@@ -10,6 +10,7 @@ state*.json
 state*.json.bak
 .auto-resume-runtime.json
 logs/
+tasks/
 *.log
 *.pid
 tmp/

@@ -141,6 +141,37 @@ const CODEX_LOG_MAINTAINER_MAX_OUTPUT_BYTES = 32 * 1024;
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
 let LOG_DETAIL = "full";
+// --- Task Insight (流水任务解析/提炼) ---
+const TASK_DIR = path.join(__dirname, "tasks");
+const TASK_BUDGET_FILE = path.join(TASK_DIR, ".distill-budget.json");
+const TASK_INSIGHT_DEFAULT = Object.freeze({
+  enabled: false,
+  signals: Object.freeze({ instructions: false, tools: false, usage: false, correlate: false }),
+  retentionDays: 30,
+  distill: Object.freeze({ enabled: false, engine: "ollama", model: "", baseUrl: "", dailyBudgetYuan: 1, report: "daily" }),
+});
+const TASK_INSIGHT_RETENTION_MIN_DAYS = 1;
+const TASK_INSIGHT_RETENTION_MAX_DAYS = 3650;
+const TASK_INSIGHT_INSTRUCTION_MAX_CHARS = 200;
+const TASK_INSIGHT_TOOLS_MAX = 40;
+const TASK_INSIGHT_FILES_MAX = 40;
+const TASK_INSIGHT_MODELS_MAX = 20;
+const TASK_INSIGHT_REASONS_MAX = 12;
+const TASK_INSIGHT_REQUEST_LOG_MAX = 200;
+const TASK_INSIGHT_SESSION_IDLE_MS = 10 * 60 * 1000;
+const TASK_INSIGHT_CORRELATE_WINDOW_MS = 45 * 60 * 1000;
+const TASK_INSIGHT_SWEEP_MS = 30 * 1000;
+const TASK_INSIGHT_MAX_MEMORY_SESSIONS = 2000;
+const TASK_SSE_SCAN_BUFFER_MAX = 512 * 1024;
+const TASK_SSE_LINE_MAX = 32 * 1024;
+const TASK_FILE_SCAN_PREFIX_CHARS = 6000;
+const TASK_DISTILL_INTERVAL_MS = 10 * 60 * 1000;
+const TASK_DISTILL_TIMEOUT_MS = 120000;
+const TASK_DISTILL_MAX_INPUT_CHARS = 6000;
+const TASK_DISTILL_BATCH_MAX = 20;
+const TASK_READ_MAX_BYTES_PER_FILE = 16 * 1024 * 1024;
+const TASK_FILE_NAME_RE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+const TASK_DISTILL_ENGINES = ["ollama", "proxy", "external"];
 // --- Protocol compatibility hosts ---
 const RESPONSES_NATIVE_HOSTS = ["api.openai.com", "api.ofox.ai"];
 const MESSAGES_NATIVE_HOSTS = ["api.anthropic.com"];
@@ -209,6 +240,10 @@ let autoRecoverPollNextTime = 0;
 let lastRequestTime = Date.now();
 let lastKeyUseTime = 0;
 let lastResumeTime = 0;
+let taskInsightSweepTimer = null;
+let taskDistillTimer = null;
+const taskSessions = new Map();
+const taskDistillState = { day: "", spentYuan: 0, lastRunAt: 0, running: false, pending: 0, lastError: "" };
 let autoResumeTimer = null;
 let codexLogMaintenanceTimer = null;
 let codexLogMaintenanceInFlight = null;
@@ -843,6 +878,7 @@ function loadConfig() {
     config.proxyLogMaxMiB = c.proxyLogMaxMiB;
     config.proxyLogKeepFiles = c.proxyLogKeepFiles;
     config.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(c.codexLogMaintenance);
+    config.taskInsight = normalizeTaskInsightConfig(c.taskInsight);
     config.logIncidents = normalizeLogIncidentConfig(c.logIncidents);
     STREAM_LIFETIME = Math.min(7200000, Math.max(60000, parseInt(c.streamLifetime) || 1800000));
     config.streamLifetime = STREAM_LIFETIME;
@@ -895,12 +931,41 @@ function loadConfig() {
   }
   configureAutoResumeTimer();
   configureCodexLogMaintenanceTimer();
+  configureTaskInsightTimers();
 }
 
 function clampConfigInteger(value, fallback, min, max) {
   const parsed = parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeTaskInsightConfig(value) {
+  const v = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const signals = v.signals && typeof v.signals === "object" && !Array.isArray(v.signals) ? v.signals : {};
+  const distill = v.distill && typeof v.distill === "object" && !Array.isArray(v.distill) ? v.distill : {};
+  const retentionDays = clampConfigInteger(v.retentionDays, TASK_INSIGHT_DEFAULT.retentionDays, TASK_INSIGHT_RETENTION_MIN_DAYS, TASK_INSIGHT_RETENTION_MAX_DAYS);
+  const engine = TASK_DISTILL_ENGINES.includes(distill.engine) ? distill.engine : "ollama";
+  const budgetRaw = Number(distill.dailyBudgetYuan);
+  const dailyBudgetYuan = Number.isFinite(budgetRaw) && budgetRaw >= 0 ? budgetRaw : 1;
+  return {
+    enabled: v.enabled === true,
+    signals: {
+      instructions: signals.instructions === true,
+      tools: signals.tools === true,
+      usage: signals.usage === true,
+      correlate: signals.correlate === true,
+    },
+    retentionDays,
+    distill: {
+      enabled: distill.enabled === true,
+      engine,
+      model: String(distill.model || "").trim().slice(0, 120),
+      baseUrl: String(distill.baseUrl || "").trim().slice(0, 512),
+      dailyBudgetYuan,
+      report: distill.report === "weekly" ? "weekly" : "daily",
+    },
+  };
 }
 
 function normalizeDefaultPricing(pricesValue, bytesPerTokenValue, strict = false, changed = {}) {
@@ -3360,6 +3425,640 @@ function estimateCost(model, inputBytes, outputBytes, pricingOverride) {
   return cost;
 }
 
+// --- Task Insight (流水任务解析/提炼) ---
+function taskInsightActive() {
+  return config.taskInsight && config.taskInsight.enabled === true;
+}
+
+function taskInsightSignal(name) {
+  return taskInsightActive() && config.taskInsight && config.taskInsight.signals && config.taskInsight.signals[name] === true;
+}
+
+function taskInsightSessionIdleMs() {
+  if (taskInsightSignal("correlate")) return Math.max(1, config.autoResumeIdleMinutes || 10) * 60000;
+  return TASK_INSIGHT_SESSION_IDLE_MS;
+}
+
+function taskDayKey(ts) {
+  const d = new Date(ts);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function taskPersistFile(ts) {
+  return path.join(TASK_DIR, taskDayKey(ts) + ".jsonl");
+}
+
+function taskInsightProjectHint() {
+  if (!taskInsightSignal("correlate")) return null;
+  const projects = config.autoResumeProjects || [];
+  if (!projects.length) return null;
+  let hit = null;
+  let count = 0;
+  const now = Date.now();
+  let runtimeProjects = null;
+  try { runtimeProjects = getAutoResumeRuntimeState().projects; } catch (e) {}
+  for (let i = 0; i < projects.length; i++) {
+    const proj = projects[i];
+    if (!proj || (typeof proj === "object" && (proj.disabled === true || proj.enabled === false))) continue;
+    let id = null;
+    try { id = autoResumeProjectId(proj, i); } catch (e) { continue; }
+    const st = (runtimeProjects && runtimeProjects[id]) || {};
+    const at = normalizeAutoResumeTimestamp(st.lastAttemptAt);
+    if (!at || (now - at) > TASK_INSIGHT_CORRELATE_WINDOW_MS) continue;
+    const phase = String(st.phase || "");
+    if (["exited", "terminated", "failed", "launcher_failed", "launcher_timeout"].includes(phase)) continue;
+    count++;
+    hit = { id, name: String(proj.name || proj.path || proj.cmd || id).slice(0, 80) };
+  }
+  return count === 1 ? hit : null;
+}
+
+function taskInsightBaseKey(client, group) {
+  return `${group || "A"}|${client || "(未知)"}`;
+}
+
+function createTaskSession(now, client, group, hint) {
+  return {
+    id: "task_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
+    projectId: hint ? hint.id : null,
+    projectName: hint ? hint.name : null,
+    client: client || "(未知)",
+    group: group || "A",
+    start: now,
+    end: now,
+    requestCount: 0,
+    successCount: 0,
+    failCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    inputBytes: 0,
+    outputBytes: 0,
+    cost: 0,
+    models: [],
+    tools: [],
+    files: [],
+    instructions: [],
+    terminalReasons: [],
+    status: "in_progress",
+    distill: null,
+    requests: [],
+  };
+}
+
+function taskInsightJoin(now, client, group, hint) {
+  const baseKey = taskInsightBaseKey(client, group);
+  let session = taskSessions.get(baseKey);
+  if (session) {
+    if (hint && session.projectId && session.projectId !== hint.id) {
+      finalizeTaskSession(session, now);
+      session = null;
+    } else if (now - session.end >= taskInsightSessionIdleMs()) {
+      finalizeTaskSession(session, now);
+      session = null;
+    }
+  }
+  if (!session) {
+    session = createTaskSession(now, client, group, hint);
+    if (hint && !session.projectId) { session.projectId = hint.id; session.projectName = hint.name; }
+    taskSessions.set(baseKey, session);
+    if (taskSessions.size > TASK_INSIGHT_MAX_MEMORY_SESSIONS) finalizeOldestTaskSessions(now);
+  } else {
+    session.end = now;
+    if (hint && !session.projectId) { session.projectId = hint.id; session.projectName = hint.name; }
+  }
+  session.requestCount++;
+  return session;
+}
+
+function finalizeOldestTaskSessions(now) {
+  const entries = Array.from(taskSessions.values())
+    .filter(s => s.status === "in_progress")
+    .sort((a, b) => a.end - b.end);
+  const overflow = taskSessions.size - TASK_INSIGHT_MAX_MEMORY_SESSIONS;
+  for (let i = 0; i < Math.min(overflow, entries.length); i++) finalizeTaskSession(entries[i], now);
+}
+
+function pushUnique(arr, value, max) {
+  if (!value || arr.length >= max || arr.includes(value)) return;
+  arr.push(value);
+}
+
+function taskInsightAddRequestMetrics(session, m) {
+  session.end = Math.max(session.end, m.time || Date.now());
+  session.inputBytes += m.inputBytes || 0;
+  session.outputBytes += m.outputBytes || 0;
+  const inTokens = Math.max(0, Number(m.inputTokens) || 0);
+  const outTokens = Math.max(0, Number(m.outputTokens) || 0);
+  session.inputTokens += inTokens;
+  session.outputTokens += outTokens;
+  if (m.inputTokens || m.outputTokens) {
+    const pricing = resolveModelPricing(m.model || "");
+    session.cost += (inTokens / 1000000) * (pricing.inputPer1M || 0) + (outTokens / 1000000) * (pricing.outputPer1M || 0);
+  } else {
+    session.cost += estimateCost(m.model, m.inputBytes || 0, m.outputBytes || 0, null);
+  }
+  if (m.success) session.successCount++; else session.failCount++;
+  pushUnique(session.models, m.model, TASK_INSIGHT_MODELS_MAX);
+  if (Array.isArray(m.tools)) for (const t of m.tools) pushUnique(session.tools, t, TASK_INSIGHT_TOOLS_MAX);
+  if (Array.isArray(m.files)) for (const f of m.files) pushUnique(session.files, f, TASK_INSIGHT_FILES_MAX);
+  if (m.terminalReason) pushUnique(session.terminalReasons, m.terminalReason, TASK_INSIGHT_REASONS_MAX);
+  if (Array.isArray(session.requests) && session.requests.length < TASK_INSIGHT_REQUEST_LOG_MAX) {
+    session.requests.push({ t: m.time || Date.now(), status: m.statusCode || 0, model: m.model || "", dur: m.dur || 0 });
+  }
+}
+
+function finalizeTaskSession(session, now) {
+  if (!session || session.status !== "in_progress") return;
+  session.end = Math.max(session.end, now || Date.now());
+  if (session.requestCount === 0) {
+    taskSessions.delete(taskInsightBaseKey(session.client, session.group));
+    return;
+  }
+  if (session.failCount === 0) session.status = "completed";
+  else if (session.successCount === 0) session.status = "failed";
+  else session.status = "partial";
+  taskSessions.delete(taskInsightBaseKey(session.client, session.group));
+  try {
+    fs.mkdirSync(TASK_DIR, { recursive: true });
+    fs.appendFileSync(taskPersistFile(session.start), JSON.stringify(session) + "\n", "utf8");
+  } catch (e) {
+    console.error(`[proxy] task session persist failed: ${e.message}`);
+  }
+}
+
+function taskInsightSweep(now = Date.now()) {
+  if (!taskInsightActive()) return;
+  const idleMs = taskInsightSessionIdleMs();
+  const stale = Array.from(taskSessions.values()).filter(s => s.status === "in_progress" && now - s.end >= idleMs);
+  for (const session of stale) finalizeTaskSession(session, now);
+}
+
+function configureTaskInsightTimers() {
+  if (taskInsightSweepTimer) { clearInterval(taskInsightSweepTimer); taskInsightSweepTimer = null; }
+  if (taskDistillTimer) { clearInterval(taskDistillTimer); taskDistillTimer = null; }
+  if (taskInsightActive()) {
+    const sweep = () => { try { taskInsightSweep(); taskInsightPrune(); } catch (e) { console.error(`[proxy] task insight sweep error: ${e.message}`); } };
+    sweep();
+    taskInsightSweepTimer = setInterval(sweep, TASK_INSIGHT_SWEEP_MS);
+  } else {
+    const open = Array.from(taskSessions.values()).filter(s => s.status === "in_progress");
+    for (const session of open) finalizeTaskSession(session, Date.now());
+    taskSessions.clear();
+  }
+  if (taskInsightActive() && config.taskInsight.distill && config.taskInsight.distill.enabled) {
+    taskDistillTimer = setInterval(() => { runTaskDistill().catch(e => console.error(`[proxy] distill interval error: ${e.message}`)); }, TASK_DISTILL_INTERVAL_MS);
+    runTaskDistill().catch(e => console.error(`[proxy] distill startup error: ${e.message}`));
+  }
+}
+
+function taskInsightPrune(now = Date.now()) {
+  const retentionMs = Math.max(1, config.taskInsight ? config.taskInsight.retentionDays : 30) * 24 * 60 * 60 * 1000;
+  const cutoff = now - retentionMs;
+  try {
+    if (!fs.existsSync(TASK_DIR)) return;
+    for (const f of fs.readdirSync(TASK_DIR)) {
+      const m = TASK_FILE_NAME_RE.exec(f);
+      if (!m) continue;
+      const parsed = Date.parse(m[1] + "T00:00:00.000Z");
+      if (Number.isFinite(parsed) && parsed < cutoff) {
+        fs.unlinkSync(path.join(TASK_DIR, f));
+      }
+    }
+  } catch (e) {
+    console.error(`[proxy] task insight prune error: ${e.message}`);
+  }
+}
+
+function extractFilePaths(text) {
+  const out = [];
+  const seen = new Set();
+  if (!text) return out;
+  const src = String(text).slice(0, TASK_FILE_SCAN_PREFIX_CHARS);
+  const re = /["']([A-Za-z0-9_./\\-]{1,200}\.[A-Za-z0-9]{1,12})["']/g;
+  let m;
+  while ((m = re.exec(src)) && out.length < TASK_INSIGHT_FILES_MAX) {
+    const p = m[1];
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+function taskInsightExtractRequest(parsed) {
+  const sig = { instructions: [], tools: [], files: [] };
+  if (taskInsightSignal("instructions")) {
+    let ins = "";
+    if (typeof parsed.instructions === "string") ins = parsed.instructions;
+    else if (parsed.instructions && typeof parsed.instructions === "object") ins = JSON.stringify(parsed.instructions);
+    if (ins) sig.instructions = [ins.replace(/\s+/g, " ").trim().slice(0, TASK_INSIGHT_INSTRUCTION_MAX_CHARS)];
+  }
+  if (taskInsightSignal("tools")) {
+    for (const t of (parsed.tools || [])) {
+      const name = (t && (t.name || (t.function && t.function.name))) || "";
+      pushUnique(sig.tools, name, TASK_INSIGHT_TOOLS_MAX);
+    }
+    for (const msg of (parsed.input || [])) {
+      if (!msg || typeof msg !== "object") continue;
+      if (msg.type === "function_call" && msg.arguments) {
+        const args = typeof msg.arguments === "string" ? msg.arguments : JSON.stringify(msg.arguments || "");
+        for (const p of extractFilePaths(args)) pushUnique(sig.files, p, TASK_INSIGHT_FILES_MAX);
+      } else if (msg.type === "function_call_output" && msg.output) {
+        const txt = typeof msg.output === "string" ? msg.output : JSON.stringify(msg.output || "");
+        for (const p of extractFilePaths(txt)) pushUnique(sig.files, p, TASK_INSIGHT_FILES_MAX);
+      }
+    }
+  }
+  return sig;
+}
+
+function taskInsightPreExtract(parsed) {
+  if (!parsed || typeof taskInsightActive !== "function" || !taskInsightActive()) return null;
+  try { return taskInsightExtractRequest(parsed); } catch (e) { return null; }
+}
+
+// --- Task Insight stream scanning (bounded SSE usage/tool extraction) ---
+function taskInsightBuildMetrics(lifecycle, transform, inputBytes, accBytes, dur, statusCode, endedNormally, resolvedModel, terminalReason) {
+  const usage = transform ? transform.insightUsage : null;
+  const lc = lifecycle || {};
+  return {
+    success: lifecycle ? (lc.terminalKind === "completed") : endedNormally,
+    statusCode,
+    dur,
+    inputBytes,
+    outputBytes: accBytes,
+    inputTokens: (usage && usage.input_tokens) || lc.inputTokens || 0,
+    outputTokens: (usage && usage.output_tokens) || lc.outputTokens || 0,
+    tools: transform ? (transform._taskTools || []) : [],
+    files: transform ? (transform._taskFiles || []) : [],
+    model: resolvedModel,
+    terminalReason,
+  };
+}
+
+// --- Task Insight storage reads ---
+function taskListAll(now = Date.now()) {
+  const out = [];
+  const retentionMs = Math.max(1, config.taskInsight ? config.taskInsight.retentionDays : 30) * 24 * 60 * 60 * 1000;
+  const cutoff = now - retentionMs;
+  try {
+    if (fs.existsSync(TASK_DIR)) {
+      for (const f of fs.readdirSync(TASK_DIR).sort()) {
+        const m = TASK_FILE_NAME_RE.exec(f);
+        if (!m) continue;
+        const dayStart = Date.parse(m[1] + "T00:00:00.000Z");
+        if (!Number.isFinite(dayStart) || dayStart < cutoff) continue;
+        const full = path.join(TASK_DIR, f);
+        const stat = fs.statSync(full);
+        if (!stat.isFile() || stat.size > TASK_READ_MAX_BYTES_PER_FILE) continue;
+        const data = fs.readFileSync(full, "utf8");
+        for (const line of data.split("\n")) {
+          const t = line.trim();
+          if (!t) continue;
+          try { out.push(JSON.parse(t)); } catch (e) {}
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`[proxy] task read error: ${e.message}`);
+  }
+  for (const s of taskSessions.values()) {
+    if (s.requestCount > 0) out.push(s);
+  }
+  return out;
+}
+
+function taskInsightStatusPayload() {
+  const ti = config.taskInsight || TASK_INSIGHT_DEFAULT;
+  const distill = ti.distill || {};
+  return {
+    enabled: ti.enabled === true,
+    signals: ti.signals || TASK_INSIGHT_DEFAULT.signals,
+    retentionDays: ti.retentionDays,
+    distill: {
+      enabled: distill.enabled === true,
+      engine: distill.engine,
+      model: distill.model,
+      baseUrl: distill.baseUrl,
+      report: distill.report,
+      running: taskDistillState.running,
+      pending: taskDistillState.pending,
+      lastRunAt: taskDistillState.lastRunAt,
+      lastError: taskDistillState.lastError,
+      budget: {
+        day: taskDistillState.day,
+        spentYuan: Number(taskDistillState.spentYuan.toFixed(4)),
+        limitYuan: Number(distill.dailyBudgetYuan) || 0,
+      },
+    },
+  };
+}
+
+// --- Task Insight distillation (阶段二) ---
+function taskDistillTodayKey() {
+  return taskDayKey(Date.now());
+}
+
+function taskDistillLoadBudget() {
+  try {
+    if (!fs.existsSync(TASK_BUDGET_FILE)) return;
+    const saved = JSON.parse(fs.readFileSync(TASK_BUDGET_FILE, "utf8"));
+    if (saved && saved.day === taskDistillTodayKey()) {
+      taskDistillState.day = saved.day;
+      taskDistillState.spentYuan = Number(saved.spentYuan) || 0;
+    }
+  } catch (e) {}
+}
+
+function taskDistillSaveBudget() {
+  try {
+    fs.mkdirSync(TASK_DIR, { recursive: true });
+    fs.writeFileSync(TASK_BUDGET_FILE, JSON.stringify({ day: taskDistillState.day, spentYuan: taskDistillState.spentYuan, updatedAt: Date.now() }) + "\n", { mode: 0o600 });
+  } catch (e) {
+    console.error(`[proxy] distill budget persist failed: ${e.message}`);
+  }
+}
+
+function taskDistillBudgetBlocked() {
+  if (taskDistillState.day !== taskDistillTodayKey()) {
+    taskDistillState.day = taskDistillTodayKey();
+    taskDistillState.spentYuan = 0;
+    taskDistillSaveBudget();
+  }
+  const limit = config.taskInsight && config.taskInsight.distill ? Number(config.taskInsight.distill.dailyBudgetYuan) || 0 : 0;
+  return limit > 0 && taskDistillState.spentYuan >= limit;
+}
+
+function taskSessionDistillSnapshot(session) {
+  const lines = [];
+  lines.push(`项目: ${session.projectName || "未分类"}`);
+  lines.push(`客户端: ${session.client}`);
+  lines.push(`时间: ${new Date(session.start).toISOString()} ~ ${new Date(session.end).toISOString()}`);
+  lines.push(`状态: ${session.status}，请求 ${session.requestCount}（成功 ${session.successCount} / 失败 ${session.failCount}）`);
+  lines.push(`Token: 输入 ${session.inputTokens} / 输出 ${session.outputTokens}，估算费用 ¥${Number(session.cost).toFixed(4)}`);
+  lines.push(`模型轨迹: ${(session.models || []).join(" → ") || "-"}`);
+  if ((session.tools || []).length) lines.push(`工具: ${session.tools.slice(0, 15).join(", ")}`);
+  if ((session.files || []).length) lines.push(`文件: ${session.files.slice(0, 15).join(", ")}`);
+  if ((session.terminalReasons || []).length) lines.push(`终止原因: ${session.terminalReasons.slice(0, 10).join(", ")}`);
+  if ((session.instructions || []).length) lines.push(`指令(截断): ${session.instructions[0]}`);
+  return lines.join("\n").slice(0, TASK_DISTILL_MAX_INPUT_CHARS);
+}
+
+function taskDistillParseResult(text) {
+  const cleaned = String(text || "").trim();
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(cleaned);
+  const candidate = fenced ? fenced[1] : cleaned;
+  const braceStart = candidate.indexOf("{");
+  const braceEnd = candidate.lastIndexOf("}");
+  if (braceStart >= 0 && braceEnd > braceStart) {
+    try {
+      return JSON.parse(candidate.slice(braceStart, braceEnd + 1));
+    } catch (e) {}
+  }
+  try {
+    return JSON.parse(candidate);
+  } catch (e) {}
+  return { summary: String(text || "").slice(0, 300) };
+}
+
+function taskDistillHttp(engine, baseUrl, model, messages, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(baseUrl);
+    } catch (e) {
+      return reject(new Error(`蒸馏接口地址无效: ${baseUrl || "(空)"}`));
+    }
+    const mod = url.protocol === "http:" ? http : https;
+    const body = JSON.stringify({ model, messages, stream: false });
+    const options = {
+      hostname: url.hostname,
+      port: url.port || (url.protocol === "http:" ? 80 : 443),
+      path: url.pathname.endsWith("/chat/completions") ? url.pathname : `${url.pathname.replace(/\/+$/, "")}/chat/completions`,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        "user-agent": "codex-proxy-task-insight",
+      },
+    };
+    const req = mod.request(options, res => {
+      const chunks = [];
+      res.on("data", c => chunks.push(c));
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          return reject(new Error(`蒸馏接口返回 ${res.statusCode}: ${Buffer.concat(chunks).toString("utf8").slice(0, 300)}`));
+        }
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          const text = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content;
+          const usage = (parsed && parsed.usage) || {};
+          resolve({ text: String(text || ""), promptTokens: Number(usage.prompt_tokens) || 0, completionTokens: Number(usage.completion_tokens) || 0 });
+        } catch (e) {
+          reject(new Error(`蒸馏接口响应解析失败: ${e.message}`));
+        }
+      });
+    });
+    req.on("error", e => reject(new Error(`蒸馏接口请求失败: ${e.message}`)));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error("蒸馏请求超时")));
+    req.write(body);
+    req.end();
+  });
+}
+
+function taskDistillProxyHttp(port, model, messages, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ model, messages, stream: false });
+    const options = {
+      hostname: "127.0.0.1",
+      port,
+      path: "/v1/chat/completions",
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        "user-agent": "codex-proxy-task-insight",
+        "x-task-insight-distill": "1",
+      },
+    };
+    const req = http.request(options, res => {
+      const chunks = [];
+      res.on("data", c => chunks.push(c));
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          return reject(new Error(`代理蒸馏返回 ${res.statusCode}: ${Buffer.concat(chunks).toString("utf8").slice(0, 300)}`));
+        }
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          const text = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content;
+          const usage = (parsed && parsed.usage) || {};
+          resolve({ text: String(text || ""), promptTokens: Number(usage.prompt_tokens) || 0, completionTokens: Number(usage.completion_tokens) || 0 });
+        } catch (e) {
+          reject(new Error(`代理蒸馏响应解析失败: ${e.message}`));
+        }
+      });
+    });
+    req.on("error", e => reject(new Error(`代理蒸馏请求失败: ${e.message}`)));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error("代理蒸馏超时")));
+    req.write(body);
+    req.end();
+  });
+}
+
+function taskDistillBudgetCharge(promptTokens, completionTokens, model) {
+  if (!taskDistillBudgetBlocked()) {
+    const pricing = resolveModelPricing(model || "");
+    const cost = (promptTokens / 1000000) * (pricing.inputPer1M || 0) + (completionTokens / 1000000) * (pricing.outputPer1M || 0);
+    taskDistillState.spentYuan += Math.max(0, cost);
+    taskDistillState.day = taskDistillTodayKey();
+    taskDistillSaveBudget();
+  }
+}
+
+async function taskDistillOne(session, distillCfg) {
+  const system = "你是流水任务审计助手。根据给出的「任务信号」（不含原始 prompt 原文）输出严格 JSON：{\"summary\":\"一句话中文摘要\",\"decisions\":[\"要点\"],\"risks\":[\"风险/注意\"]}。只依据给定信息；信息不足时 risks 注明“信息不足”；不要编造。";
+  const snapshot = taskSessionDistillSnapshot(session);
+  const user = `请审计以下流水任务：\n${snapshot}`;
+  const messages = [{ role: "system", content: system }, { role: "user", content: user }];
+  let result;
+  if (distillCfg.engine === "proxy") {
+    const port = (config.groups && config.groups.A) || 3456;
+    result = await taskDistillProxyHttp(port, distillCfg.model, messages, TASK_DISTILL_TIMEOUT_MS);
+  } else {
+    result = await taskDistillHttp(distillCfg.engine, distillCfg.baseUrl, distillCfg.model, messages, TASK_DISTILL_TIMEOUT_MS);
+  }
+  if (!result.text) throw new Error("蒸馏返回空内容");
+  const parsed = taskDistillParseResult(result.text);
+  return {
+    parsed,
+    cost: { promptTokens: result.promptTokens, completionTokens: result.completionTokens },
+  };
+}
+
+async function runTaskDistill(now = Date.now()) {
+  const ti = config.taskInsight;
+  if (!ti || ti.enabled !== true || !ti.distill || ti.distill.enabled !== true) return { ok: false, reason: "disabled" };
+  if (taskDistillState.running) return { ok: false, reason: "busy" };
+  if (taskDistillBudgetBlocked()) {
+    taskDistillState.lastError = "今日蒸馏预算已用尽";
+    return { ok: false, reason: "budget_exhausted" };
+  }
+  const engine = ti.distill.engine;
+  if (engine === "external" && !/^https?:\/\//.test(ti.distill.baseUrl)) return { ok: false, reason: "external_requires_baseUrl" };
+  if (engine === "ollama" && !/^https?:\/\//.test(ti.distill.baseUrl)) {
+    ti.distill.baseUrl = "http://127.0.0.1:11434/v1";
+  }
+  if (!ti.distill.model) return { ok: false, reason: "model_required" };
+
+  const cutoff = now - taskInsightSessionIdleMs();
+  const candidates = taskListAll(now)
+    .filter(s => s.status !== "in_progress" && s.start >= cutoff - 24 * 60 * 60 * 1000 && s.start <= now)
+    .filter(s => !s.distill)
+    .sort((a, b) => b.start - a.start)
+    .slice(0, TASK_DISTILL_BATCH_MAX);
+  if (!candidates.length) {
+    taskDistillState.lastError = "";
+    return { ok: true, distilled: 0 };
+  }
+
+  taskDistillState.running = true;
+  taskDistillState.pending = candidates.length;
+  const results = [];
+  try {
+    for (const session of candidates) {
+      if (taskDistillBudgetBlocked()) {
+        taskDistillState.lastError = "今日蒸馏预算已用尽";
+        break;
+      }
+      try {
+        const out = await taskDistillOne(session, ti.distill);
+        session.distill = {
+          summary: String(out.parsed.summary || "").slice(0, 400),
+          decisions: Array.isArray(out.parsed.decisions) ? out.parsed.decisions.map(s => String(s).slice(0, 200)).slice(0, 6) : [],
+          risks: Array.isArray(out.parsed.risks) ? out.parsed.risks.map(s => String(s).slice(0, 200)).slice(0, 6) : [],
+          at: Date.now(),
+        };
+        taskDistillBudgetCharge(out.cost.promptTokens, out.cost.completionTokens, ti.distill.model);
+        results.push(session.id);
+        persistTaskSessionUpdate(session);
+      } catch (e) {
+        taskDistillState.lastError = e.message;
+        break;
+      }
+      taskDistillState.pending--;
+    }
+  } finally {
+    taskDistillState.running = false;
+    taskDistillState.pending = 0;
+    taskDistillState.lastRunAt = Date.now();
+  }
+  return { ok: true, distilled: results.length, candidates: candidates.length };
+}
+
+function persistTaskSessionUpdate(session) {
+  try {
+    const full = path.join(TASK_DIR, taskDayKey(session.start) + ".jsonl");
+    if (!fs.existsSync(full)) return;
+    const lines = fs.readFileSync(full, "utf8").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      try {
+        const parsed = JSON.parse(t);
+        if (parsed.id === session.id) {
+          lines[i] = JSON.stringify(session);
+          fs.writeFileSync(full, lines.join("\n"), "utf8");
+          return;
+        }
+      } catch (e) {}
+    }
+  } catch (e) {
+    console.error(`[proxy] task distill persist failed: ${e.message}`);
+  }
+}
+
+// --- Task Insight aggregation/report ---
+function taskInsightBuildReport(reportMode, now = Date.now()) {
+  const sessions = taskListAll(now);
+  const grouped = new Map();
+  for (const s of sessions) {
+    const key = s.projectName || "未分类";
+    let g = grouped.get(key);
+    if (!g) {
+      g = { project: key, sessions: 0, requests: 0, successRequests: 0, failRequests: 0, cost: 0, inputTokens: 0, outputTokens: 0, models: [], tools: [], files: [], reasons: [], completed: 0, failed: 0, partial: 0 };
+      grouped.set(key, g);
+    }
+    g.sessions++;
+    g.requests += s.requestCount || 0;
+    g.successRequests += s.successCount || 0;
+    g.failRequests += s.failCount || 0;
+    g.cost += s.cost || 0;
+    g.inputTokens += s.inputTokens || 0;
+    g.outputTokens += s.outputTokens || 0;
+    if (s.status === "completed") g.completed++; else if (s.status === "failed") g.failed++; else if (s.status === "partial") g.partial++;
+    for (const m of s.models || []) pushUnique(g.models, m, 12);
+    for (const t of s.tools || []) pushUnique(g.tools, t, 12);
+    for (const f of s.files || []) pushUnique(g.files, f, 12);
+    for (const r of s.terminalReasons || []) pushUnique(g.reasons, r, 8);
+  }
+  const report = Array.from(grouped.values())
+    .map(g => {
+      const total = Math.max(1, g.requests);
+      return {
+        ...g,
+        successRate: Math.round((g.successRequests / total) * 100),
+        cost: Number(g.cost.toFixed(4)),
+      };
+    })
+    .sort((a, b) => b.cost - a.cost || b.requests - a.requests);
+  const scope = reportMode === "weekly" ? "近 7 天" : "今日";
+  const total = { sessions: sessions.length, cost: Number(sessions.reduce((s, x) => s + (x.cost || 0), 0).toFixed(4)), requests: sessions.reduce((s, x) => s + (x.requestCount || 0), 0) };
+  return { scope, total, projects: report };
+}
+
+
 // --- State ---
 function loadState() {
   autoResumeStateReady = false;
@@ -4340,18 +5039,90 @@ function loadAccounts() {
 
 function makeUsageTransform(idx, inputBytes, reqStart, ttfb, model) {
   let outputBytes = 0;
+  const scanUsage = taskInsightSignal("usage");
+  const scanTools = taskInsightSignal("tools");
+  let scanBuf = "";
+  let scanBytes = 0;
+  const taskTools = [];
+  const taskFiles = [];
+  let taskUsage = null;
+  const scanLine = (line) => {
+    if (!line || !line.startsWith("data:")) return;
+    if (line.length > TASK_SSE_LINE_MAX) return;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    try {
+      const parsed = JSON.parse(data);
+      if (scanUsage) {
+        const u = parsed.usage || (parsed.response && parsed.response.usage) || (parsed.message && parsed.message.usage);
+        if (u && (u.input_tokens != null || u.prompt_tokens != null || u.output_tokens != null || u.completion_tokens != null)) {
+          taskUsage = {
+            input_tokens: u.input_tokens != null ? u.input_tokens : (u.prompt_tokens || 0),
+            output_tokens: u.output_tokens != null ? u.output_tokens : (u.completion_tokens || 0),
+          };
+        }
+      }
+      if (scanTools) {
+        if (parsed.type === "response.output_item.done" && parsed.item && parsed.item.type === "function_call" && parsed.item.name) {
+          const name = String(parsed.item.name);
+          pushUnique(taskTools, name, TASK_INSIGHT_TOOLS_MAX);
+          if (typeof parsed.item.arguments === "string") {
+            for (const p of extractFilePaths(parsed.item.arguments)) pushUnique(taskFiles, p, TASK_INSIGHT_FILES_MAX);
+          }
+        }
+        if (parsed.type === "content_block_start" && parsed.content_block && parsed.content_block.type === "tool_use" && parsed.content_block.name) {
+          const name = String(parsed.content_block.name);
+          pushUnique(taskTools, name, TASK_INSIGHT_TOOLS_MAX);
+          try {
+            for (const p of extractFilePaths(JSON.stringify(parsed.content_block.input || {}))) pushUnique(taskFiles, p, TASK_INSIGHT_FILES_MAX);
+          } catch (e) {}
+        }
+        const delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
+        if (delta && Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            if (!tc || !tc.function) continue;
+            if (tc.function.name) pushUnique(taskTools, String(tc.function.name), TASK_INSIGHT_TOOLS_MAX);
+            if (typeof tc.function.arguments === "string") {
+              for (const p of extractFilePaths(tc.function.arguments)) pushUnique(taskFiles, p, TASK_INSIGHT_FILES_MAX);
+            }
+          }
+        }
+      }
+    } catch (e) {}
+  };
   const tr = new Transform({
     transform(chunk, encoding, cb) {
       outputBytes += chunk.length;
       tr.accBytes = outputBytes;
+      if (scanUsage || scanTools) {
+        scanBuf += chunk.toString();
+        scanBytes += chunk.length;
+        if (scanBytes > TASK_SSE_SCAN_BUFFER_MAX) {
+          scanBuf = "";
+          scanBytes = 0;
+        }
+        let nl;
+        while ((nl = scanBuf.indexOf("\n")) >= 0) {
+          const line = scanBuf.slice(0, nl);
+          scanBuf = scanBuf.slice(nl + 1);
+          scanLine(line);
+        }
+      }
       this.push(chunk);
       cb();
     },
     flush(cb) {
+      if (scanBuf && (scanUsage || scanTools)) scanLine(scanBuf);
       cb();
     }
   });
   tr.accBytes = 0;
+  tr._taskTools = taskTools;
+  tr._taskFiles = taskFiles;
+  Object.defineProperty(tr, "insightUsage", {
+    get: () => taskUsage,
+    configurable: true,
+  });
   return tr;
 }
 
@@ -4362,7 +5133,7 @@ function activeDecr(idx) {
   }
 }
 
-function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel) {
+function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel, taskInsightSink) {
   const lifecycle = extraTransform?._lifecycle || null;
   let streamAttached = false;
   let clientCancelled = false;
@@ -4489,6 +5260,15 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       }
       addLog(logEntry);
       const _ks2=getKeyState(idx);_ks2.lastStatus=apiRes.statusCode;_ks2.lastTime=Date.now();_ks2.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
+      if (typeof taskInsightSink === "function") {
+        try {
+          const metrics = taskInsightBuildMetrics(lifecycle, transform, inputBytes, accBytes, dur, apiRes.statusCode, endedNormally, resolvedModel, lifecycle ? lifecycle.terminalReason : "");
+          metrics.time = Date.now();
+          taskInsightSink(metrics);
+        } catch (e) {
+          console.error(`[proxy] task insight sink error: ${e.message}`);
+        }
+      }
       if (!lifecycle) {
         recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode, client, requestPricing);
       }
@@ -4654,7 +5434,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   proxyReq.end();
 }
 
-function forwardWithPriority(method, headers, body, clientRes, pathname, extraTransform, group) {
+function forwardWithPriority(method, headers, body, clientRes, pathname, extraTransform, group, opts) {
   group = group || "A";
   let responded = false;
   const usedKeys = new Set();
@@ -4664,9 +5444,10 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
   let model = null;
   let forceIdx = -1;
   let lastFailure = null;
+  let parsedBody = null;
   try {
-    const parsed = JSON.parse(body.toString());
-    model = parsed.model || null;
+    parsedBody = JSON.parse(body.toString());
+    model = parsedBody.model || null;
     if (model) {
       const hashMatch = model.match(/#(\d+)$/);
       if (hashMatch) {
@@ -4675,6 +5456,27 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       }
     }
   } catch(e) {}
+  // Task Insight: session join + request-side signals + per-attempt metrics sink.
+  let insightSession = null;
+  let insightSink = null;
+  if (parsedBody && !(opts && opts.internalDistill) && typeof taskInsightActive === "function" && taskInsightActive()) {
+    try {
+      const client = classifyClientApp(headers["user-agent"]);
+      const hint = taskInsightProjectHint();
+      insightSession = taskInsightJoin(Date.now(), client, group, hint);
+      const sig = (opts && opts.preExtract) ? opts.preExtract : taskInsightExtractRequest(parsedBody);
+      if (sig.instructions.length) for (const i of sig.instructions) pushUnique(insightSession.instructions, i, 4);
+      if (sig.tools.length) for (const t of sig.tools) pushUnique(insightSession.tools, t, TASK_INSIGHT_TOOLS_MAX);
+      if (sig.files.length) for (const f of sig.files) pushUnique(insightSession.files, f, TASK_INSIGHT_FILES_MAX);
+      insightSink = (metrics) => {
+        try { taskInsightAddRequestMetrics(insightSession, metrics); } catch (e) { console.error(`[proxy] task insight metrics error: ${e.message}`); }
+      };
+    } catch (e) {
+      console.error(`[proxy] task insight join error: ${e.message}`);
+      insightSession = null;
+      insightSink = null;
+    }
+  }
   function reportFinalFailure(failure, fallbackMessage) {
     const canRespond = !clientRes.destroyed && !clientRes.writableEnded;
     if (canRespond && failure && Number.isInteger(failure.idx)) {
@@ -4713,7 +5515,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       forwardRequest(forceIdx, method, headers, body, clientRes, pathname, (r) => {
         if (r.switched) reportFinalFailure(r, `Key #${forceIdx+1} failed: ${r.code || r.error?.message || "error"}`);
         else responded = true;
-      }, extraTransform, model);
+      }, extraTransform, model, insightSink);
       return;
     }
     if (retries >= MAX_RETRIES) {
@@ -4753,7 +5555,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       if (r.switched && usedKeys.size < activeCount) { console.log(`[proxy] #${idx+1} → ${r.code||"err"}, switching...`); return attempt(); }
       if (r.switched) reportFinalFailure(r, "All keys exhausted");
       else responded = true;
-    }, extraTransform);
+    }, extraTransform, model, insightSink);
   }
   attempt();
 }
@@ -5119,6 +5921,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <h1>OpenAPI Multi-Key Proxy</h1>
 <div style="display:flex;gap:6px;flex-wrap:wrap">
 <button class="btn" onclick="openLogs()">📋 日志</button>
+<button class="btn" onclick="openTaskInsight()">📊 任务流水</button>
 <button class="btn" onclick="openExportCover()">⬇ 导出 CSV</button>
 <button class="btn btn-p" onclick="openMgr()">⚙ 管理 Key</button>
 <button class="btn btn-s" onclick="openConfig()">⚙ 配置</button>
@@ -5463,14 +6266,62 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><input id="cfgAdminToken" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="留空=无认证" title="设置后所有管理接口需 Bearer token 认证"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔎 任务洞察（代理流水解析/提炼）</div>
+  <div style="color:#94a3b8;padding:4px 0">启用任务洞察</div>
+  <div><label><input type="checkbox" id="cfgTaskInsightEnabled"> 记录代理流水任务（默认不落盘原文，仅结构化信号）</label></div>
+  <div style="color:#94a3b8;padding:4px 0">采集信号</div>
+  <div><label><input type="checkbox" id="cfgTaskInsightInstructions" title="记录截断指令前 200 字"> 截断指令（前 200 字）</label><br><label><input type="checkbox" id="cfgTaskInsightTools" title="仅工具名与文件路径，不存参数全文"> 工具/文件路径</label><br><label><input type="checkbox" id="cfgTaskInsightUsage" title="输入输出 token 与估算费用"> 用量与费用</label><br><label><input type="checkbox" id="cfgTaskInsightCorrelate" title="使用 autoResume 活跃窗口合并同一任务的连续会话"> 关联会话（45 分钟活跃窗口）</label></div>
+  <div style="color:#94a3b8;padding:4px 0">保留天数</div>
+  <div><input id="cfgTaskInsightRetention" type="number" min="1" max="365" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin:4px 0;grid-column:1/-1">🤖 LLM 蒸馏摘要（可选，发送时仅含结构化快照，绝不含 Key）</div>
+  <div style="color:#94a3b8;padding:4px 0">启用蒸馏</div>
+  <div><label><input type="checkbox" id="cfgTaskInsightDistillEnabled"> 定期为已完成任务生成结构化摘要</label></div>
+  <div style="color:#94a3b8;padding:4px 0">蒸馏引擎</div>
+  <div><select id="cfgTaskInsightDistillEngine" onchange="taskInsightEngineChanged()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px">
+    <option value="ollama">ollama（本机）</option>
+    <option value="proxy">proxy（走代理）</option>
+    <option value="external">external（外部 API）</option>
+  </select>
+  <div id="cfgTaskInsightEngineHint" style="font-size:10px;color:#64748b;margin-top:4px"></div></div>
+  <div style="color:#94a3b8;padding:4px 0">模型 / 地址</div>
+  <div><input id="cfgTaskInsightDistillModel" style="width:min(100%,280px);background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px" placeholder="qwen3:4b / gpt-5"><br><input id="cfgTaskInsightDistillBaseUrl" style="width:min(100%,420px);margin-top:4px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px" placeholder="http://127.0.0.1:11434/v1（仅 ollama 需要）" title="ollama 与 external 引擎使用此地址；proxy 引擎忽略（走代理本身）"></div>
+  <div style="color:#94a3b8;padding:4px 0">每日预算 / 报告</div>
+  <div><input id="cfgTaskInsightDistillBudget" type="number" min="0" max="10000" step="0.01" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 元（0=不限）　<select id="cfgTaskInsightDistillReport" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="daily">日报</option><option value="weekly">周报</option></select></div>
+  <div style="grid-column:1/-1;color:#64748b;font-size:10px" id="cfgTaskInsightDistillStatus">蒸馏: --</div>
 </div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
 <div style="font-size:11px;color:#22c55e;margin-bottom:8px" id="cfgAutoResumeStatus">🧬 闲置恢复: --</div>
 <div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgCodexLogMaintenanceRuntime">🗄 Codex SQLite 日志维护: --</div>
-<div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
+  <div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
 </div></div>
+
+<div class="modal" id="taskInsightModal">
+<div class="mcontent" style="max-width:960px">
+<div class="mtitle"><span>📊 任务流水（代理流水解析/提炼）</span><button class="btn" type="button" onclick="closeTaskInsight()">✕</button></div>
+<div id="taskInsightDisabled" style="display:none;padding:14px 12px;background:#1e293b;border:1px solid #475569;border-radius:6px;font-size:12px;color:#cbd5e1;line-height:1.7">
+  任务洞察当前未启用，暂无流水记录。<br>
+  <button class="btn btn-p" style="margin-top:8px;font-size:11px" onclick="closeTaskInsight();openConfig()">去「配置 → 🔎 任务洞察」开启</button>
+</div>
+<div id="taskInsightPanel" style="display:none">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:11px;color:#94a3b8">
+    <span id="taskInsightStats" style="color:#e2e8f0"></span>
+    <span style="flex:1"></span>
+    <label>项目 <select id="taskInsightProjectFilter" onchange="loadTaskInsight()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="">全部</option><option value="__unclassified__">未分类</option></select></label>
+    <label>状态 <select id="taskInsightStatusFilter" onchange="loadTaskInsight()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="">全部</option><option value="completed">完成</option><option value="failed">失败</option><option value="partial">部分</option></select></label>
+    <label>搜索 <input id="taskInsightSearch" onkeydown="if(event.key==='Enter')loadTaskInsight()" placeholder="项目/客户端/工具/文件/模型" style="width:150px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"></label>
+    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="loadTaskInsight(true)">🔄 刷新</button>
+    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="taskInsightExport()">⬇ CSV</button>
+    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="taskInsightReport()">📊 报告</button>
+    <button class="btn" style="font-size:10px;padding:2px 7px;color:#4ade80" id="taskInsightDistillBtn" onclick="taskInsightDistillNow()">🤖 立即蒸馏</button>
+  </div>
+  <div style="font-size:11px;color:#64748b;margin-bottom:8px" id="taskInsightHint"></div>
+  <div id="taskInsightReportBox" style="display:none;margin-bottom:8px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:11px;color:#cbd5e1"></div>
+  <div id="taskInsightTable" style="font-size:11px;max-height:62vh;overflow:auto"></div>
+</div>
+</div></div>
+
 
 <div class="modal" id="updateModal">
 <div class="mcontent" style="max-width:720px">
@@ -5973,6 +6824,23 @@ async function loadConfigUI(){
     document.getElementById("cfgCmdPath").value=c.cmdPath||"/mnt/c/Windows/System32/cmd.exe";
     document.getElementById("cfgCapacityBackoffSeconds").value=c.capacityBackoffSeconds||60;
     document.getElementById("cfgCapacityMaxWaitSeconds").value=c.capacityMaxWaitSeconds||300;
+    const ti=c.taskInsight||{};
+    const tiSignals=ti.signals||{};
+    const tiDistill=ti.distill||{};
+    document.getElementById("cfgTaskInsightEnabled").checked=ti.enabled===true;
+    document.getElementById("cfgTaskInsightInstructions").checked=tiSignals.instructions===true;
+    document.getElementById("cfgTaskInsightTools").checked=tiSignals.tools===true;
+    document.getElementById("cfgTaskInsightUsage").checked=tiSignals.usage===true;
+    document.getElementById("cfgTaskInsightCorrelate").checked=tiSignals.correlate===true;
+    document.getElementById("cfgTaskInsightRetention").value=ti.retentionDays||30;
+    document.getElementById("cfgTaskInsightDistillEnabled").checked=tiDistill.enabled===true;
+    document.getElementById("cfgTaskInsightDistillEngine").value=tiDistill.engine||"ollama";
+    document.getElementById("cfgTaskInsightDistillModel").value=tiDistill.model||"";
+    document.getElementById("cfgTaskInsightDistillBaseUrl").value=tiDistill.baseUrl||"";
+    document.getElementById("cfgTaskInsightDistillBudget").value=tiDistill.dailyBudgetYuan??1;
+    document.getElementById("cfgTaskInsightDistillReport").value=tiDistill.report||"daily";
+    taskInsightEngineChanged();
+    refreshTaskInsightDistillStatus();
     renderResumeProjects(c.autoResumeProjects||[]);
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(c.autoRecoverDailyNextTime)autoRecoverDailyNextTime=parseInt(c.autoRecoverDailyNextTime);else autoRecoverDailyNextTime=0;
@@ -6031,6 +6899,35 @@ function setCodexLogMaintenanceCheck(text,color){
   el.textContent=text||"";
   el.style.color=color||"#64748b";
 }
+function taskInsightEngineChanged(){
+  const el=document.getElementById("cfgTaskInsightEngineHint");
+  if(!el)return;
+  const engine=(document.getElementById("cfgTaskInsightDistillEngine").value||"").trim();
+  const hints={
+    ollama:"数据不出本机、无外部费用；需本机运行 ollama 并已拉取所用模型（默认地址 http://127.0.0.1:11434/v1）。",
+    proxy:"蒸馏请求经代理转发，token 计入代理统计/成本与限速，Key 不外泄；模型名需与代理内可用模型一致。",
+    external:"直接调用外部 API（需在地址中携带可用的 API Key），不经代理，保密自担。"
+  };
+  el.textContent=hints[engine]||"";
+}
+function renderTaskInsightDistillStatus(runtime){
+  const el=document.getElementById("cfgTaskInsightDistillStatus");
+  if(!el)return;
+  const enabled=!!document.getElementById("cfgTaskInsightDistillEnabled")?.checked;
+  const state=runtime&&typeof runtime==="object"?runtime:{};
+  if(!enabled){el.textContent="蒸馏: 未启用";el.style.color="#64748b";return;}
+  let text="蒸馏: ";
+  let color="#94a3b8";
+  if(state.running){text+="正在运行…";color="#fbbf24";}
+  else if(state.lastError){text+="上次失败: "+String(state.lastError).slice(0,120);color="#f87171";}
+  else if(state.pending>0){text+="待处理 "+state.pending+" 个任务";color="#fbbf24";}
+  else if(state.lastRunAt){text+="上次运行 "+new Date(state.lastRunAt).toLocaleString();color="#94a3b8";}
+  else{text+="等待运行";color="#94a3b8";}
+  const budget=state.budget||{};
+  if(budget.limitYuan>0)text+="；今日预算 ¥"+Number(budget.spentYuan||0).toFixed(4)+" / ¥"+Number(budget.limitYuan);
+  el.textContent=text;
+  el.style.color=color;
+}
 function renderCodexLogMaintenanceRuntime(runtime){
   const el=document.getElementById("cfgCodexLogMaintenanceRuntime");
   if(!el)return;
@@ -6050,6 +6947,17 @@ function renderCodexLogMaintenanceRuntime(runtime){
   else{text+="等待首次检查";color="#94a3b8";}
   el.textContent=text;
   el.style.color=color;
+}
+async function refreshTaskInsightDistillStatus(){
+  const el=document.getElementById("cfgTaskInsightDistillStatus");
+  if(!el)return;
+  try{
+    const r=await fetch("/__task-insight-status");
+    const j=await r.json();
+    if(j&&j.ok){renderTaskInsightDistillStatus(j.distill||{});return;}
+  }catch(e){}
+  el.textContent="蒸馏: 状态不可用";
+  el.style.color="#64748b";
 }
 async function checkCodexLogMaintenancePath(){
   const button=document.getElementById("cfgCodexLogMaintenanceCheckBtn");
@@ -8129,6 +9037,142 @@ function exportLogs(){
 
 function openConfig(){renderUpdateInfo();loadConfigUI();document.getElementById("configModal").classList.add("on")}
 function closeConfig(){document.getElementById("configModal").classList.remove("on")}
+function openTaskInsight(){document.getElementById("taskInsightModal").classList.add("on");loadTaskInsight()}
+function closeTaskInsight(){document.getElementById("taskInsightModal").classList.remove("on")}
+function escTaskText(v){
+  return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+function fmtTaskDuration(ms){
+  const s=Math.max(0,Math.round((ms||0)/1000));
+  if(s<60)return s+"s";
+  if(s<3600)return Math.floor(s/60)+"m"+(s%60?(" "+s%60+"s"):"");
+  return Math.floor(s/3600)+"h"+(Math.floor(s%3600/60)?(" "+Math.floor(s%3600/60)+"m"):"");
+}
+function taskInsightBadge(status){
+  const map={completed:["完成","#22c55e"],failed:["失败","#f87171"],partial:["部分","#fbbf24"]};
+  const [t,c]=map[status]||[status||"未知","#94a3b8"];
+  return '<span style="color:'+c+'">'+t+'</span>';
+}
+async function loadTaskInsight(refresh){
+  const disabledEl=document.getElementById("taskInsightDisabled");
+  const panelEl=document.getElementById("taskInsightPanel");
+  if(!disabledEl||!panelEl)return;
+  try{
+    const st=await fetch("/__task-insight-status");
+    const sj=await st.json();
+    if(!sj.ok||!sj.enabled){
+      panelEl.style.display="none";
+      disabledEl.style.display="block";
+      return;
+    }
+    disabledEl.style.display="none";
+    panelEl.style.display="block";
+    const d=sj.distill||{};
+    const budget=d.budget||{};
+    const hint=document.getElementById("taskInsightHint");
+    if(hint){
+      let parts=["仅结构化信号，不含 Key 与完整原文"];
+      if(d.enabled){
+        parts.push("蒸馏引擎: "+(d.engine||"-")+(d.running?"（运行中）":""));
+        if(budget.limitYuan>0)parts.push("今日预算 ¥"+Number(budget.spentYuan||0).toFixed(2)+"/¥"+Number(budget.limitYuan));
+      }else parts.push("LLM 蒸馏未启用（可在配置中开启）");
+      hint.textContent=parts.join(" · ");
+    }
+    const distillBtn=document.getElementById("taskInsightDistillBtn");
+    if(distillBtn){
+      if(!d.enabled){distillBtn.style.display="none";}
+      else{distillBtn.style.display="inline-block";distillBtn.disabled=!!d.running;distillBtn.textContent=d.running?"蒸馏中…":"🤖 立即蒸馏";}
+    }
+    const q=new URLSearchParams();
+    const proj=document.getElementById("taskInsightProjectFilter").value;
+    if(proj)q.set("project",proj);
+    const status=document.getElementById("taskInsightStatusFilter").value;
+    if(status)q.set("status",status);
+    const search=document.getElementById("taskInsightSearch").value.trim();
+    if(search)q.set("q",search);
+    if(!refresh)q.set("limit","100");
+    const r=await fetch("/__tasks?"+q.toString());
+    const j=await r.json();
+    if(!j.ok)throw new Error(j.error||"load failed");
+    const stats=document.getElementById("taskInsightStats");
+    if(stats){
+      const s=j.status||{};
+      stats.textContent="共 "+j.total+" 个会话 · 启用状态: "+(s.enabled?"开启":"关闭")+(s.signals?(" · 信号 "+Object.keys(s.signals||{}).filter(k=>s.signals[k]).join(",")||"无"):"");
+    }
+    const table=document.getElementById("taskInsightTable");
+    if(j.tasks&&j.tasks.length){
+      table.innerHTML='<table style="width:100%;border-collapse:collapse;min-width:760px"><thead><tr style="text-align:left;color:#64748b;border-bottom:1px solid #334155">'
+        +'<th style="padding:4px 6px">时间</th><th style="padding:4px 6px">项目</th><th style="padding:4px 6px">客户端</th><th style="padding:4px 6px">状态</th><th style="padding:4px 6px">请求</th>'
+        +'<th style="padding:4px 6px">Token(入/出)</th><th style="padding:4px 6px">费用</th><th style="padding:4px 6px">模型</th><th style="padding:4px 6px">工具/文件</th><th style="padding:4px 6px">摘要</th></tr></thead><tbody>'
+        +j.tasks.map(t=>{
+          const tools=[...(t.tools||[]).slice(0,6)];
+          const files=[...(t.files||[]).slice(0,3)];
+          const toolsHtml=tools.length?escTaskText(tools.join(", ")):"";
+          const filesHtml=files.length?escTaskText(files.join(", ")):"";
+          const chain=(t.models||[]).slice(0,4).join(" → ");
+          const summary=t.distill&&t.distill.summary?escTaskText(String(t.distill.summary).slice(0,120)):"";
+          const instr=(t.instructions||[]).slice(0,2).map(i=>escTaskText(String(i).slice(0,120))).join("<br>");
+          return '<tr style="border-bottom:1px solid #1e293b;vertical-align:top">'
+            +'<td style="padding:4px 6px;color:#94a3b8;white-space:nowrap">'+new Date(t.start).toLocaleString()+'<br><span style="color:#64748b">'+fmtTaskDuration(t.end-t.start)+'</span></td>'
+            +'<td style="padding:4px 6px;color:#60a5fa">'+escTaskText(t.projectName||"未分类")+'</td>'
+            +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(t.client)+'</td>'
+            +'<td style="padding:4px 6px">'+taskInsightBadge(t.status)+'</td>'
+            +'<td style="padding:4px 6px">'+escTaskText(t.requestCount)+'（成功 '+escTaskText(t.successCount)+'）</td>'
+            +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(t.inputTokens)+' / '+escTaskText(t.outputTokens)+'</td>'
+            +'<td style="padding:4px 6px;color:#fbbf24">¥'+Number(t.cost||0).toFixed(4)+'</td>'
+            +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(chain)+'</td>'
+            +'<td style="padding:4px 6px;color:#94a3b8">'+toolsHtml+(toolsHtml&&filesHtml?"<br>":"")+filesHtml+'</td>'
+            +'<td style="padding:4px 6px;max-width:280px">'+(summary||instr)+'</td>'
+            +'</tr>';
+        }).join("")+'</tbody></table>';
+    }else{
+      table.innerHTML='<div style="padding:24px;text-align:center;color:#64748b;font-size:12px">暂无匹配的会话记录</div>';
+    }
+  }catch(e){
+    const table=document.getElementById("taskInsightTable");
+    if(table)table.innerHTML='<div style="padding:24px;text-align:center;color:#f87171;font-size:12px">加载失败: '+escTaskText(e.message||e)+'</div>';
+  }
+}
+function taskInsightExport(){
+  const q=new URLSearchParams();
+  const proj=document.getElementById("taskInsightProjectFilter").value;
+  if(proj)q.set("project",proj);
+  const status=document.getElementById("taskInsightStatusFilter").value;
+  if(status)q.set("status",status);
+  window.open("http://localhost:3456/__tasks/export?"+q.toString());
+}
+async function taskInsightReport(){
+  const box=document.getElementById("taskInsightReportBox");
+  if(!box)return;
+  box.style.display="block";
+  box.textContent="正在生成报告…";
+  try{
+    const r=await fetch("/__tasks/report");
+    const j=await r.json();
+    if(!j.ok)throw new Error(j.error||"report failed");
+    const projects=(j.projects||[]).slice(0,12);
+    let html='<strong style="color:#e2e8f0">'+escTaskText(j.scope||"")+'报告</strong> · 会话 '+j.total.sessions+' · 请求 '+j.total.requests+' · 费用 ¥'+Number(j.total.cost).toFixed(4);
+    if(projects.length){
+      html+='<table style="width:100%;border-collapse:collapse;margin-top:6px"><thead><tr style="text-align:left;color:#64748b;border-bottom:1px solid #334155"><th style="padding:3px 6px">项目</th><th style="padding:3px 6px">会话</th><th style="padding:3px 6px">请求</th><th style="padding:3px 6px">成功率</th><th style="padding:3px 6px">费用</th><th style="padding:3px 6px">模型</th></tr></thead><tbody>'
+        +projects.map(g=>'<tr style="border-bottom:1px solid #1e293b"><td style="padding:3px 6px;color:#60a5fa">'+escTaskText(g.project)+'</td><td style="padding:3px 6px">'+g.sessions+'</td><td style="padding:3px 6px">'+g.requests+'</td><td style="padding:3px 6px;color:'+(g.successRate>=80?"#22c55e":g.successRate>=50?"#fbbf24":"#f87171")+'">'+g.successRate+'%</td><td style="padding:3px 6px;color:#fbbf24">¥'+Number(g.cost).toFixed(4)+'</td><td style="padding:3px 6px;color:#94a3b8">'+escTaskText((g.models||[]).slice(0,3).join(", "))+'</td></tr>').join("")
+        +'</tbody></table>';
+    }
+    box.innerHTML=html;
+  }catch(e){
+    box.textContent="报告失败: "+escTaskText(e.message||e);
+  }
+}
+async function taskInsightDistillNow(){
+  const btn=document.getElementById("taskInsightDistillBtn");
+  if(btn)btn.disabled=true;
+  try{
+    const r=await fetch("/__tasks/distill-now",{method:"POST"});
+    const j=await r.json();
+    alert((j.ok?"已开始蒸馏":"蒸馏失败")+": "+(j.error||"已提交，运行后可在任务详情查看摘要"));
+    if(j.ok)loadTaskInsight(true);
+  }catch(e){alert("蒸馏请求失败: "+e.message);}
+  finally{if(btn)btn.disabled=false;}
+}
 function configInteger(id,fallback){const value=parseInt(document.getElementById(id).value,10);return Number.isFinite(value)?value:fallback}
 function renderModelPricingRules(modelPricing){
   const area=document.getElementById("cfgModelPricingArea");
@@ -8273,6 +9317,24 @@ async function saveConfig(){
     cmdPath:document.getElementById("cfgCmdPath").value.trim()||"/mnt/c/Windows/System32/cmd.exe",
     capacityBackoffSeconds:parseInt(document.getElementById("cfgCapacityBackoffSeconds").value)||60,
     capacityMaxWaitSeconds:parseInt(document.getElementById("cfgCapacityMaxWaitSeconds").value)||300,
+    taskInsight:{
+      enabled:document.getElementById("cfgTaskInsightEnabled").checked,
+      signals:{
+        instructions:document.getElementById("cfgTaskInsightInstructions").checked,
+        tools:document.getElementById("cfgTaskInsightTools").checked,
+        usage:document.getElementById("cfgTaskInsightUsage").checked,
+        correlate:document.getElementById("cfgTaskInsightCorrelate").checked
+      },
+      retentionDays:configInteger("cfgTaskInsightRetention",30),
+      distill:{
+        enabled:document.getElementById("cfgTaskInsightDistillEnabled").checked,
+        engine:document.getElementById("cfgTaskInsightDistillEngine").value,
+        model:document.getElementById("cfgTaskInsightDistillModel").value.trim(),
+        baseUrl:document.getElementById("cfgTaskInsightDistillBaseUrl").value.trim(),
+        dailyBudgetYuan:parseFloat(document.getElementById("cfgTaskInsightDistillBudget").value)||0,
+        report:document.getElementById("cfgTaskInsightDistillReport").value
+      }
+    },
     autoResumeProjects:collectResumeProjects()
   };
   const invalidResumeProject=c.autoResumeProjects.find(p=>p.resumeMode==="fixed_session"&&(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(p.sessionId||"")||!String(p.cmd||"").includes("{sessionId}")));
@@ -9321,6 +10383,89 @@ function createGroupServer(groupName, port) {
     return;
   }
 
+  if (req.method === "GET" && pathname === "/__task-insight-status") {
+    res.writeHead(200, { ...cors, "cache-control": "no-store" });
+    res.end(JSON.stringify({ ok: true, ...taskInsightStatusPayload() }));
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/__tasks/distill-now") {
+    runTaskDistill().then(r => {
+      if (res.destroyed) return;
+      res.writeHead(200, cors);
+      res.end(JSON.stringify({ ok: true, ...r }));
+    }).catch(e => {
+      if (res.destroyed) return;
+      res.writeHead(500, cors);
+      res.end(JSON.stringify({ ok: false, error: String(e.message || e).slice(0, 240) }));
+    });
+    return;
+  }
+
+  if (req.method === "GET" && (pathname === "/__tasks" || pathname === "/__tasks/export" || pathname === "/__tasks/report")) {
+    const requestUrl = new URL(req.url, "http://localhost");
+    const now = Date.now();
+    const parseMs = (v, fallback) => {
+      if (!v) return fallback;
+      const n = Date.parse(String(v));
+      return Number.isFinite(n) ? n : fallback;
+    };
+    const from = parseMs(requestUrl.searchParams.get("from"), 0);
+    const to = parseMs(requestUrl.searchParams.get("to"), now);
+    const project = (requestUrl.searchParams.get("project") || "").trim();
+    const status = (requestUrl.searchParams.get("status") || "").trim();
+    const model = (requestUrl.searchParams.get("model") || "").trim();
+    const q = (requestUrl.searchParams.get("q") || "").trim().toLowerCase();
+    const limit = Math.min(500, Math.max(1, parseInt(requestUrl.searchParams.get("limit"), 10) || 200));
+    let sessions = taskListAll(now).filter(s => {
+      if (s.start > to || s.end < from) return false;
+      if (status && s.status !== status) return false;
+      if (project) {
+        if (project === "__unclassified__") { if (s.projectName) return false; }
+        else if (s.projectName !== project) return false;
+      }
+      if (model && !(s.models || []).includes(model)) return false;
+      if (q) {
+        const hay = [s.projectName || "", s.client || "", s.instructions || [], s.tools || [], s.files || [], s.models || []].map(v => Array.isArray(v) ? v.join(" ") : String(v)).join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    }).sort((a, b) => b.start - a.start);
+    if (pathname === "/__tasks/report") {
+      const report = taskInsightBuildReport((requestUrl.searchParams.get("mode") || "").trim() || (config.taskInsight && config.taskInsight.distill && config.taskInsight.distill.report) || "daily", now);
+      res.writeHead(200, cors);
+      res.end(JSON.stringify({ ok: true, ...report, status: taskInsightStatusPayload() }));
+      return;
+    }
+    if (pathname === "/__tasks/export") {
+      const rows = sessions.slice(0, 2000);
+      const esc = v => {
+        const s = Array.isArray(v) ? v.join("; ") : String(v == null ? "" : v);
+        return '"' + s.replace(/"/g, '""') + '"';
+      };
+      const header = ["任务ID", "项目", "客户端", "分组", "开始", "结束", "状态", "请求数", "成功", "失败", "输入token", "输出token", "费用", "模型轨迹", "工具", "文件", "指令(截断)", "摘要"];
+      const lines = [header.join(",")];
+      for (const s of rows) {
+        lines.push([
+          esc(s.id), esc(s.projectName || "未分类"), esc(s.client), esc(s.group),
+          esc(new Date(s.start).toISOString()), esc(new Date(s.end).toISOString()), esc(s.status),
+          esc(s.requestCount), esc(s.successCount), esc(s.failCount),
+          esc(s.inputTokens), esc(s.outputTokens), esc(Number(s.cost).toFixed(4)),
+          esc((s.models || []).join(" → ")), esc((s.tools || []).join(", ")), esc((s.files || []).join(", ")),
+          esc((s.instructions || []).join(" | ")),
+          esc(s.distill ? s.distill.summary : ""),
+        ].join(","));
+      }
+      res.writeHead(200, { ...cors, "content-type": "text/csv; charset=utf-8", "content-disposition": "attachment; filename=task-insight.csv", "cache-control": "no-store" });
+      res.end("\uFEFF" + lines.join("\n"));
+      return;
+    }
+    sessions = sessions.slice(0, limit);
+    res.writeHead(200, { ...cors, "cache-control": "no-store" });
+    res.end(JSON.stringify({ ok: true, tasks: sessions, total: sessions.length, status: taskInsightStatusPayload() }));
+    return;
+  }
+
   if (restartState.phase !== "ready" && !["/__restart", "/__restart/cancel", "/__restart/force"].includes(pathname)) {
     res.writeHead(503, { ...cors, "retry-after": "5" });
     res.end(JSON.stringify({ error: "proxy is restarting", ...buildRestartStatus() }));
@@ -9452,6 +10597,9 @@ function createGroupServer(groupName, port) {
             }
             if (Object.prototype.hasOwnProperty.call(c, "modelPricing")) {
               cur.modelPricing = normalizeModelPricing(cur.modelPricing, true);
+            }
+            if (Object.prototype.hasOwnProperty.call(c, "taskInsight")) {
+              cur.taskInsight = normalizeTaskInsightConfig(c.taskInsight);
             }
             if (Object.prototype.hasOwnProperty.call(c, "codexLogMaintenance")) {
               cur.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(cur.codexLogMaintenance);
@@ -10398,7 +11546,7 @@ function createGroupServer(groupName, port) {
         const transform = createChatToResponsesStream(lifecycle);
         lifecycle._transform = transform;
         transform._lifecycle = lifecycle;
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", transform, groupName);
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", transform, groupName, { preExtract: taskInsightPreExtract(reqBody) });
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -10416,7 +11564,7 @@ function createGroupServer(groupName, port) {
         const chatBody = messagesToChatRequest("", reqBody);
         chatBody.stream = true;
         addEventLog("conversion", 0, `Messages→Chat 转换: ${reqBody.model || "?"}`, "");
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToMessagesStream(), groupName);
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToMessagesStream(), groupName, { preExtract: taskInsightPreExtract(reqBody) });
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -10425,6 +11573,18 @@ function createGroupServer(groupName, port) {
 
   if (pathname === "/v1/chat/completions" && req.method === "POST") {
     const hasAnthropic = accounts.some(a => (a.group || "A") === groupName && isMessagesNative(a.url));
+    if (req.headers["x-task-insight-distill"] === "1" && config.taskInsight && config.taskInsight.distill && config.taskInsight.distill.engine === "proxy" && groupName === "A") {
+      const chunks = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks);
+        const headers = { ...req.headers };
+        delete headers["x-task-insight-distill"];
+        forwardWithPriority(req.method, headers, body, res, pathname, null, groupName, { internalDistill: true });
+      });
+      req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
+      return;
+    }
     if (!hasAnthropic) {
       // No Anthropic upstreams — fall through to default handler
     } else {

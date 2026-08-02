@@ -891,8 +891,76 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `updateBaselineTag` | 高级可选项。定制构建的已人工确认上游稳定 Release Tag，格式 `vX.Y.Z` 或 `X.Y.Z`。官方发布资产、干净官方 Git Tag 和源码基线文件（`release-baseline.txt`）自动识别，无需填写；来源未知的定制构建留空时只显示 Release 信息，不比较更新 |
 | `groups` | 端口分组映射，如 `{"A": 3456, "B": 3457}`。A 组始终运行且不可删除，B/C/D 等通过面板动态管理 |
 | `groupEnabled` | 分组开关状态，如 `{"B": true, "C": false}`。关闭的分组重启后不启动端口。默认全部启用 |
+| `taskInsight` | 任务洞察配置对象。默认关闭；字段见下方「任务洞察」章节 |
 
-## 多端口分组路由
+## 任务洞察（代理流水解析/提炼）
+
+可选功能：把经过代理的 AI 编码请求按客户端+分组聚合成「任务会话」，自动记录指令、工具调用、涉及文件、用量与费用，并可调用 LLM 生成结构化摘要（决定/风险）。默认关闭，全部信号需显式开启。
+
+### 开启与信号
+
+在 `config.json` 中加入 `taskInsight`：
+
+```jsonc
+{
+  "taskInsight": {
+    "enabled": true,
+    "signals": { "instructions": true, "tools": true, "usage": true, "correlate": true },
+    "retentionDays": 30,
+    "distill": {
+      "enabled": true,
+      "engine": "ollama",        // ollama | proxy | external
+      "model": "qwen2.5:7b",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "dailyBudgetYuan": 1,
+      "report": "daily"          // daily | weekly
+    }
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | 总开关，默认 `false` |
+| `signals.instructions` | 记录请求中的指令（仅保留前 200 字符，空白归一） |
+| `signals.tools` | 记录工具名（如 `read_file`）与文件/目录路径（正则提取，不存参数全文） |
+| `signals.usage` | 记录真实 token 用量（从上游 SSE 提取，非字节估算）与估算费用 |
+| `signals.correlate` | 会话关联：锚定 45 分钟窗口内唯一的 autoResume 活跃项目；同客户端空闲超时后自动收束为新会话 |
+| `retentionDays` | 会话文件保留天数（范围 1–3650，默认 30），到期自动删除 `tasks/` 下旧文件 |
+
+### 蒸馏（LLM 摘要）
+
+对已完成的会话生成 `{summary, decisions, risks}` 结构化摘要，受每日预算护栏约束。
+
+| 字段 | 说明 |
+|------|------|
+| `distill.enabled` | 是否启用蒸馏 |
+| `distill.engine` | `ollama`=本地 Ollama（数据不出本机）；`proxy`=经本代理转发（计代理 token 且不超过每日预算，Key 不外泄）；`external`=直连第三方 API（隐私自担） |
+| `distill.model` | 摘要模型名 |
+| `distill.baseUrl` | OpenAI 兼容端点。`external` 必填；`ollama` 留空时默认 `http://127.0.0.1:11434/v1` |
+| `distill.dailyBudgetYuan` | 每日蒸馏费用上限（默认 1），按上游用量估算，超额即停 |
+| `distill.report` | `daily`/`weekly` 报告周期 |
+
+### 数据与隐私
+
+- 会话持久化在 `tasks/YYYY-MM-DD.jsonl`（按会话开始日分文件），仅存本机。
+- 指令仅截断前 200 字符；工具只存名称、文件只存正则提取的路径；不保存完整工具参数或请求原文。
+- 蒸馏只发送结构化快照（≤6000 字符），绝不包含任何 API Key。
+- 会话在空闲收束或关闭功能时落盘；运行时仅保留最近 2000 个内存会话。
+
+### 相关接口
+
+| 接口 | 说明 |
+|------|------|
+| `GET /__task-insight-status` | 任务洞察当前状态（开关、信号、蒸馏状态与预算） |
+| `GET /__tasks?from&to&project&status&model&q&limit` | 查询会话（默认最新在前，`limit` ≤500） |
+| `GET /__tasks/export` | 导出 CSV（带 BOM，≤2000 行） |
+| `GET /__tasks/report?mode=daily|weekly` | 按项目聚合的报告 |
+| `POST /__tasks/distill-now` | 手动触发蒸馏 |
+
+管理面板工具栏「📋 任务流水」可查看/导出会话；系统配置弹窗可切换引擎与预算。
+
+
 
 本代理支持单进程监听多个端口，不同端口的 Key 池相互独立，实现多模型分层隔离。
 
