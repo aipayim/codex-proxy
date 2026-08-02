@@ -524,9 +524,11 @@ codex
 
 在「系统配置」启用后，代理会先检测数据库路径、常规文件属性和 `logs(id, ts)` 结构；检测失败时不能保存启用配置。路径框示例为 `/root/.codex/logs_2.sqlite`。粘贴 Windows Explorer 路径 `\\wsl.localhost\Ubuntu\root\.codex\logs_2.sqlite` 或 `\\wsl$\Ubuntu\root\.codex\logs_2.sqlite` 时，面板和服务端会转换为 `/root/.codex/logs_2.sqlite` 后再校验；其他 Windows 路径、符号链接、`-wal` / `-shm` 辅助文件和 `~/.codex/` 外的文件会被拒绝。
 
-达到设置的「主库 + WAL」容量阈值后，后台独立进程仅删除 `ts` 早于保留期的记录。它依赖 Python 3 自带的 `sqlite3`，不需要新增 npm 原生依赖；缺少 Python 3 时启用保存会明确失败。启用保存时若数据库正忙，会拒绝该次保存并提示稍后重试，避免未验证配置生效；已保存的后台任务遇到忙状态则显示“数据库忙，已跳过”，等待下一周期，不会强抢写锁。它不重启/暂停代理、watchdog 或正在运行的 Codex CLI；点击「立即检查」只使用已经保存并验证过的配置。
+达到设置的「主库 + WAL」容量阈值后，后台独立进程仅删除 `ts` 早于保留期的记录。它依赖 Python 3 自带的 `sqlite3`，不需要新增 npm 原生依赖；缺少 Python 3 时启用保存会明确失败。启用保存时若数据库正忙，会拒绝该次保存并提示稍后重试，避免未验证配置生效；已保存的后台任务遇到忙状态则显示“数据库忙，已跳过”，等待下一周期，不会强抢写锁。它不重启/暂停代理、watchdog 或正在运行的 Codex CLI；「立即检查」「立即清理」都只使用已经保存并验证过的配置。
 
-SQLite 删除行后通常只会把页留给后续写入复用，物理文件不保证立刻变小。为避免长写锁，系统**不会主动执行 `VACUUM`、checkpoint 或删除 WAL/SHM 文件**；确需物理压缩时，应在人工维护窗口确认 Codex CLI 已停止后单独处理。
+「立即检查」是只读检查：返回主库/WAL 容量、当前总容量与是否达到触发阈值，不删除任何记录。「立即清理」会真正执行删除并按触发容量/保留时长清理，随后 `VACUUM` 物理缩小库文件；为安全起见，它只在 Codex 空闲时执行（在途请求 = 0、排队 = 0，且距上次请求 ≥ 60 秒），否则拒绝并提示“Codex 仍在使用中”。`VACUUM` 需要约等于库容量的临时磁盘空间、耗时取决于库大小，且只有确实删除过记录才触发。
+
+SQLite 删除行后通常只会把页留给后续写入复用，物理文件不保证立刻变小，因此定时后台维护**不会主动执行 `VACUUM`、checkpoint 或删除 WAL/SHM 文件**；确需物理压缩时，请等待 Codex CLI 停止并静默 60 秒后使用「立即清理」，或人工维护窗口单独处理。
 
 ### Key 管理
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
@@ -547,7 +549,8 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__config` | GET | 读取 config.json |
 | `/__config` | PUT | 写入 config.json（自动重载） |
 | `/__codex-log-maintenance/check` | POST | 检测候选 Codex SQLite 路径和 `logs(id, ts)` 结构；不写配置、不删除日志。请求体为 `{"codexLogMaintenance":{"dbPath":"/root/.codex/logs_2.sqlite"}}` |
-| `/__codex-log-maintenance/run` | POST | 立即按已保存且已启用的 Codex SQLite 维护配置检查/清理；不接受任意路径，不重启代理或 Codex CLI |
+| `/__codex-log-maintenance/run` | POST | 只读立即检查已保存且已启用的 Codex SQLite 维护配置（容量/有效性），不删除记录；不接受任意路径，不重启代理或 Codex CLI |
+| `/__codex-log-maintenance/clean` | POST | 立即清理：仅当 Codex 空闲（在途/排队为 0 且静默 60 秒）时按触发容量/保留时长删除过期记录并 `VACUUM` 缩小库文件；忙时返回 409 `database_active` |
 | `/__reset-key` | POST | 重置指定 Key 的冷却/废弃状态（`{"idx": 1}`） |
 | `/__apply-test-result` | POST | 应用批量测试结果：`{"idx":1, "failCode":429}` → markFailure；`failCode=null/200` → 清空冷却（`{"idx":1, "failCode":null}`） |
 | `/__test-key` | POST | 单 Key 连通性测试（`{"key":"sk-...","url":"https://..."}`），返回 `model`（逗号分隔可用模型列表）和 `modelCount`（模型数量） |

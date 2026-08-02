@@ -162,6 +162,25 @@ async function testBusySchemaCheck(homeDir, databasePath) {
   }
 }
 
+function makeVacuumFixture(homeDir) {
+  const codexDir = path.join(homeDir, ".codex");
+  const databasePath = path.join(codexDir, "logs_vacuum.sqlite");
+  const source = [
+    "import sqlite3, sys, time",
+    "db = sys.argv[1]",
+    "now = int(time.time())",
+    "con = sqlite3.connect(db)",
+    "con.execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, payload TEXT)')",
+    "for i in range(18000): con.execute('INSERT INTO logs(ts, payload) VALUES (?, ?)', (now - 7200 - i, 'old' * 30))",
+    "for i in range(2000): con.execute('INSERT INTO logs(ts, payload) VALUES (?, ?)', (now - 60 - i, 'recent' * 30))",
+    "con.commit()",
+    "con.close()",
+  ].join("\n");
+  const result = runPython(["-c", source, databasePath]);
+  if (result.status !== 0) throw new Error(String(result.stderr || "vacuum fixture setup failed"));
+  return { databasePath };
+}
+
 function testSourceContracts() {
   const source = fs.readFileSync(path.join(ROOT, "proxy.js"), "utf8");
   const fallback = fs.readFileSync(path.join(ROOT, "dashboard.html"), "utf8");
@@ -177,17 +196,24 @@ function testSourceContracts() {
   assert.match(source, /spawn\("python3", args, \{ stdio: \["ignore", "pipe", "pipe"\], windowsHide: true \}\)/);
   assert.match(source, /pathname === "\/__codex-log-maintenance\/check"/);
   assert.match(source, /pathname === "\/__codex-log-maintenance\/run"/);
+  assert.match(source, /pathname === "\/__codex-log-maintenance\/clean"/);
   assert.match(source, /await invokeCodexLogMaintainer\("check", cur\.codexLogMaintenance\)/);
   assert.match(source, /codexLogMaintenanceRuntime: getCodexLogMaintenanceRuntimeStatus\(\)/);
+  assert.match(source, /CODEX_LOG_MAINTENANCE_IDLE_GRACE_MS = 60000/);
+  assert.match(source, /requireIdle: true, vacuum: true/);
+  assert.match(source, /result === "database_active"/);
   assert.match(source, /id="cfgCodexLogMaintenancePath"/);
+  assert.match(source, /id="cfgCodexLogMaintenanceCleanBtn"/);
   assert.match(source, /function normalizeCodexLogMaintenancePathInput\(\)/);
   assert.match(source, /function checkCodexLogMaintenancePath\(\)/);
   assert.match(source, /function runCodexLogMaintenanceNow\(\)/);
+  assert.match(source, /function runCodexLogMaintenanceCleanNow\(\)/);
   assert.match(fallback, /id="cfgCodexLogMaintenancePath"/);
   assert.match(fallback, /function normalizeCodexLogMaintenancePathInput\(\)/);
   assert.match(fallback, /function checkCodexLogMaintenancePath\(\)/);
   assert.match(helper, /database_busy/);
-  assert.doesNotMatch(helper, /VACUUM/i);
+  assert.match(helper, /--vacuum/);
+  assert.match(helper, /args\.vacuum/);
 }
 
 async function main() {
@@ -230,7 +256,25 @@ async function main() {
     assert.strictEqual(cleaned.payload.ok, true);
     assert.strictEqual(cleaned.payload.result, "cleaned");
     assert.strictEqual(cleaned.payload.deletedRows, 3);
+    assert.strictEqual(cleaned.payload.vacuumed, false, "a cleanup without --vacuum must never vacuum");
     assert.deepStrictEqual(countRows(databasePath), [0, 2], "cleanup must remove only rows outside the retention window");
+
+    const { databasePath: vacuumDb } = makeVacuumFixture(homeDir);
+    const vacuumBefore = fs.statSync(vacuumDb).size;
+    const vacuumed = runHelper(homeDir, [
+      "cleanup", "--path", vacuumDb, "--threshold-mib", "1", "--retain-hours", "1",
+      "--batch-rows", "1000", "--max-batches", "500", "--busy-timeout-ms", "1000", "--vacuum",
+    ]);
+    assert.strictEqual(vacuumed.status, 0);
+    assert.strictEqual(vacuumed.payload.ok, true);
+    assert.strictEqual(vacuumed.payload.result, "cleaned");
+    assert.strictEqual(vacuumed.payload.deletedRows, 18000, "vacuum cleanup must remove all expired rows");
+    assert.strictEqual(vacuumed.payload.vacuumed, true);
+    assert.deepStrictEqual(countRows(vacuumDb), [0, 2000], "vacuum cleanup must remove only expired rows");
+    const vacuumAfter = fs.statSync(vacuumDb).size;
+    assert.ok(vacuumAfter < vacuumBefore, "VACUUM must physically shrink the database file");
+    assert.strictEqual(vacuumAfter, vacuumed.payload.vacuumBytesAfter, "reported post-vacuum size must match the physical file");
+    assert.strictEqual(vacuumed.payload.physicalBytesAfter, vacuumed.payload.vacuumBytesAfter);
 
     await testBusyDatabase(homeDir, databasePath);
     await testBusySchemaCheck(homeDir, databasePath);

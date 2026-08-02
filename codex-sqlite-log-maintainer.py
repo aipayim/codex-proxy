@@ -196,11 +196,12 @@ def cleanup(
     batch_rows: int,
     max_batches: int,
     busy_timeout_ms: int,
+    vacuum: bool = False,
 ) -> dict[str, Any]:
     threshold_mib = bounded_integer(threshold_mib, 1, 102400, "threshold-mib")
     retain_hours = bounded_integer(retain_hours, 1, 8760, "retain-hours")
     batch_rows = bounded_integer(batch_rows, 1, 10000, "batch-rows")
-    max_batches = bounded_integer(max_batches, 1, 20, "max-batches")
+    max_batches = bounded_integer(max_batches, 1, 2000, "max-batches")
     busy_timeout_ms = bounded_integer(busy_timeout_ms, 0, 5000, "busy-timeout-ms")
 
     threshold_bytes = threshold_mib * 1024 * 1024
@@ -236,6 +237,7 @@ def cleanup(
         "cutoffTs": cutoff_ts,
         "deletedRows": 0,
         "batches": 0,
+        "vacuumed": False,
         "physicalBytesBefore": before["totalBytes"],
         **before,
     }
@@ -295,7 +297,7 @@ def cleanup(
 
     after = storage_sizes(checked_path)
     result = "cleaned" if deleted_rows else "retention_satisfied"
-    return {
+    payload = {
         **base,
         "result": result,
         "deletedRows": deleted_rows,
@@ -304,6 +306,41 @@ def cleanup(
         "physicalBytesDelta": after["totalBytes"] - before["totalBytes"],
         **after,
     }
+    if vacuum and deleted_rows:
+        vacuum_conn: sqlite3.Connection | None = None
+        try:
+            vacuum_conn = sqlite3.connect(
+                checked_path,
+                timeout=max(0.0, busy_timeout_ms / 1000.0),
+                isolation_level=None,
+            )
+            vacuum_conn.execute("PRAGMA busy_timeout = %d" % busy_timeout_ms)
+            vacuum_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            vacuum_conn.execute("VACUUM")
+            vacuum_after = storage_sizes(checked_path)
+            payload["vacuumed"] = True
+            payload["vacuumBytesBefore"] = after["totalBytes"]
+            payload["vacuumBytesAfter"] = vacuum_after["totalBytes"]
+            payload["physicalBytesAfter"] = vacuum_after["totalBytes"]
+            payload["physicalBytesDelta"] = vacuum_after["totalBytes"] - before["totalBytes"]
+            payload.update(vacuum_after)
+        except sqlite3.OperationalError as error:
+            if is_busy_error(error):
+                after_busy = storage_sizes(checked_path)
+                return {
+                    **base,
+                    "result": "skipped_busy",
+                    "deletedRows": deleted_rows,
+                    "batches": batches,
+                    "physicalBytesAfter": after_busy["totalBytes"],
+                    "physicalBytesDelta": after_busy["totalBytes"] - before["totalBytes"],
+                    **after_busy,
+                }
+            raise
+        finally:
+            if vacuum_conn is not None:
+                vacuum_conn.close()
+    return payload
 
 
 def parse_args() -> argparse.Namespace:
@@ -321,6 +358,7 @@ def parse_args() -> argparse.Namespace:
     cleanup_parser.add_argument("--batch-rows", type=int, default=1000)
     cleanup_parser.add_argument("--max-batches", type=int, default=5)
     cleanup_parser.add_argument("--busy-timeout-ms", type=int, default=1000)
+    cleanup_parser.add_argument("--vacuum", action="store_true", help="run VACUUM after deleting rows to reclaim physical space")
     return parser.parse_args()
 
 
@@ -337,6 +375,7 @@ def main() -> int:
                 args.batch_rows,
                 args.max_batches,
                 args.busy_timeout_ms,
+                args.vacuum,
             )
         emit(payload)
         return 0

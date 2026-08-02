@@ -142,6 +142,9 @@ const CODEX_LOG_MAINTENANCE_BUSY_TIMEOUT_MS = 1000;
 const CODEX_LOG_MAINTENANCE_BATCH_ROWS = 1000;
 const CODEX_LOG_MAINTENANCE_MAX_BATCHES = 5;
 const CODEX_LOG_MAINTAINER_TIMEOUT_MS = 30000;
+const CODEX_LOG_MAINTENANCE_IDLE_GRACE_MS = 60000;
+const CODEX_LOG_MAINTENANCE_CLEAN_TIMEOUT_MS = 180000;
+const CODEX_LOG_MAINTENANCE_CLEAN_MAX_BATCHES = 500;
 const CODEX_LOG_MAINTAINER_MAX_OUTPUT_BYTES = 32 * 1024;
 let LOG_RETENTION_DAYS = 7;
 let LOG_FILE_ENABLED = true;
@@ -1156,19 +1159,34 @@ function formatCodexLogMaintenanceError(result) {
     helper_unavailable: "未找到 Python 3 或数据库维护 helper；请安装 Python 3 后重试",
     helper_timeout: "数据库检测/维护超时，未继续占用数据库",
     cleanup_failed: "数据库维护未能安全完成",
+    database_active: "Codex 仍在使用中，暂缓清理（请等 60 秒无新请求后再试）",
   };
   const fallback = result && result.error ? String(result.error).slice(0, 240) : "数据库检测失败";
   return messages[code] || fallback;
+}
+
+function getCodexLogMaintenanceIdleState(now = Date.now()) {
+  const active = getActiveRequestCount();
+  const queued = Array.isArray(requestQueue) ? requestQueue.length : 0;
+  const lastAgoMs = Math.max(0, now - lastRequestTime);
+  return {
+    active,
+    queued,
+    lastAgoMs,
+    graceMs: CODEX_LOG_MAINTENANCE_IDLE_GRACE_MS,
+    idle: active === 0 && queued === 0 && lastAgoMs >= CODEX_LOG_MAINTENANCE_IDLE_GRACE_MS,
+  };
 }
 
 function getCodexLogMaintenanceRuntimeStatus() {
   return {
     ...codexLogMaintenanceRuntime,
     inFlight: !!codexLogMaintenanceInFlight,
+    idleState: getCodexLogMaintenanceIdleState(),
   };
 }
 
-function invokeCodexLogMaintainer(command, maintenanceConfig) {
+function invokeCodexLogMaintainer(command, maintenanceConfig, options = {}) {
   const cfg = normalizeCodexLogMaintenanceConfig(maintenanceConfig);
   const args = [CODEX_SQLITE_LOG_MAINTAINER_FILE, command, "--path", cfg.dbPath, "--busy-timeout-ms", String(CODEX_LOG_MAINTENANCE_BUSY_TIMEOUT_MS)];
   if (command === "cleanup") {
@@ -1176,9 +1194,11 @@ function invokeCodexLogMaintainer(command, maintenanceConfig) {
       "--threshold-mib", String(cfg.thresholdMiB),
       "--retain-hours", String(cfg.retainHours),
       "--batch-rows", String(CODEX_LOG_MAINTENANCE_BATCH_ROWS),
-      "--max-batches", String(CODEX_LOG_MAINTENANCE_MAX_BATCHES),
+      "--max-batches", String(options.maxBatches && Number.isFinite(Number(options.maxBatches)) ? Number(options.maxBatches) : CODEX_LOG_MAINTENANCE_MAX_BATCHES),
     );
+    if (options.vacuum) args.push("--vacuum");
   }
+  const timeoutMs = options.timeoutMs && Number.isFinite(Number(options.timeoutMs)) && Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : CODEX_LOG_MAINTAINER_TIMEOUT_MS;
   return new Promise(resolve => {
     let child = null;
     let stdout = "";
@@ -1232,7 +1252,7 @@ function invokeCodexLogMaintainer(command, maintenanceConfig) {
     timer = setTimeout(() => {
       timedOut = true;
       try { child.kill("SIGTERM"); } catch {}
-    }, CODEX_LOG_MAINTAINER_TIMEOUT_MS);
+    }, timeoutMs);
     if (timer && typeof timer.unref === "function") timer.unref();
   });
 }
@@ -1243,12 +1263,13 @@ function applyCodexLogMaintenanceResult(result) {
   runtime.lastResult = String(result && result.result || "failed");
   runtime.lastError = result && result.ok === false ? formatCodexLogMaintenanceError(result) : "";
   runtime.phase = result && result.ok === false ? "error" : "idle";
-  for (const name of ["databaseBytes", "walBytes", "totalBytes", "totalMiB", "deletedRows", "batches", "physicalBytesBefore", "physicalBytesAfter", "physicalBytesDelta"]) {
+  runtime.vacuumed = !!(result && result.vacuumed === true);
+  for (const name of ["databaseBytes", "walBytes", "totalBytes", "totalMiB", "deletedRows", "batches", "physicalBytesBefore", "physicalBytesAfter", "physicalBytesDelta", "vacuumBytesBefore", "vacuumBytesAfter"]) {
     if (result && Number.isFinite(Number(result[name]))) runtime[name] = Number(result[name]);
   }
 }
 
-async function runCodexLogMaintenance(reason = "scheduled") {
+async function runCodexLogMaintenance(reason = "scheduled", opts = {}) {
   const maintenanceConfig = normalizeCodexLogMaintenanceConfig(config.codexLogMaintenance);
   if (!maintenanceConfig.enabled) {
     codexLogMaintenanceRuntime.phase = "disabled";
@@ -1258,15 +1279,21 @@ async function runCodexLogMaintenance(reason = "scheduled") {
   if (codexLogMaintenanceInFlight) {
     return { ok: false, result: "in_progress", errorCode: "in_progress", error: "Codex SQLite maintenance is already running" };
   }
+  if (opts.requireIdle) {
+    const idle = getCodexLogMaintenanceIdleState();
+    if (!idle.idle) {
+      return { ok: false, result: "database_active", errorCode: "database_active", error: "Codex 仍在使用中，暂缓清理", idleState: idle };
+    }
+  }
   codexLogMaintenanceRuntime.phase = "checking";
   codexLogMaintenanceRuntime.lastCheckAt = Date.now();
-  const work = invokeCodexLogMaintainer("cleanup", maintenanceConfig);
+  const work = invokeCodexLogMaintainer("cleanup", maintenanceConfig, { timeoutMs: opts.timeoutMs, vacuum: opts.vacuum, maxBatches: opts.maxBatches });
   codexLogMaintenanceInFlight = work;
   try {
     const result = await work;
     applyCodexLogMaintenanceResult(result);
     if (result && result.ok && Number(result.deletedRows) > 0) {
-      addEventLog("codex_sqlite_maintenance", 0, `Codex SQLite 日志维护已删除 ${Number(result.deletedRows)} 条过期记录（${reason}）`, "");
+      addEventLog("codex_sqlite_maintenance", 0, `Codex SQLite 日志维护已删除 ${Number(result.deletedRows)} 条过期记录${result.vacuumed === true ? "并 VACUUM 释放空间" : ""}（${reason}）`, "");
     }
     return result;
   } catch (error) {
@@ -6333,7 +6360,7 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div style="color:#94a3b8;padding:4px 0">触发容量 / 保留时长</div>
   <div><input id="cfgCodexLogMaintenanceThreshold" data-codex-log-maintenance-control type="number" min="64" max="102400" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgCodexLogMaintenanceRetain" data-codex-log-maintenance-control type="number" min="1" max="8760" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 小时</div>
   <div style="color:#94a3b8;padding:4px 0">检查间隔</div>
-  <div><input id="cfgCodexLogMaintenanceInterval" data-codex-log-maintenance-control type="number" min="5" max="1440" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟　<button class="btn" id="cfgCodexLogMaintenanceRunBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px" onclick="runCodexLogMaintenanceNow()">立即检查</button></div>
+  <div><input id="cfgCodexLogMaintenanceInterval" data-codex-log-maintenance-control type="number" min="5" max="1440" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟　<button class="btn" id="cfgCodexLogMaintenanceRunBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px" onclick="runCodexLogMaintenanceNow()">立即检查</button><button class="btn" id="cfgCodexLogMaintenanceCleanBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px;margin-left:6px" onclick="runCodexLogMaintenanceCleanNow()" title="仅在 Codex 空闲（无在途/排队请求且静默 60 秒）时执行；按已保存的触发容量/保留时长删除过期记录并 VACUUM 缩小库文件。需约等于库容量的临时磁盘空间。">立即清理</button></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）</div>
   <div style="color:#94a3b8;padding:4px 0">启用日志事件</div>
   <div><label><input type="checkbox" id="cfgLogIncidentEnabled" checked> 触发失败/流失败规则　<input type="checkbox" id="cfgLogIncidentNotify"> 发送通知</label></div>
@@ -7045,12 +7072,14 @@ function renderCodexLogMaintenanceRuntime(runtime){
   let color="#94a3b8";
   if(state.inFlight||state.phase==="checking"){text+="正在检查数据库…";color="#fbbf24";}
   else if(state.phase==="error"){text+=(state.lastError||"上次检查失败");color="#f87171";}
-  else if(state.lastResult==="cleaned"){text+="已删除 "+(state.deletedRows||0)+" 条过期记录；当前 "+total;color="#4ade80";}
+  else if(state.lastResult==="cleaned"){text+="已删除 "+(state.deletedRows||0)+" 条过期记录"+(state.vacuumed?"并 VACUUM 释放 "+codexLogMaintenanceBytes((state.vacuumBytesBefore||0)-(state.vacuumBytesAfter||0)):"")+"；当前 "+total;color="#4ade80";}
   else if(state.lastResult==="retention_satisfied"){text+="已满足保留期；当前 "+total+"（物理空间将在 SQLite 后续复用）";color="#94a3b8";}
   else if(state.lastResult==="skipped_busy"){text+="数据库忙，已跳过并等待下次检查；当前 "+total;color="#fbbf24";}
   else if(state.lastResult==="below_threshold"){text+="当前 "+total+"，未达到触发阈值";color="#94a3b8";}
   else if(state.nextCheckAt&&state.nextCheckAt>Date.now()){text+="已计划检查；当前 "+total;color="#94a3b8";}
   else{text+="等待首次检查";color="#94a3b8";}
+  const idleState=state.idleState;
+  if(idleState){text+="　"+(idleState.idle?"空闲，可立即清理":"使用中（在途 "+(idleState.active||0)+" / 排队 "+(idleState.queued||0)+"），暂不可清理");}
   el.textContent=text;
   el.style.color=color;
 }
@@ -7088,13 +7117,42 @@ async function runCodexLogMaintenanceNow(){
     const r=await fetch("/__codex-log-maintenance/run",{method:"POST"});
     const j=await r.json();
     renderCodexLogMaintenanceRuntime(j.runtime||{});
-    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"执行失败"),"#f87171");return;}
+    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"检查失败"),"#f87171");return;}
+    const check=j.result||{};
+    const threshold=Number(document.getElementById("cfgCodexLogMaintenanceThreshold").value||0);
+    const total=codexLogMaintenanceBytes(check.totalBytes||0);
+    setCodexLogMaintenanceCheck("✓ 有效：主库 "+codexLogMaintenanceBytes(check.databaseBytes)+"，WAL "+codexLogMaintenanceBytes(check.walBytes)+"，当前 "+total+(threshold>0&&(check.totalBytes||0)<threshold*1024*1024?"（未达 "+threshold+" MiB 触发阈值）":""),"#4ade80");
+  }catch(e){setCodexLogMaintenanceCheck("✕ 检查失败: "+e.message,"#f87171");}
+  finally{toggleCodexLogMaintenanceControls();}
+}
+async function runCodexLogMaintenanceCleanNow(){
+  if(!document.getElementById("cfgCodexLogMaintenanceEnabled").checked){setCodexLogMaintenanceCheck("请先启用并保存配置","#fbbf24");return;}
+  const runBtn=document.getElementById("cfgCodexLogMaintenanceRunBtn");
+  const cleanBtn=document.getElementById("cfgCodexLogMaintenanceCleanBtn");
+  if(runBtn)runBtn.disabled=true;
+  if(cleanBtn)cleanBtn.disabled=true;
+  setCodexLogMaintenanceCheck("正在等待 Codex 空闲并清理数据库…","#fbbf24");
+  try{
+    const r=await fetch("/__codex-log-maintenance/clean",{method:"POST"});
+    const j=await r.json();
+    renderCodexLogMaintenanceRuntime(j.runtime||{});
     const result=j.result||{};
-    if(result.result==="skipped_busy")setCodexLogMaintenanceCheck("数据库忙，已跳过；下个周期会重试","#fbbf24");
+    if(result.result==="database_active"){
+      const idle=result.idleState||{};
+      setCodexLogMaintenanceCheck("✕ Codex 仍在使用中（在途 "+(idle.active||0)+" / 排队 "+(idle.queued||0)+"，距上次请求 "+Math.round((idle.lastAgoMs||0)/1000)+" 秒）；静默 60 秒后再试","#fbbf24");
+      return;
+    }
+    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"清理失败"),"#f87171");return;}
+    if(result.result==="skipped_busy")setCodexLogMaintenanceCheck("数据库忙，已跳过；请稍后重试","#fbbf24");
     else if(result.result==="below_threshold")setCodexLogMaintenanceCheck("当前容量未达到阈值，未删除记录","#94a3b8");
-    else if(result.result==="retention_satisfied")setCodexLogMaintenanceCheck("没有超过保留期的记录；不会自动 VACUUM","#94a3b8");
-    else setCodexLogMaintenanceCheck("✓ 已完成，删除 "+(result.deletedRows||0)+" 条过期记录","#4ade80");
-  }catch(e){setCodexLogMaintenanceCheck("✕ 执行失败: "+e.message,"#f87171");}
+    else if(result.result==="retention_satisfied")setCodexLogMaintenanceCheck("没有超过保留期的记录，无需清理","#94a3b8");
+    else{
+      let text="✓ 已删除 "+(result.deletedRows||0)+" 条过期记录";
+      if(result.vacuumed)text+="；VACUUM 释放 "+codexLogMaintenanceBytes((result.vacuumBytesBefore||0)-(result.vacuumBytesAfter||0))+"（文件 "+codexLogMaintenanceBytes(result.physicalBytesBefore||0)+" → "+codexLogMaintenanceBytes(result.physicalBytesAfter||0)+"）";
+      else text+="；当前 "+codexLogMaintenanceBytes(result.totalBytes||0);
+      setCodexLogMaintenanceCheck(text,"#4ade80");
+    }
+  }catch(e){setCodexLogMaintenanceCheck("✕ 清理失败: "+e.message,"#f87171");}
   finally{toggleCodexLogMaintenanceControls();}
 }
 function renderPortGroups(groups, groupEnabled, groupKeyInfo){
@@ -11236,9 +11294,40 @@ function createGroupServer(groupName, port) {
       res.end(JSON.stringify({ ok: false, error: "请先启用并保存 Codex SQLite 日志维护配置" }));
       return;
     }
-    runCodexLogMaintenance("manual").then(result => {
+    const checkCfg = normalizeCodexLogMaintenanceConfig(config.codexLogMaintenance);
+    invokeCodexLogMaintainer("check", checkCfg).then(check => {
       if (res.destroyed) return;
-      const statusCode = result && result.result === "in_progress" ? 409 : result && result.ok ? 200 : 503;
+      if (!check.ok) {
+        res.writeHead(400, cors);
+        res.end(JSON.stringify({ ok: false, error: formatCodexLogMaintenanceError(check), errorCode: check.errorCode || "invalid", runtime: getCodexLogMaintenanceRuntimeStatus() }));
+        return;
+      }
+      applyCodexLogMaintenanceResult(check);
+      res.writeHead(200, cors);
+      res.end(JSON.stringify({ ok: true, result: check, runtime: getCodexLogMaintenanceRuntimeStatus() }));
+    }).catch(error => {
+      if (res.destroyed) return;
+      res.writeHead(503, cors);
+      res.end(JSON.stringify({ ok: false, error: String(error && error.message || error).slice(0, 240), runtime: getCodexLogMaintenanceRuntimeStatus() }));
+    });
+    return;
+  }
+
+  if (pathname === "/__codex-log-maintenance/clean") {
+    if (req.method !== "POST") {
+      res.writeHead(405, cors);
+      res.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    if (!config.codexLogMaintenance || !config.codexLogMaintenance.enabled) {
+      res.writeHead(409, cors);
+      res.end(JSON.stringify({ ok: false, error: "请先启用并保存 Codex SQLite 日志维护配置", runtime: getCodexLogMaintenanceRuntimeStatus() }));
+      return;
+    }
+    runCodexLogMaintenance("manual_clean", { requireIdle: true, vacuum: true, timeoutMs: CODEX_LOG_MAINTENANCE_CLEAN_TIMEOUT_MS, maxBatches: CODEX_LOG_MAINTENANCE_CLEAN_MAX_BATCHES }).then(result => {
+      if (res.destroyed) return;
+      const refused = result && (result.result === "in_progress" || result.result === "database_active");
+      const statusCode = refused ? 409 : result && result.ok ? 200 : 503;
       res.writeHead(statusCode, cors);
       res.end(JSON.stringify({ ok: !!(result && result.ok), result, runtime: getCodexLogMaintenanceRuntimeStatus(), error: result && result.ok ? "" : formatCodexLogMaintenanceError(result) }));
     }).catch(error => {
