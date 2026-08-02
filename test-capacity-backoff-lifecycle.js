@@ -58,6 +58,7 @@ function loadCapacityHarness(proxyDir) {
         ];
       },
       markCapacityBackoff,
+      markStreamTerminalFailure,
       markSuccess,
       inCooldown,
       checkAllFailed,
@@ -102,6 +103,37 @@ function testMarkSuccessClearsBackoff(harness) {
   assert.strictEqual(harness.inCooldown(0), false);
 }
 
+function testSseCapacityFailureUsesTransientBackoff(harness) {
+  harness.configure(60, 300);
+  harness.reset();
+  harness.markStreamTerminalFailure(0, { terminalReason: "model_at_capacity" }, false);
+  const ks = harness.getKeyState(0);
+  assert.ok(ks.capUntil > Date.now(), "SSE capacity failure must set a temporary backoff");
+  assert.strictEqual(ks.failCode, null, "SSE capacity failure must not set a hard failure code");
+  assert.strictEqual(ks.failPeriod, null, "SSE capacity failure must not set a failure period");
+  assert.strictEqual(harness.inCooldown(0), true, "SSE capacity failure must temporarily skip the Key");
+  assert.strictEqual(harness.checkAllFailed(), false, "SSE capacity backoff must not report all keys failed");
+}
+
+function testOtherSseFailuresRemainFailures(harness) {
+  harness.configure(60, 300);
+  harness.reset();
+  harness.markStreamTerminalFailure(0, { terminalReason: "upstream_eof_without_completed" }, false);
+  const ks = harness.getKeyState(0);
+  assert.strictEqual(ks.failCode, 0, "non-capacity SSE failures must retain the existing failure path");
+  assert.ok(ks.failTime > 0, "non-capacity SSE failures must record their failure time");
+  assert.strictEqual(ks.capUntil, 0, "non-capacity SSE failures must not be mislabeled as capacity backoff");
+}
+
+function testCancelledSseDoesNotChangeKeyState(harness) {
+  harness.configure(60, 300);
+  harness.reset();
+  harness.markStreamTerminalFailure(0, { terminalReason: "model_at_capacity" }, true);
+  const ks = harness.getKeyState(0);
+  assert.strictEqual(ks.capUntil, 0, "a downstream cancellation is not an upstream capacity signal");
+  assert.strictEqual(ks.failCode, null, "a downstream cancellation must not change failure state");
+}
+
 function testCheckAllFailedRequiresHardFailures(harness) {
   harness.configure(60, 300);
   harness.reset();
@@ -124,6 +156,9 @@ function testDefaultsAndFreshKeyState(harness) {
 function testSourceContracts(proxyDir) {
   const source = fs.readFileSync(path.join(proxyDir, "proxy.js"), "utf8");
   assert.match(source, /function markCapacityBackoff\(idx\)/);
+  assert.match(source, /function markStreamTerminalFailure\(idx, lifecycle, clientCancelled\)/);
+  assert.match(source, /lifecycle && lifecycle\.terminalReason === "model_at_capacity"/);
+  assert.match(source, /markStreamTerminalFailure\(idx, lifecycle, clientCancelled\);/);
   assert.match(source, /capacityRetry: isCapacity/);
   assert.match(source, /statusCode === 429 \|\| reason === "model_at_capacity"/);
   assert.match(source, /if \(r\.capacityRetry\)/);
@@ -139,6 +174,9 @@ function main() {
   testBackoffDoesNotRecordHardFailure(harness);
   testBackoffExpiresAndRecovers(harness);
   testMarkSuccessClearsBackoff(harness);
+  testSseCapacityFailureUsesTransientBackoff(harness);
+  testOtherSseFailuresRemainFailures(harness);
+  testCancelledSseDoesNotChangeKeyState(harness);
   testCheckAllFailedRequiresHardFailures(harness);
   testDefaultsAndFreshKeyState(harness);
   testSourceContracts(__dirname);

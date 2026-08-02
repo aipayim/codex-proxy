@@ -4618,6 +4618,18 @@ function markCapacityBackoff(idx) {
   setTimeout(() => { try { processQueue(); } catch (e) {} }, seconds * 1000 + 100).unref();
 }
 
+// A stream can begin with HTTP 200 and later carry an explicit capacity error
+// in its SSE terminal event. Treat that the same as a pre-header 429: it is
+// transient upstream pressure, not evidence that this Key is invalid.
+function markStreamTerminalFailure(idx, lifecycle, clientCancelled) {
+  if (clientCancelled) return;
+  if (lifecycle && lifecycle.terminalReason === "model_at_capacity") {
+    markCapacityBackoff(idx);
+    return;
+  }
+  markFailure(idx, 0);
+}
+
 function markFailure(idx, code) {
   const ks = getKeyState(idx);
   const acct = accounts[idx];
@@ -5352,7 +5364,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         const dur = Date.now() - reqStart;
         const accBytes = transform.accBytes || 0;
         recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel, success ? (apiRes.statusCode || 200) : 0, client, requestPricing);
-        if (!success && !clientCancelled) markFailure(idx, 0);
+        if (!success) markStreamTerminalFailure(idx, lifecycle, clientCancelled);
       };
       lifecycle._onTerminal = completedLifecycle => {
         addStreamTerminalLog(idx, completedLifecycle);

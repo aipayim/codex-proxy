@@ -520,6 +520,7 @@ function testHttpErrorBodyClassificationAndSanitization(harness) {
   assert.ok(!message.includes("sk-live-secret-token"));
   assert.match(message, /authorization=\[redacted\]/i);
   assert.strictEqual(harness.classifyUpstreamErrorMessage(message), "model_at_capacity");
+  assert.strictEqual(harness.classifyUpstreamErrorMessage("Our servers are currently overloaded. Please try again later."), "model_at_capacity");
   assert.strictEqual(harness.classifyUpstreamErrorMessage("You exceeded your current quota"), "insufficient_quota");
 }
 

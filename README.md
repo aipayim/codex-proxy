@@ -362,18 +362,21 @@ codex
 | 401 Unauthorized | `markFailure` → 切换 |
 | 402 Payment Required | `markFailure` → 切换 |
 | 403 Forbidden | `markFailure` → 切换 |
-| 429 Too Many Requests | `markFailure` → 切换 |
-| 5xx Server Error | `markFailure` → 切换 |
+| 429 Too Many Requests / 明确的容量不足 | `markCapacityBackoff` → 临时跳过；尚未向下游提交响应时重新入队等待 |
+| 5xx Server Error（非容量不足） | `markFailure` → 切换 |
 | 连接超时 / DNS 错误 / TLS 错误 | `markFailure` → 切换 |
 | 流传输中断 | `markFailure` → 切换 |
 | 2xx / 3xx 成功 | `markSuccess` → 响应原路返回 |
 | 其他 4xx | 透传给 Codex（不切换） |
 
+容量不足既可能作为 HTTP `429` / 5xx 返回，也可能在 HTTP `200` 已建立的 SSE 中以 `response.failed`、`error` 或协议等价事件返回。两种情况都会进入 `capUntil` 短暂退避，不写 `failCode`、不触发跨周期废弃。已向下游输出的流不会自动重放到另一 Key，以免重复文本或工具调用；代理会保留协议失败终态，下一次请求再使用恢复后的可用池。
+
 全部 Key 切换失败后返回 `502 {"error": "All keys exhausted"}`（旧版存在全部失败后挂起不响应的 bug，已修复）。
 
 ## 冷却、废弃与自动锁死
 
-- Key 返回 401/402/403/429/5xx → `failCode` + `failPeriod` 写入 `state.json` → 该周期内 `inCooldown()` 返回 true → 不再被 `pickKey()` 选中
+- Key 返回 401/402/403、非容量 5xx、连接或流传输失败 → `failCode` + `failPeriod` 写入 `state.json` → 该周期内 `inCooldown()` 返回 true → 不再被 `pickKey()` 选中
+- HTTP 429 或明确的 `model_at_capacity`（包括 SSE 流终态）仅写入 `capUntil` 短暂退避，不作为跨周期失败或废弃依据
 - 同 Key **连续两个周期**（天/周）都失败 → 自动标记 `status: "discarded"` → 永久跳过（直到手动重置）
 - `reset: "never"` 的 Key 一次失败即永久冷却
 - **自动锁死**（`enableAutoLock: true`）：对 `lockFailCodes`（默认 401,403）中的错误码，连续失败达到 `lockAfterFailCount`（默认 3 次）后，自动标记 `status: "locked"` → 永久跳过（直到手动解锁）
@@ -1469,6 +1472,7 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
+- **2026-08-02 SSE 容量错误退避**：修复上游在 HTTP 200 的 Responses / Messages SSE 内明确返回 `model_at_capacity` 时，代理仍误走硬失败路径的问题。此类错误现与 HTTP 429 一样只设置 `capUntil` 临时退避，不写 `failCode`、不触发跨周期废弃或 `all_keys_failed`；所有协议转换和原生 Responses 流共享该处理。已经向客户端输出的数据不会被自动重放，避免重复文本或工具调用。
 - **2026-08-02 Responses / Messages 流终态一致性**：实际 Codex CLI 使用的原生 `/responses` 直通流现以旁路 SSE 探针确认 `response.completed`，上游 HTTP 200 提前 EOF/关闭/中止/错误/超时时会保留原字节并补一次 `response.failed`，不再把裸断流直接交给 CLI。Claude Code 的 `/v1/messages` 转换流新增同等生命周期保护：只有 Chat 上游明确 `[DONE]` 才发送一次 `message_stop`；异常终止改发 Anthropic `event: error`，不会伪造完成或重复终态。反向 Messages→Chat 转换同样只在真实 `message_stop` 后发送一次 `[DONE]`，异常输出 OpenAI 兼容 SSE 错误。专用长流总时长/空闲超时现在同时用于 Responses 与 Messages，保留原配置键名以兼容已有配置；新增双向终态、EOF、错误、UTF-8 分片和无换行终态回归测试。
 - **2026-08-02 闲置恢复安全租约与确定会话**：闲置恢复不再按项目目录扫描、终止或 `SIGKILL` 任意 `codex` 进程，避免误伤人工启动的 CLI、分支或子代理。每次恢复由随机运行 ID、PID、进程组和 `/proc` 启动时间组成的原子 JSON 租约标识；只有租约可验证时才会视为自身 runner，代理不会向外部进程发送终止信号。仍有在途请求时会暂缓打开新终端；每个项目在一次连续 Key 闲置周期只尝试一次，直到实际应用新的 Key 或修改该项目配置才允许下一次，修复失败后不断重放/相互终止的问题。启动器返回成功仅表示 Windows 已接受请求，runner 状态和真实退出信号才是诊断依据；120 秒未收到 runner 状态会明确记录超时。系统配置新增“固定会话”模式，只有该模式才替换 `{sessionId}`，普通命令模式保留原命令；`resume --last` 会记录会话不确定性提示。新增 runner 生命周期回归测试。
 - **2026-08-01 版本基线识别与升级提示**：新增 `release-baseline.txt` 版本基线文件，使源码安装（克隆/复制源码仓库或源码 ZIP，无构建元数据）也能显示本机版本号并判断是否可升级。每次发布 vX.Y.Z 时同步更新该文件（源码仓库 git 跟踪，并随 Release 资产内置，内容与发布 Tag 一致）。来源识别优先级扩展为：官方发布包（build-info 清单校验）> 干净官方 Git Tag > 源码基线文件 > 未知（带原因）。「系统配置 → 检查更新」弹窗新增「本机版本 / 最新正式 Release / 差距」显式信息条，本机版本号一目了然；版本盒同时显示本机版本、来源与最新正式 Release 及差距文案。徽标三态：有更新琥珀脉冲 `⬆`、无更新隐藏、基线未知灰色中性 `⬆`（均可打开弹窗查看最新 Release）。GitHub 缓存 TTL 由 6 小时缩短为 1 小时。
