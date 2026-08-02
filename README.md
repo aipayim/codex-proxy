@@ -38,7 +38,7 @@ codex-proxy/
 ├── log-query-worker.js   # 历史 JSONL 查询与汇总 Worker（不阻塞代理主线程）
 ├── proxy-log-rotator.js  # WSL watchdog 控制台日志分段轮转器
 ├── test-release-provenance.js # 发布来源判定回归测试
-├── test-stream-lifecycle.js # Responses 流终态回归测试
+├── test-stream-lifecycle.js # Responses / Messages 流终态回归测试
 ├── test-restart-lifecycle.js # 重启排空、取消与强制重启回归测试
 ├── test-auto-resume-lifecycle.js # Key 心跳闲置恢复与 watchdog 重载回归测试
 ├── test-resume-runner-lifecycle.js # 闲置恢复 runner 租约、退出与信号回归测试
@@ -66,7 +66,7 @@ GitHub 源码仓库保留构建器和全部回归测试，供发布维护者在�
 |------|------|----------|
 | `build-release.js` | 发布资产生成工具 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-release-provenance.js` | 发布来源回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
-| `test-stream-lifecycle.js` | Responses 流终态回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-stream-lifecycle.js` | Responses / Messages 流终态回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-restart-lifecycle.js` | 重启生命周期回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-auto-resume-lifecycle.js` | Key 心跳闲置恢复与 watchdog 重载回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-resume-runner-lifecycle.js` | 闲置恢复 runner 租约、退出与信号回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
@@ -529,7 +529,7 @@ SQLite 删除行后通常只会把页留给后续写入复用，物理文件不�
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 响应流最大时长（默认30分钟，可配置）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag/源码基线文件自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 其他协议流最大时长（默认30分钟）与 Responses / Messages 编码流专用总时长（默认不限）/上游空闲超时（默认90分钟）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag/源码基线文件自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -569,8 +569,9 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__export` | GET | CSV 导出统计报表 |
 | `/__pathstats` | GET | 按路径/模型的请求分布 |
 | `/metrics` | GET | Prometheus 格式指标 |
+| `/responses` | POST | 原生 Responses 透传；`stream:true` 时保留上游字节并检查 `response.completed`，若上游提前结束则补发一次 `response.failed` |
 | `/v1/responses` | POST | **协议转换**：接收 Codex CLI 的 Responses API 请求，自动转换为 Chat Completions 格式转发给上游（非 OpenAI / ofox），并将响应流式转换回 Responses 格式 |
-| `/v1/messages` | POST | **协议转换**：接收 Claude Code CLI 的 Messages API 请求，自动转换为 Chat Completions 格式转发给上游（非 Anthropic），并将响应流式转换回 Messages 格式 |
+| `/v1/messages` | POST | **协议转换**：接收 Claude Code CLI 的 Messages API 请求，自动转换为 Chat Completions 格式转发给上游（非 Anthropic），并将响应流式转换回 Messages 格式；仅在上游明确 `[DONE]` 后发送 `message_stop` |
 | `/v1/chat/completions` | POST | **协议转换**：接收 Chat Completions 请求，如上游为 Anthropic 则自动转换为 Messages 格式转发，并将响应流式转换回 Chat 格式；非 Anthropic 上游直接透传 |
 | `ws://localhost:3456/?token=<token>` | WS | WebSocket 实时推送（设置了管理 Token 时需在 URL 中携带 token 参数） |
 
@@ -580,24 +581,29 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 | 下游客户端 | 请求路径 | 转换方向 | 支持的上游 |
 |---|---|---|---|
+| Codex CLI | `/responses` | 原生 Responses 直通 + 终态保护 | 原生 Responses 上游 |
 | Codex CLI | `/v1/responses` | Responses → Chat → Responses | 任意 OpenAI 兼容 API |
 | Claude Code CLI | `/v1/messages` | Messages → Chat → Messages | 任意 OpenAI 兼容 API |
 | Chat 客户端 | `/v1/chat/completions` | Chat → Messages → Chat | Anthropic |
 
-- 转换基于路径（`/v1/responses`, `/v1/messages`, `/v1/chat/completions`）自动触发，无需配置
+- 转换基于路径（`/v1/responses`, `/v1/messages`, `/v1/chat/completions`）自动触发；`/responses` 保持原生协议字节直通，并只增加终态保护
 - 上游检测基于 `keys.json` 中的 `url` 字段：`api.openai.com`/`api.ofox.ai` = Responses 原生，`api.anthropic.com` = Messages 原生，其余 = Chat 通用
 - 所有上游模型（含 OpenAI、Kimi、DeepSeek、Grok、Qwen、Gemini 等）均支持三种下游客户端
 - 当前仅支持流式（`stream: true`）请求；非流式请求将按流式处理返回 SSE
 
-#### Responses 流终态与 Codex CLI 断开排查
+#### Responses / Messages 流终态与编码 CLI 断开排查
 
 对于 `Responses → Chat → Responses` 转换，代理只会在上游 SSE 明确发送 `[DONE]` 后输出下游的 `response.completed` 和最终 `[DONE]`。即使上游把 `data: [DONE]` 放在连接末尾而没有换行，也会被识别为正常完成。
 
-若上游在 `[DONE]` 前 EOF、关闭连接、发生错误、空闲超时或达到响应流最大时长，代理会输出 `response.failed`，绝不会伪造 `response.completed`。这使 Codex CLI 能得到明确的失败终态，而不是把不完整响应误判为任务成功。
+原生 `/responses` 流不会被转换或重写。代理旁路解析 SSE 帧，只有收到上游 `response.completed` 才视为成功；`[DONE]` 本身不等同于 Responses 成功。若上游在 `response.completed` 前 EOF、关闭连接、被中止、发生 SSE 错误、空闲超时或达到已设置的总时长，代理会在保留已收到原始字节后补发一次 `response.failed`，绝不会伪造 `response.completed` 或 `[DONE]`。上游已经发送 `response.failed` 或 `response.incomplete` 时，不会重复注入失败事件。
 
-每个转换请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone`、`streamId` 和 `streamErrorMsg`，并额外写入一条带 `url`（上游地址）与 `streamErrorMsg` 的 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_close`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`client_disconnect`、`model_at_capacity`、`insufficient_quota`、`upstream_api_error`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
+`/v1/messages` 的 Chat→Messages 转换同样不会把截断伪装成完成：只有上游 Chat SSE 明确发送 `[DONE]` 后，代理才会输出一次 `message_delta` 和一次 Anthropic `message_stop`。在 EOF、连接关闭/中止、SSE 错误、空闲超时或总时长到达时，已收到的增量会保留，随后只补一次 Anthropic `event: error`，不会补 `message_stop`。反向的 Messages→Chat 转换也只在真实 `message_stop` 后输出一次 Chat `data: [DONE]`；异常终止返回 OpenAI 兼容 SSE 错误，不会伪造 `[DONE]`。
 
-上游在 SSE 流内或非 2xx HTTP 错误体内返回的错误对象（例如 `Selected model is at capacity. Please try a different model.`、`You exceeded your current quota` 等）不再被静默丢弃：代理会把限长并脱敏后的错误信息记入 `streamErrorMsg`，同时按内容归类为 `model_at_capacity` / `insufficient_quota` / `upstream_api_error`。SSE 错误会向 Codex CLI 输出 `response.failed`；如果一个请求的所有可用 Key 均失败且最终返回 `502`，代理还会写入 `downstream_terminal` 事件。自动切换到其他 Key 后成功不会产生该事件，也不会算作下游失败。日志列表、全文检索和 CSV 可查看错误分类、信息及来源；趋势图「🔻 下游」已改为按下游应用（请求 User-Agent）归集的请求数堆叠图，不再展示流终态，流终态细节请通过日志/CSV 的「流结果/流终态原因」字段查看。代理只能记录实际经过代理的 HTTP/SSE 内容，无法读取 Codex CLI 本地终端中未经过代理的提示。
+系统配置将普通协议与编码协议流分开：`streamLifetime` 仍是其他协议流的最大时长（默认 30 分钟）；为兼容既有 `config.json`，配置键仍叫 `responsesStreamLifetime` / `responsesIdleTimeout`，但现在同时适用于 Codex Responses 与 Claude Messages。前者是最大总时长（默认 `0`，即不作硬切断），后者是上游完全无数据时的空闲超时（默认 `5400000` ms，即 90 分钟，`0` 可关闭）。非零值最少 60000 ms、最多 24 小时。这样长时任务不会被普通的 30 分钟总时长中断，同时仍可按需保留空闲连接保护。
+
+每个转换请求和受保护的原生 `/responses` 请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone`、`streamId`、`streamErrorMsg` 和 `terminalSource`，并额外写入一条带上游地址的 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_eof_without_completed`、`upstream_close`、`upstream_aborted`、`upstream_incomplete`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`client_disconnect`、`model_at_capacity`、`insufficient_quota`、`upstream_api_error`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
+
+上游在 SSE 流内或非 2xx HTTP 错误体内返回的错误对象（例如 `Selected model is at capacity. Please try a different model.`、`You exceeded your current quota` 等）不再被静默丢弃：代理会把限长并脱敏后的错误信息记入 `streamErrorMsg`，同时按内容归类为 `model_at_capacity` / `insufficient_quota` / `upstream_api_error`。SSE 错误会向 Codex CLI 输出 `response.failed`，向 Claude Code 输出 Anthropic `event: error`；如果一个请求的所有可用 Key 均失败且最终返回 `502`，代理还会写入 `downstream_terminal` 事件。自动切换到其他 Key 后成功不会产生该事件，也不会算作下游失败。日志列表、全文检索和 CSV 可查看错误分类、信息及来源；趋势图「🔻 下游」已改为按下游应用（请求 User-Agent）归集的请求数堆叠图，不再展示流终态，流终态细节请通过日志/CSV 的「流结果/流终态原因」字段查看。代理只能记录实际经过代理的 HTTP/SSE 内容，无法读取 Codex CLI 本地终端中未经过代理的提示。
 
 出现 Codex CLI 的 `stream disconnected before completion` 后，先检查工作区和日志，确认是否已有部分文件修改、命令执行或工具调用结果；不要盲目重放整个编码任务。此类改动在代理重启后生效，应等待所有在途 CLI 任务结束，再在维护窗口重启。
 
@@ -1463,6 +1469,7 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
+- **2026-08-02 Responses / Messages 流终态一致性**：实际 Codex CLI 使用的原生 `/responses` 直通流现以旁路 SSE 探针确认 `response.completed`，上游 HTTP 200 提前 EOF/关闭/中止/错误/超时时会保留原字节并补一次 `response.failed`，不再把裸断流直接交给 CLI。Claude Code 的 `/v1/messages` 转换流新增同等生命周期保护：只有 Chat 上游明确 `[DONE]` 才发送一次 `message_stop`；异常终止改发 Anthropic `event: error`，不会伪造完成或重复终态。反向 Messages→Chat 转换同样只在真实 `message_stop` 后发送一次 `[DONE]`，异常输出 OpenAI 兼容 SSE 错误。专用长流总时长/空闲超时现在同时用于 Responses 与 Messages，保留原配置键名以兼容已有配置；新增双向终态、EOF、错误、UTF-8 分片和无换行终态回归测试。
 - **2026-08-02 闲置恢复安全租约与确定会话**：闲置恢复不再按项目目录扫描、终止或 `SIGKILL` 任意 `codex` 进程，避免误伤人工启动的 CLI、分支或子代理。每次恢复由随机运行 ID、PID、进程组和 `/proc` 启动时间组成的原子 JSON 租约标识；只有租约可验证时才会视为自身 runner，代理不会向外部进程发送终止信号。仍有在途请求时会暂缓打开新终端；每个项目在一次连续 Key 闲置周期只尝试一次，直到实际应用新的 Key 或修改该项目配置才允许下一次，修复失败后不断重放/相互终止的问题。启动器返回成功仅表示 Windows 已接受请求，runner 状态和真实退出信号才是诊断依据；120 秒未收到 runner 状态会明确记录超时。系统配置新增“固定会话”模式，只有该模式才替换 `{sessionId}`，普通命令模式保留原命令；`resume --last` 会记录会话不确定性提示。新增 runner 生命周期回归测试。
 - **2026-08-01 版本基线识别与升级提示**：新增 `release-baseline.txt` 版本基线文件，使源码安装（克隆/复制源码仓库或源码 ZIP，无构建元数据）也能显示本机版本号并判断是否可升级。每次发布 vX.Y.Z 时同步更新该文件（源码仓库 git 跟踪，并随 Release 资产内置，内容与发布 Tag 一致）。来源识别优先级扩展为：官方发布包（build-info 清单校验）> 干净官方 Git Tag > 源码基线文件 > 未知（带原因）。「系统配置 → 检查更新」弹窗新增「本机版本 / 最新正式 Release / 差距」显式信息条，本机版本号一目了然；版本盒同时显示本机版本、来源与最新正式 Release 及差距文案。徽标三态：有更新琥珀脉冲 `⬆`、无更新隐藏、基线未知灰色中性 `⬆`（均可打开弹窗查看最新 Release）。GitHub 缓存 TTL 由 6 小时缩短为 1 小时。
 - **2026-08-01 闲置恢复 TTY 与残留进程清理 + 容量/429 瞬态退避**：闲置恢复启动器此前已能打开窗口并启动 runner，但失败仍频繁（退出码 2）。根因排查发现三层问题并逐一修复。① 命令错误：配置里 `resume --last -p '<prompt>'` 的 `-p` 是 codex 的 `--profile` 标志（并非 prompt），被解析为 `invalid value ... for '--profile'` 立即退出 2；codex 的 prompt 是位置参数，已改为 `resume --last '<prompt>'`。② runner 内 `setsid bash -lc` 把命令从终端剥离，`codex resume` 交互 TUI 需要 PTY；改用 `script -qec` 为命令分配伪终端（保留 `setsid` 进程组隔离，`-e` 回传子命令退出码）。③ 早期版本曾尝试按项目路径扫描并终止残留 codex；该方案已由 2026-08-02 的身份租约方案取代，当前版本不会扫描或终止外部 CLI。④ 重触发保护：空闲恢复生效后，巨型会话（数百 MB / 数十万行）加载需数分钟，期间无 Key 使用导致闲置时间持续超阈值，每 debounce 周期（默认 10 分钟）的自动重触发会把仍在加载的上一次 resume 当作旧命令替换终止，形成"永远跑不完"的循环；当前版本改为同一闲置周期单次尝试，并在有在途请求时暂缓启动。另新增 `capacityBackoffSeconds`（默认 60 秒）与 `capacityMaxWaitSeconds`（默认 300 秒）：HTTP 429 与 `model_at_capacity` 错误改为瞬态退避（仅设 `capUntil`，不写 `failCode`），不再把 reset:"never" 的 Key 冷却到整个周期、也不会一次容量波动级联禁用全部 Key；容量失败请求直接重新入队而非热轮询刷遍全部 Key，队列等待上限按 `capacityMaxWaitSeconds` 豁免默认 30 秒超时；`checkAllFailed` 忽略纯退避 Key，避免误报 all_keys_failed。新增容量退避生命周期回归测试。

@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 const { URL } = require("url");
 const { Transform } = require("stream");
+const { StringDecoder } = require("string_decoder");
 const { spawn, spawnSync } = require("child_process");
 const { Worker } = require("worker_threads");
 const { WebSocketServer } = require("ws");
@@ -27,6 +28,10 @@ const MAX_LOG = 2000;
 const QUEUE_TIMEOUT = 30000;
 const RESTART_FORCE_MIN_WAIT_MS = 30000;
 let STREAM_LIFETIME = 1800000;
+const RESPONSES_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
+const RESPONSES_IDLE_TIMEOUT_DEFAULT_MS = 90 * 60 * 60 * 1000;
+let RESPONSES_STREAM_LIFETIME = 0;
+let RESPONSES_IDLE_TIMEOUT = RESPONSES_IDLE_TIMEOUT_DEFAULT_MS;
 const LOG_DIR = path.join(__dirname, "logs");
 const LOG_QUERY_WORKER_FILE = path.join(__dirname, "log-query-worker.js");
 const LOG_SUMMARY_FILE = path.join(LOG_DIR, ".log-summary.json");
@@ -226,7 +231,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300 };
+  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -832,6 +837,7 @@ function loadConfig() {
     const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
     const c = JSON.parse(raw);
     normalizeRuntimeStorageConfig(c);
+    normalizeResponsesStreamConfig(c);
     if (c.webhookUrl) config.webhookUrl = c.webhookUrl;
     const defaultPricing = normalizeDefaultPricing(c.prices, c.bytesPerToken);
     config.prices = defaultPricing.prices;
@@ -882,6 +888,10 @@ function loadConfig() {
     config.logIncidents = normalizeLogIncidentConfig(c.logIncidents);
     STREAM_LIFETIME = Math.min(7200000, Math.max(60000, parseInt(c.streamLifetime) || 1800000));
     config.streamLifetime = STREAM_LIFETIME;
+    RESPONSES_STREAM_LIFETIME = c.responsesStreamLifetime;
+    RESPONSES_IDLE_TIMEOUT = c.responsesIdleTimeout;
+    config.responsesStreamLifetime = RESPONSES_STREAM_LIFETIME;
+    config.responsesIdleTimeout = RESPONSES_IDLE_TIMEOUT;
     config.adminToken = c.adminToken || "";
     config.updateBaselineTag = normalizeUpdateBaselineTag(c.updateBaselineTag);
     config.rateLimit = c.rateLimit !== false;
@@ -899,6 +909,9 @@ function loadConfig() {
   } catch { /* defaults */ }
   config.logIncidents = normalizeLogIncidentConfig(config.logIncidents);
   config.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(config.codexLogMaintenance);
+  normalizeResponsesStreamConfig(config);
+  RESPONSES_STREAM_LIFETIME = config.responsesStreamLifetime;
+  RESPONSES_IDLE_TIMEOUT = config.responsesIdleTimeout;
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
     const ms = config.autoRecoverInterval * 3600000;
@@ -1047,6 +1060,21 @@ function normalizeRuntimeStorageConfig(value) {
   configValue.stateMaxMiB = clampConfigInteger(configValue.stateMaxMiB, DEFAULT_STATE_MAX_MIB, STATE_MAX_MIB_MIN, STATE_MAX_MIB_LIMIT);
   configValue.proxyLogMaxMiB = clampConfigInteger(configValue.proxyLogMaxMiB, DEFAULT_PROXY_LOG_MAX_MIB, 1, PROXY_LOG_MAX_MIB_LIMIT);
   configValue.proxyLogKeepFiles = clampConfigInteger(configValue.proxyLogKeepFiles, DEFAULT_PROXY_LOG_KEEP_FILES, 1, PROXY_LOG_KEEP_FILES_LIMIT);
+  return configValue;
+}
+
+function normalizeResponsesTimeout(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const milliseconds = Math.floor(parsed);
+  if (milliseconds === 0) return 0;
+  return Math.min(RESPONSES_TIMEOUT_MAX_MS, Math.max(60000, milliseconds));
+}
+
+function normalizeResponsesStreamConfig(value) {
+  const configValue = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  configValue.responsesStreamLifetime = normalizeResponsesTimeout(configValue.responsesStreamLifetime, 0);
+  configValue.responsesIdleTimeout = normalizeResponsesTimeout(configValue.responsesIdleTimeout, RESPONSES_IDLE_TIMEOUT_DEFAULT_MS);
   return configValue;
 }
 
@@ -2062,7 +2090,7 @@ function addStreamTerminalLog(idx, lifecycle) {
     url: (accounts[idx] && accounts[idx].url) || "",
     upstreamErrorReason: outcome === "failed" ? reason : "",
     streamErrorMsg: lifecycle.upstreamErrorMessage || "",
-    terminalSource: "upstream_sse",
+    terminalSource: lifecycle.terminalSource || "upstream_sse",
   };
   requestLog.push(entry);
   if (requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
@@ -5135,6 +5163,11 @@ function activeDecr(idx) {
 
 function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel, taskInsightSink) {
   const lifecycle = extraTransform?._lifecycle || null;
+  // Keep the legacy Responses-named settings, but use the long-running coding
+  // stream policy for both Responses (Codex) and Messages (Claude Code).
+  const codingProtocolStream = lifecycle && (lifecycle.protocol === "responses" || lifecycle.protocol === "messages");
+  const streamLifetime = codingProtocolStream ? RESPONSES_STREAM_LIFETIME : STREAM_LIFETIME;
+  const upstreamIdleTimeout = codingProtocolStream ? RESPONSES_IDLE_TIMEOUT : TIMEOUT;
   let streamAttached = false;
   let clientCancelled = false;
   let terminateAttachedStream = null;
@@ -5158,6 +5191,10 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   delete reqHeaders.host;
   delete reqHeaders["content-length"];
   delete reqHeaders.connection;
+  // Every transform parses or emits plain SSE. Do not let a downstream client's
+  // compression preference turn a byte-preserving terminal guard into a mixed
+  // compressed/plain response body.
+  if (extraTransform) reqHeaders["accept-encoding"] = "identity";
   reqHeaders["authorization"] = `Bearer ${acct.key}`;
 
   const options = {
@@ -5166,7 +5203,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     path: targetUrl.pathname.replace(/\/+$/, "") + pathname,
     method,
     headers: reqHeaders,
-    timeout: TIMEOUT,
+    timeout: upstreamIdleTimeout,
   };
 
   const logEntry = { time: Date.now(), idx: idx + 1, group: (acct.group || "A").toUpperCase(), method, path: pathname, url: acct.url, client };
@@ -5221,12 +5258,44 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       return;
     }
 
+    const contentEncoding = String(apiRes.headers["content-encoding"] || "").trim().toLowerCase();
+    if (extraTransform && contentEncoding && contentEncoding !== "identity") {
+      if (onDone.done) { apiRes.destroy(); return; }
+      onDone.done = true;
+      const dur = Date.now() - reqStart;
+      const errorMessage = "Upstream returned a compressed stream despite Accept-Encoding: identity";
+      apiRes.destroy();
+      activeDecr(idx);
+      markFailure(idx, 0);
+      recordRequest(idx, false, 0, 0, dur, ttfb, resolvedModel, 0, client, requestPricing);
+      recordPath(pathname, method, 0, 0, dur);
+      Object.assign(logEntry, {
+        status: 0,
+        inputBytes: body ? body.length : 0,
+        outputBytes: 0,
+        duration: dur,
+        ttfb,
+        upstreamErrorReason: "upstream_api_error",
+        streamErrorMsg: errorMessage,
+        terminalSource: "upstream_content_encoding",
+      });
+      addLog(logEntry);
+      const _ksEncoding=getKeyState(idx);_ksEncoding.lastStatus=0;_ksEncoding.lastTime=Date.now();_ksEncoding.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
+      onDone({ switched: true, idx, reason: "upstream_api_error", error: new Error(errorMessage), errorMessage, source: "upstream_content_encoding" });
+      return;
+    }
+
     markSuccess(idx);
 
     const a = accounts[idx];
 
     const safeHeaders = { ...apiRes.headers };
     delete safeHeaders["transfer-encoding"];
+    if (extraTransform) {
+      delete safeHeaders["content-length"];
+      delete safeHeaders["content-encoding"];
+      delete safeHeaders["content-md5"];
+    }
     safeHeaders["x-proxy-account"] = `${idx + 1}/${accounts.length}`;
 
     if (clientRes.headersSent) { apiRes.destroy(); activeDecr(idx); onDone({ switched: false }); return; }
@@ -5255,7 +5324,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
           streamSawDone: lifecycle.sawDone === true,
           upstreamErrorReason: lifecycle.terminalKind === "failed" ? (lifecycle.terminalReason || "upstream_api_error") : "",
           streamErrorMsg: lifecycle.upstreamErrorMessage || "",
-          terminalSource: "upstream_sse",
+          terminalSource: lifecycle.terminalSource || "upstream_sse",
         });
       }
       addLog(logEntry);
@@ -5288,6 +5357,13 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       lifecycle._onTerminal = completedLifecycle => {
         addStreamTerminalLog(idx, completedLifecycle);
         cleanup();
+        // Converted streams have already emitted their protocol terminal. Stop
+        // a misbehaving upstream from holding a socket open with later bytes.
+        // The native Responses probe keeps a successful upstream tail intact.
+        if ((!extraTransform || !extraTransform._nativeResponsesProbe || completedLifecycle.terminalKind !== "completed") && !apiRes.destroyed) {
+          apiRes.unpipe(transform);
+          apiRes.destroy();
+        }
       };
     }
 
@@ -5317,11 +5393,17 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       }
       cleanup();
     });
+    apiRes.on("aborted", () => {
+      if (!clientCancelled && lifecycle && streamAttached && !lifecycle.terminalKind) {
+        lifecycle.emitFailed("upstream_aborted");
+      }
+      cleanup();
+    });
     apiRes.on("error", (err) => {
       console.error(`[proxy] #${idx+1} Stream error: ${err.message}`);
       if (!clientCancelled) {
         if (streamAttached && lifecycle && !lifecycle.terminalKind) {
-          lifecycle.emitFailed("upstream_error");
+          lifecycle.emitFailed("upstream_error", err && err.message);
         } else if (!lifecycle) {
           markFailure(idx, 0);
         }
@@ -5335,12 +5417,14 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       if (!apiRes.destroyed) apiRes.destroy();
       cleanup();
     });
-    streamTimer = setTimeout(() => {
-      if (cleaned || clientCancelled || (lifecycle && lifecycle.terminalKind)) return;
-      console.error(`[proxy] #${idx+1} Stream lifetime timeout (${STREAM_LIFETIME/60000}min)`);
-      if (terminateAttachedStream && terminateAttachedStream("stream_lifetime_timeout")) return;
-      if (!apiRes.destroyed) apiRes.destroy();
-    }, STREAM_LIFETIME);
+    if (streamLifetime > 0) {
+      streamTimer = setTimeout(() => {
+        if (cleaned || clientCancelled || (lifecycle && lifecycle.terminalKind)) return;
+        console.error(`[proxy] #${idx+1} Stream lifetime timeout (${streamLifetime / 60000}min)`);
+        if (terminateAttachedStream && terminateAttachedStream("stream_lifetime_timeout")) return;
+        if (!apiRes.destroyed) apiRes.destroy();
+      }, streamLifetime);
+    }
     if (extraTransform) {
       apiRes.pipe(transform).pipe(extraTransform).pipe(clientRes);
     } else {
@@ -5348,14 +5432,16 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     }
     onDone({ switched: false, idx });
   });
-  proxyReq.setTimeout(TIMEOUT);
+  proxyReq.setTimeout(upstreamIdleTimeout);
   // The request is now flushed with the selected account's Authorization key.
   proxyReq.once("finish", () => recordKeyUse(idx));
 
   proxyReq.on("error", (err) => {
-    if (streamAttached && lifecycle && !clientCancelled && !lifecycle.terminalKind) {
-      console.error(`[proxy] #${idx + 1} Stream request error: ${err.message}`);
-      if (terminateAttachedStream) terminateAttachedStream("upstream_error");
+    if (streamAttached) {
+      if (lifecycle && !clientCancelled && !lifecycle.terminalKind) {
+        console.error(`[proxy] #${idx + 1} Stream request error: ${err.message}`);
+        if (terminateAttachedStream) terminateAttachedStream("upstream_error");
+      }
       return;
     }
     if (onDone.done) return;
@@ -5373,9 +5459,11 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   });
 
   proxyReq.on("timeout", () => {
-    if (streamAttached && lifecycle && !clientCancelled && !lifecycle.terminalKind) {
-      console.error(`[proxy] #${idx+1} Upstream stream idle timeout`);
-      if (terminateAttachedStream) terminateAttachedStream("upstream_idle_timeout");
+    if (streamAttached) {
+      if (lifecycle && !clientCancelled && !lifecycle.terminalKind) {
+        console.error(`[proxy] #${idx+1} Upstream stream idle timeout`);
+        if (terminateAttachedStream) terminateAttachedStream("upstream_idle_timeout");
+      }
       proxyReq.destroy();
       return;
     }
@@ -6259,8 +6347,12 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 流超时</div>
-  <div style="color:#94a3b8;padding:4px 0">响应流最大时长 (ms)</div>
-  <div><input id="cfgStreamLifetime" type="number" min="60000" max="7200000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="1800000" title="响应流绝对超时，防止僵尸连接。默认30分钟"></div>
+  <div style="color:#94a3b8;padding:4px 0">其他协议流最大时长 (ms)</div>
+  <div><input id="cfgStreamLifetime" type="number" min="60000" max="7200000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="1800000" title="非 Responses / Messages 编码协议流的绝对超时，防止僵尸连接。默认30分钟"></div>
+  <div style="color:#94a3b8;padding:4px 0">Responses / Messages 编码流最大总时长 (ms)</div>
+  <div><input id="cfgResponsesStreamLifetime" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0" title="0=不设置总时长硬切断；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认0"></div>
+  <div style="color:#94a3b8;padding:4px 0">Responses / Messages 上游空闲超时 (ms)</div>
+  <div><input id="cfgResponsesIdleTimeout" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="5400000" title="0=关闭；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认90分钟，只在上游完全无数据时触发"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔐 管理认证</div>
   <div style="color:#94a3b8;padding:4px 0">管理 Token（空=不校验）</div>
   <div><input id="cfgAdminToken" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="留空=无认证" title="设置后所有管理接口需 Bearer token 认证"></div>
@@ -6807,7 +6899,9 @@ async function loadConfigUI(){
     document.getElementById("cfgEnableAutoLock").checked=c.enableAutoLock!==false;
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
-    document.getElementById("cfgStreamLifetime").value=c.streamLifetime||1800000;
+    document.getElementById("cfgStreamLifetime").value=c.streamLifetime??1800000;
+    document.getElementById("cfgResponsesStreamLifetime").value=c.responsesStreamLifetime??0;
+    document.getElementById("cfgResponsesIdleTimeout").value=c.responsesIdleTimeout??5400000;
     document.getElementById("cfgAdminToken").value=c.adminToken||"";
     document.getElementById("cfgUpdateBaselineTag").value=c.updateBaselineTag||"";
     try{
@@ -9281,7 +9375,9 @@ async function saveConfig(){
     enableAutoLock:document.getElementById("cfgEnableAutoLock").checked,
     maxRequestsPerMin:parseInt(document.getElementById("cfgMaxReqPerMin").value)||10,
     maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0,
-    streamLifetime:parseInt(document.getElementById("cfgStreamLifetime").value)||1800000,
+    streamLifetime:configInteger("cfgStreamLifetime",1800000),
+    responsesStreamLifetime:configInteger("cfgResponsesStreamLifetime",0),
+    responsesIdleTimeout:configInteger("cfgResponsesIdleTimeout",5400000),
     adminToken:document.getElementById("cfgAdminToken").value.trim(),
     updateBaselineTag:document.getElementById("cfgUpdateBaselineTag").value.trim(),
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
@@ -9747,7 +9843,10 @@ function responsesToChatRequest(upstreamUrl, body) {
 const STREAM_TERMINAL_REASONS = new Set([
   "upstream_done",
   "upstream_eof_without_done",
+  "upstream_eof_without_completed",
   "upstream_close",
+  "upstream_aborted",
+  "upstream_incomplete",
   "upstream_error",
   "upstream_idle_timeout",
   "stream_lifetime_timeout",
@@ -9763,6 +9862,7 @@ function normalizeStreamTerminalReason(reason, fallback) {
 
 function createResponsesLifecycle(model) {
   return {
+    protocol: "responses",
     responseId: "resp_" + crypto.randomUUID(),
     created: Math.floor(Date.now() / 1000),
     model: model || "",
@@ -9846,6 +9946,378 @@ function createResponsesLifecycle(model) {
       if (this.terminalKind) return false;
       this.terminalKind = "cancelled";
       this.terminalReason = normalizeStreamTerminalReason(reason, "client_disconnect");
+      this._notifyTerminal();
+      return true;
+    },
+  };
+}
+
+// Observes a native Responses SSE stream without rewriting normal upstream bytes.
+// The only synthetic output is a terminal response.failed when the upstream ends
+// without the response.completed event required by Codex CLI.
+function createNativeResponsesTerminalProbe(model) {
+  const decoder = new StringDecoder("utf8");
+  let lineBuffer = "";
+  let eventName = "";
+  let dataLines = [];
+
+  const lifecycle = {
+    protocol: "responses",
+    responseId: "resp_" + crypto.randomUUID(),
+    created: Math.floor(Date.now() / 1000),
+    model: String(model || "").slice(0, 160),
+    fullContent: "",
+    inputTokens: 0,
+    outputTokens: 0,
+    terminalKind: null,
+    terminalReason: null,
+    terminalSource: "native_responses_sse",
+    sawDone: false,
+    upstreamErrorMessage: "",
+    _transform: null,
+    _metricsCallback: null,
+    _onTerminal: null,
+    _terminalNotified: false,
+    _syntheticTerminal: false,
+    _pushEvent(event, payload) {
+      if (!this._transform || this._transform.destroyed || this._transform.readableEnded) return false;
+      this._transform.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      return true;
+    },
+    _endReadable() {
+      if (this._transform && !this._transform.destroyed && !this._transform.readableEnded) {
+        this._transform.push(null);
+      }
+    },
+    _recordMetrics(success) {
+      if (typeof this._metricsCallback === "function") this._metricsCallback(success);
+    },
+    _notifyTerminal() {
+      if (this._terminalNotified) return;
+      this._terminalNotified = true;
+      if (typeof this._onTerminal === "function") this._onTerminal(this);
+    },
+    _captureResponse(response) {
+      if (!response || typeof response !== "object") return;
+      if (typeof response.id === "string" && response.id.trim()) this.responseId = response.id.trim().slice(0, 200);
+      if (typeof response.model === "string" && response.model.trim()) this.model = response.model.trim().slice(0, 160);
+      const usage = response.usage && typeof response.usage === "object" ? response.usage : null;
+      if (!usage) return;
+      const input = Number(usage.input_tokens != null ? usage.input_tokens : usage.prompt_tokens);
+      const output = Number(usage.output_tokens != null ? usage.output_tokens : usage.completion_tokens);
+      if (Number.isFinite(input) && input >= 0) this.inputTokens = input;
+      if (Number.isFinite(output) && output >= 0) this.outputTokens = output;
+    },
+    _setTerminal(kind, reason, message, source) {
+      if (this.terminalKind) return false;
+      this.terminalKind = kind;
+      this.terminalReason = normalizeStreamTerminalReason(reason, kind === "completed" ? "upstream_done" : "upstream_api_error");
+      this.terminalSource = source || "native_responses_sse";
+      if (message) this.upstreamErrorMessage = sanitizeUpstreamErrorMessage(message);
+      this._recordMetrics(kind === "completed");
+      this._notifyTerminal();
+      return true;
+    },
+    markCompleted() {
+      return this._setTerminal("completed", "upstream_done", "", "native_responses_sse");
+    },
+    markFailed(reason, message) {
+      return this._setTerminal("failed", reason, message, "native_responses_sse");
+    },
+    emitFailed(reason, message) {
+      if (this.terminalKind) return false;
+      const fallbackMessages = {
+        upstream_eof_without_completed: "Upstream response stream ended before response.completed",
+        upstream_close: "Upstream response stream closed before response.completed",
+        upstream_aborted: "Upstream response stream was aborted before response.completed",
+        upstream_error: "Upstream response stream failed before response.completed",
+        upstream_idle_timeout: "Upstream response stream was idle before response.completed",
+        stream_lifetime_timeout: "Upstream response stream exceeded its configured maximum duration",
+      };
+      const safeMessage = sanitizeUpstreamErrorMessage(message || fallbackMessages[reason] || "Upstream response stream failed before response.completed");
+      if (!this._setTerminal("failed", reason, safeMessage, "native_responses_terminal_guard")) return false;
+      this._syntheticTerminal = true;
+      this._pushEvent("response.failed", {
+        type: "response.failed",
+        response: {
+          id: this.responseId,
+          object: "response",
+          created_at: this.created,
+          model: this.model,
+          status: "failed",
+          error: { code: this.terminalReason, message: safeMessage },
+        },
+      });
+      this._endReadable();
+      return true;
+    },
+    noteClientCancelled(reason) {
+      if (this.terminalKind) return false;
+      this.terminalKind = "cancelled";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "client_disconnect");
+      this.terminalSource = "downstream_client";
+      this._notifyTerminal();
+      return true;
+    },
+  };
+
+  const resetEvent = () => {
+    eventName = "";
+    dataLines = [];
+  };
+
+  const processEvent = () => {
+    if (!eventName && !dataLines.length) return;
+    const data = dataLines.join("\n");
+    const declaredEvent = eventName.trim();
+    resetEvent();
+    if (data === "[DONE]") {
+      lifecycle.sawDone = true;
+      return;
+    }
+    let payload = null;
+    if (data) {
+      try { payload = JSON.parse(data); } catch (e) { return; }
+    }
+    const payloadType = payload && typeof payload.type === "string" ? payload.type : "";
+    const type = declaredEvent || payloadType;
+    if (payload && payload.response) lifecycle._captureResponse(payload.response);
+    if (type === "response.completed") {
+      lifecycle.markCompleted();
+      return;
+    }
+    if (type === "response.failed") {
+      const message = extractUpstreamErrorMessage(payload && (payload.error || (payload.response && payload.response.error) || payload));
+      lifecycle.markFailed(message ? classifyUpstreamErrorMessage(message) : "upstream_api_error", message);
+      return;
+    }
+    if (type === "response.incomplete") {
+      const detail = payload && payload.response && payload.response.incomplete_details && payload.response.incomplete_details.reason;
+      const message = detail ? `Upstream response is incomplete: ${detail}` : "Upstream response is incomplete";
+      lifecycle.markFailed("upstream_incomplete", message);
+      return;
+    }
+    if (type === "error" || (payload && (payload.error || payload.object === "error"))) {
+      const message = extractUpstreamErrorMessage(payload) || "Upstream Responses SSE error";
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(message), message);
+    }
+  };
+
+  const processLine = rawLine => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line) {
+      processEvent();
+      return;
+    }
+    if (line.startsWith(":")) return;
+    const colon = line.indexOf(":");
+    const field = colon >= 0 ? line.slice(0, colon) : line;
+    let value = colon >= 0 ? line.slice(colon + 1) : "";
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    else if (field === "data") dataLines.push(value);
+  };
+
+  const processText = text => {
+    if (!text) return;
+    lineBuffer += text;
+    let newline;
+    while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+      const line = lineBuffer.slice(0, newline);
+      lineBuffer = lineBuffer.slice(newline + 1);
+      processLine(line);
+    }
+  };
+
+  const probe = new Transform({
+    transform(chunk, encoding, cb) {
+      if (lifecycle._syntheticTerminal) { cb(); return; }
+      const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+      this.push(raw);
+      processText(decoder.write(raw));
+      cb();
+    },
+    flush(cb) {
+      if (!lifecycle._syntheticTerminal) {
+        processText(decoder.end());
+        if (lineBuffer) {
+          processLine(lineBuffer);
+          lineBuffer = "";
+        }
+        processEvent();
+        if (!lifecycle.terminalKind) lifecycle.emitFailed("upstream_eof_without_completed");
+      }
+      cb();
+    },
+  });
+  lifecycle._transform = probe;
+  probe._lifecycle = lifecycle;
+  probe._nativeResponsesProbe = true;
+  return probe;
+}
+
+function createMessagesLifecycle(model) {
+  return {
+    protocol: "messages",
+    responseId: "msg_" + crypto.randomUUID(),
+    created: Math.floor(Date.now() / 1000),
+    model: String(model || "").slice(0, 160),
+    fullContent: "",
+    inputTokens: 0,
+    outputTokens: 0,
+    terminalKind: null,
+    terminalReason: null,
+    terminalSource: "chat_to_messages_sse",
+    sawDone: false,
+    upstreamErrorMessage: "",
+    _transform: null,
+    _metricsCallback: null,
+    _onTerminal: null,
+    _terminalNotified: false,
+    _syntheticTerminal: false,
+    _pushEvent(event, payload) {
+      if (!this._transform || this._transform.destroyed || this._transform.readableEnded) return false;
+      this._transform.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      return true;
+    },
+    _endReadable() {
+      if (this._transform && !this._transform.destroyed && !this._transform.readableEnded) {
+        this._transform.push(null);
+      }
+    },
+    _recordMetrics(success) {
+      if (typeof this._metricsCallback === "function") this._metricsCallback(success);
+    },
+    _notifyTerminal() {
+      if (this._terminalNotified) return;
+      this._terminalNotified = true;
+      if (typeof this._onTerminal === "function") this._onTerminal(this);
+    },
+    emitCompleted() {
+      if (this.terminalKind) return false;
+      this.terminalKind = "completed";
+      this.terminalReason = "upstream_done";
+      this.terminalSource = "chat_to_messages_sse";
+      this.sawDone = true;
+      this._endReadable();
+      this._recordMetrics(true);
+      this._notifyTerminal();
+      return true;
+    },
+    emitFailed(reason, message) {
+      if (this.terminalKind) return false;
+      const fallbackMessages = {
+        upstream_eof_without_done: "Upstream chat stream ended before its [DONE] terminal",
+        upstream_close: "Upstream chat stream closed before its [DONE] terminal",
+        upstream_aborted: "Upstream chat stream was aborted before its [DONE] terminal",
+        upstream_error: "Upstream chat stream failed before its [DONE] terminal",
+        upstream_idle_timeout: "Upstream chat stream was idle before its [DONE] terminal",
+        stream_lifetime_timeout: "Upstream chat stream exceeded its configured maximum duration",
+      };
+      const safeMessage = sanitizeUpstreamErrorMessage(message || fallbackMessages[reason] || "Upstream chat stream failed");
+      this.terminalKind = "failed";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "upstream_api_error");
+      this.terminalSource = "chat_to_messages_terminal_guard";
+      this.upstreamErrorMessage = safeMessage;
+      this._syntheticTerminal = true;
+      this._pushEvent("error", {
+        type: "error",
+        error: { type: "api_error", message: safeMessage },
+      });
+      this._endReadable();
+      this._recordMetrics(false);
+      this._notifyTerminal();
+      return true;
+    },
+    noteClientCancelled(reason) {
+      if (this.terminalKind) return false;
+      this.terminalKind = "cancelled";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "client_disconnect");
+      this.terminalSource = "downstream_client";
+      this._notifyTerminal();
+      return true;
+    },
+  };
+}
+
+// Lifecycle for an Anthropic Messages upstream converted to an OpenAI Chat
+// stream. It is deliberately separate from the Messages lifecycle above: the
+// failure event must use the protocol expected by the downstream Chat client.
+function createChatLifecycle(model) {
+  return {
+    protocol: "chat",
+    responseId: "chatcmpl_" + crypto.randomUUID(),
+    created: Math.floor(Date.now() / 1000),
+    model: String(model || "").slice(0, 160),
+    fullContent: "",
+    inputTokens: 0,
+    outputTokens: 0,
+    terminalKind: null,
+    terminalReason: null,
+    terminalSource: "messages_to_chat_sse",
+    sawDone: false,
+    upstreamErrorMessage: "",
+    _transform: null,
+    _metricsCallback: null,
+    _onTerminal: null,
+    _terminalNotified: false,
+    _syntheticTerminal: false,
+    _pushData(payload) {
+      if (!this._transform || this._transform.destroyed || this._transform.readableEnded) return false;
+      this._transform.push(`data: ${JSON.stringify(payload)}\n\n`);
+      return true;
+    },
+    _endReadable() {
+      if (this._transform && !this._transform.destroyed && !this._transform.readableEnded) {
+        this._transform.push(null);
+      }
+    },
+    _recordMetrics(success) {
+      if (typeof this._metricsCallback === "function") this._metricsCallback(success);
+    },
+    _notifyTerminal() {
+      if (this._terminalNotified) return;
+      this._terminalNotified = true;
+      if (typeof this._onTerminal === "function") this._onTerminal(this);
+    },
+    emitCompleted() {
+      if (this.terminalKind) return false;
+      this.terminalKind = "completed";
+      this.terminalReason = "upstream_done";
+      this.terminalSource = "messages_to_chat_sse";
+      this.sawDone = true;
+      this._endReadable();
+      this._recordMetrics(true);
+      this._notifyTerminal();
+      return true;
+    },
+    emitFailed(reason, message) {
+      if (this.terminalKind) return false;
+      const fallbackMessages = {
+        upstream_eof_without_done: "Upstream Messages stream ended before message_stop",
+        upstream_close: "Upstream Messages stream closed before message_stop",
+        upstream_aborted: "Upstream Messages stream was aborted before message_stop",
+        upstream_error: "Upstream Messages stream failed before message_stop",
+        upstream_idle_timeout: "Upstream Messages stream was idle before message_stop",
+        stream_lifetime_timeout: "Upstream Messages stream exceeded its configured maximum duration",
+      };
+      const safeMessage = sanitizeUpstreamErrorMessage(message || fallbackMessages[reason] || "Upstream Messages stream failed");
+      this.terminalKind = "failed";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "upstream_api_error");
+      this.terminalSource = "messages_to_chat_terminal_guard";
+      this.upstreamErrorMessage = safeMessage;
+      this._syntheticTerminal = true;
+      this._pushData({ error: { message: safeMessage, type: "api_error", code: this.terminalReason } });
+      this._endReadable();
+      this._recordMetrics(false);
+      this._notifyTerminal();
+      return true;
+    },
+    noteClientCancelled(reason) {
+      if (this.terminalKind) return false;
+      this.terminalKind = "cancelled";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "client_disconnect");
+      this.terminalSource = "downstream_client";
       this._notifyTerminal();
       return true;
     },
@@ -10037,103 +10509,213 @@ function messagesToChatRequest(upstreamUrl, body) {
   }
   return chatBody;
 }
-function createChatToMessagesStream(upstreamUrl) {
+function createChatToMessagesStream(lifecycle) {
   const Transform = require("stream").Transform;
-  let buffer = "";
-  let thinkingContent = "";
-  let textContent = "";
-  let model = "";
-  let inputTokens = 0, outputTokens = 0;
+  lifecycle = lifecycle || createMessagesLifecycle("");
+  const decoder = new StringDecoder("utf8");
+  let lineBuffer = "";
   let stopReason = "end_turn";
-  let hasStarted = false;
-  let thinkingStarted = false;
-  const TEXT_IDX = 0, THINKING_IDX = 1, TOOL_IDX = 2;
-  return new Transform({
-    readableObjectMode: false, writableObjectMode: false,
-    transform(chunk, encoding, cb) {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") {
-          if (!hasStarted) {
-            this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[],"model":${JSON.stringify(model)},"stop_reason":"${stopReason}","usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
-          }
-          if (thinkingStarted) {
-            this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${THINKING_IDX}}\n\n`);
-          }
-          this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${TEXT_IDX}}\n\n`);
-          this.push(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${stopReason}","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`);
-          this.push(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
-          return cb();
-        }
-        let parsed;
-        try { parsed = JSON.parse(data); } catch(e) { continue; }
-        if (parsed.object === "chat.completion.chunk") {
-          model = parsed.model || model;
-          const delta = parsed.choices?.[0]?.delta;
-          if (parsed.usage) {
-            inputTokens = parsed.usage.prompt_tokens || 0;
-            outputTokens = parsed.usage.completion_tokens || 0;
-          }
-          const finishReason = parsed.choices?.[0]?.finish_reason;
-          if (finishReason === "stop") stopReason = "end_turn";
-          else if (finishReason === "length") stopReason = "max_tokens";
-          else if (finishReason === "tool_calls") stopReason = "tool_use";
-          else if (finishReason) stopReason = finishReason;
+  let messageStarted = false;
+  let nextBlockIndex = 0;
+  let textBlock = null;
+  let thinkingBlock = null;
+  let activeContentBlock = null;
+  const toolBlocks = new Map();
+  const openedBlocks = [];
 
-          if (delta?.reasoning_content) {
-            if (!hasStarted) {
-              hasStarted = true;
-              this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[{"type":"text","text":""}],"model":${JSON.stringify(model)},"stop_reason":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
-            }
-            if (!thinkingStarted) {
-              thinkingStarted = true;
-              this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":${THINKING_IDX},"content_block":{"type":"thinking","thinking":""}}\n\n`);
-            }
-            thinkingContent += delta.reasoning_content;
-            this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${THINKING_IDX},"delta":{"type":"thinking_delta","thinking":${JSON.stringify(delta.reasoning_content)}}}\n\n`);
-          }
-          if (delta?.content) {
-            if (!hasStarted) {
-              hasStarted = true;
-              this.push(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${Date.now()}","type":"message","role":"assistant","content":[{"type":"text","text":""}],"model":${JSON.stringify(model)},"stop_reason":null,"usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens}}}}\n\n`);
-              this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":${TEXT_IDX},"content_block":{"type":"text","text":""}}\n\n`);
-            }
-            textContent += delta.content;
-            this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${TEXT_IDX},"delta":{"type":"text_delta","text":${JSON.stringify(delta.content)}}}\n\n`);
-          }
-          if (delta?.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              if (tc.function?.name) {
-                this.push(`event: content_block_start\ndata: {"type":"content_block_start","index":${TOOL_IDX},"content_block":{"type":"tool_use","id":"${tc.id || "toolu_"+Date.now()}","name":"${tc.function.name}","input":{}}}\n\n`);
-              }
-              if (tc.function?.arguments) {
-                this.push(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${TOOL_IDX},"delta":{"type":"input_json_delta","partial_json":${JSON.stringify(tc.function.arguments)}}}\n\n`);
-              }
-              if (tc.function?.name) {
-                this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${TOOL_IDX}}\n\n`);
-              }
-            }
-          }
+  const pushEvent = (output, event, payload) => {
+    output.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const ensureMessageStarted = output => {
+    if (messageStarted) return;
+    messageStarted = true;
+    pushEvent(output, "message_start", {
+      type: "message_start",
+      message: {
+        id: lifecycle.responseId,
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: lifecycle.model,
+        stop_reason: null,
+        usage: { input_tokens: lifecycle.inputTokens, output_tokens: lifecycle.outputTokens },
+      },
+    });
+  };
+
+  const startBlock = (output, kind, contentBlock) => {
+    ensureMessageStarted(output);
+    const block = { kind, index: nextBlockIndex++, stopped: false };
+    openedBlocks.push(block);
+    pushEvent(output, "content_block_start", {
+      type: "content_block_start",
+      index: block.index,
+      content_block: contentBlock,
+    });
+    return block;
+  };
+
+  const stopBlock = (output, block) => {
+    if (!block || block.stopped) return;
+    block.stopped = true;
+    if (activeContentBlock === block) activeContentBlock = null;
+    pushEvent(output, "content_block_stop", { type: "content_block_stop", index: block.index });
+  };
+
+  const ensureTextStarted = output => {
+    if (!textBlock || textBlock.stopped) {
+      stopBlock(output, activeContentBlock);
+      textBlock = startBlock(output, "text", { type: "text", text: "" });
+    }
+    activeContentBlock = textBlock;
+    return textBlock;
+  };
+
+  const ensureThinkingStarted = output => {
+    if (!thinkingBlock || thinkingBlock.stopped) {
+      stopBlock(output, activeContentBlock);
+      thinkingBlock = startBlock(output, "thinking", { type: "thinking", thinking: "" });
+    }
+    activeContentBlock = thinkingBlock;
+    return thinkingBlock;
+  };
+
+  const ensureToolStarted = (output, call) => {
+    const callIndex = Number.isInteger(call && call.index) ? call.index : 0;
+    let block = toolBlocks.get(callIndex);
+    if (block && !block.stopped) return block;
+    const name = call && call.function && call.function.name;
+    if (!name) return null;
+    stopBlock(output, activeContentBlock);
+    block = startBlock(output, "tool", {
+      type: "tool_use",
+      id: call.id || `toolu_${Date.now().toString(36)}_${callIndex}`,
+      name,
+      input: {},
+    });
+    toolBlocks.set(callIndex, block);
+    return block;
+  };
+
+  const closeOpenedBlocks = output => {
+    for (const block of openedBlocks) stopBlock(output, block);
+  };
+
+  const closeToolBlocks = output => {
+    for (const block of toolBlocks.values()) stopBlock(output, block);
+  };
+
+  const emitCompleted = output => {
+    if (lifecycle.terminalKind) return false;
+    lifecycle.sawDone = true;
+    ensureMessageStarted(output);
+    closeOpenedBlocks(output);
+    pushEvent(output, "message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: stopReason, stop_sequence: null },
+      usage: { output_tokens: lifecycle.outputTokens },
+    });
+    pushEvent(output, "message_stop", { type: "message_stop" });
+    lifecycle.emitCompleted();
+    return true;
+  };
+
+  const processLine = (rawLine, output) => {
+    if (lifecycle.terminalKind || lifecycle.sawDone) return true;
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line.startsWith("data:")) return false;
+    const data = line.slice(5).trim();
+    if (!data) return false;
+    if (data === "[DONE]") return emitCompleted(output);
+
+    let parsed;
+    try { parsed = JSON.parse(data); } catch (e) { return false; }
+    if (parsed && (parsed.error || parsed.object === "error" || parsed.type === "error")) {
+      const message = extractUpstreamErrorMessage(parsed) || "Upstream chat SSE error";
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(message), message);
+      return true;
+    }
+    if (!parsed || parsed.object !== "chat.completion.chunk") return false;
+
+    lifecycle.model = parsed.model || lifecycle.model;
+    if (parsed.usage) {
+      lifecycle.inputTokens = parsed.usage.prompt_tokens || lifecycle.inputTokens;
+      lifecycle.outputTokens = parsed.usage.completion_tokens || lifecycle.outputTokens;
+    }
+    const choice = parsed.choices && parsed.choices[0];
+    const delta = choice && choice.delta;
+    const finishReason = choice && choice.finish_reason;
+    if (finishReason === "stop") stopReason = "end_turn";
+    else if (finishReason === "length") stopReason = "max_tokens";
+    else if (finishReason === "tool_calls") stopReason = "tool_use";
+    else if (finishReason) stopReason = finishReason;
+
+    if (delta && delta.reasoning_content) {
+      const block = ensureThinkingStarted(output);
+      lifecycle.fullContent += delta.reasoning_content;
+      pushEvent(output, "content_block_delta", {
+        type: "content_block_delta",
+        index: block.index,
+        delta: { type: "thinking_delta", thinking: delta.reasoning_content },
+      });
+    }
+    if (delta && delta.content) {
+      const block = ensureTextStarted(output);
+      lifecycle.fullContent += delta.content;
+      pushEvent(output, "content_block_delta", {
+        type: "content_block_delta",
+        index: block.index,
+        delta: { type: "text_delta", text: delta.content },
+      });
+    }
+    if (delta && Array.isArray(delta.tool_calls)) {
+      for (const call of delta.tool_calls) {
+        const block = ensureToolStarted(output, call);
+        const args = call && call.function && call.function.arguments;
+        if (block && args) {
+          pushEvent(output, "content_block_delta", {
+            type: "content_block_delta",
+            index: block.index,
+            delta: { type: "input_json_delta", partial_json: args },
+          });
+        }
+      }
+    }
+    if (finishReason === "tool_calls") closeToolBlocks(output);
+    return false;
+  };
+
+  const transform = new Transform({
+    readableObjectMode: false,
+    writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      if (lifecycle.terminalKind || lifecycle.sawDone) { cb(); return; }
+      lineBuffer += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+      let newline;
+      while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+        const line = lineBuffer.slice(0, newline);
+        lineBuffer = lineBuffer.slice(newline + 1);
+        if (processLine(line, this)) {
+          lineBuffer = "";
+          break;
         }
       }
       cb();
     },
     flush(cb) {
-      if (textContent || thinkingContent) {
-        if (thinkingStarted) {
-          this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${THINKING_IDX}}\n\n`);
-        }
-        this.push(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${TEXT_IDX}}\n\n`);
-        this.push(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${stopReason}","stop_sequence":null},"usage":{"output_tokens":${outputTokens}}}\n\n`);
-        this.push(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
+      if (!lifecycle.terminalKind) {
+        lineBuffer += decoder.end();
+        if (lineBuffer) processLine(lineBuffer, this);
+        lineBuffer = "";
       }
+      if (!lifecycle.terminalKind) lifecycle.emitFailed("upstream_eof_without_done");
       cb();
-    }
+    },
   });
+  lifecycle._transform = transform;
+  transform._lifecycle = lifecycle;
+  return transform;
 }
 function chatToMessagesResponse(upstreamUrl, chatBody) {
   const choice = chatBody.choices?.[0];
@@ -10192,50 +10774,150 @@ function chatToMessagesRequest(upstreamUrl, body) {
   if (body.max_tokens) msgsBody.max_tokens = body.max_tokens;
   return msgsBody;
 }
-function createMessagesToChatStream(upstreamUrl) {
+function createMessagesToChatStream(lifecycle) {
   const Transform = require("stream").Transform;
-  let buffer = "";
-  let fullContent = "";
-  let model = "";
-  let inputTokens = 0, outputTokens = 0;
-  return new Transform({
-    readableObjectMode: false, writableObjectMode: false,
+  lifecycle = lifecycle || createChatLifecycle("");
+  const decoder = new StringDecoder("utf8");
+  let lineBuffer = "";
+  let nextToolCallIndex = 0;
+  const toolCalls = new Map();
+
+  const emitChatChunk = (output, choice, usage) => {
+    output.push(`data: ${JSON.stringify({
+      choices: [choice],
+      ...(usage ? { usage } : {}),
+      object: "chat.completion.chunk",
+      model: lifecycle.model,
+    })}\n\n`);
+  };
+
+  const emitCompleted = output => {
+    if (lifecycle.terminalKind) return false;
+    lifecycle.sawDone = true;
+    output.push("data: [DONE]\n\n");
+    lifecycle.emitCompleted();
+    return true;
+  };
+
+  const upstreamBlockKey = value => Number.isInteger(value) ? value : String(value == null ? "" : value);
+  const ensureToolCall = (output, upstreamIndex, contentBlock) => {
+    const key = upstreamBlockKey(upstreamIndex);
+    let call = toolCalls.get(key);
+    if (!call) {
+      const block = contentBlock || {};
+      call = {
+        index: nextToolCallIndex++,
+        id: block.id || `call_${Date.now().toString(36)}_${nextToolCallIndex}`,
+        name: block.name || "unknown_tool",
+        emittedStart: false,
+      };
+      toolCalls.set(key, call);
+    }
+    if (!call.emittedStart) {
+      call.emittedStart = true;
+      const input = contentBlock && contentBlock.input && typeof contentBlock.input === "object" && Object.keys(contentBlock.input).length
+        ? JSON.stringify(contentBlock.input)
+        : "";
+      emitChatChunk(output, {
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: call.index,
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: input },
+          }],
+        },
+        finish_reason: null,
+      });
+    }
+    return call;
+  };
+
+  const processLine = (rawLine, output) => {
+    if (lifecycle.terminalKind || lifecycle.sawDone) return true;
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line.startsWith("data:")) return false;
+    const data = line.slice(5).trim();
+    if (!data) return false;
+    let parsed;
+    try { parsed = JSON.parse(data); } catch (e) { return false; }
+    if (parsed && (parsed.error || parsed.type === "error" || parsed.object === "error")) {
+      const message = extractUpstreamErrorMessage(parsed) || "Upstream Messages SSE error";
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(message), message);
+      return true;
+    }
+    if (!parsed || typeof parsed.type !== "string") return false;
+
+    if (parsed.type === "message_start") {
+      lifecycle.model = parsed.message && parsed.message.model || lifecycle.model;
+      lifecycle.inputTokens = parsed.message && parsed.message.usage && parsed.message.usage.input_tokens || lifecycle.inputTokens;
+    } else if (parsed.type === "content_block_start" && parsed.content_block && parsed.content_block.type === "tool_use") {
+      ensureToolCall(output, parsed.index, parsed.content_block);
+    } else if (parsed.type === "content_block_delta" && parsed.delta && parsed.delta.type === "text_delta") {
+      const text = parsed.delta.text || "";
+      lifecycle.fullContent += text;
+      emitChatChunk(output, { index: 0, delta: { role: "assistant", content: text }, finish_reason: null });
+    } else if (parsed.type === "content_block_delta" && parsed.delta && parsed.delta.type === "thinking_delta") {
+      const thinking = parsed.delta.thinking || "";
+      lifecycle.fullContent += thinking;
+      emitChatChunk(output, { index: 0, delta: { role: "assistant", reasoning_content: thinking }, finish_reason: null });
+    } else if (parsed.type === "content_block_delta" && parsed.delta && parsed.delta.type === "input_json_delta") {
+      const call = ensureToolCall(output, parsed.index, null);
+      emitChatChunk(output, {
+        index: 0,
+        delta: { tool_calls: [{ index: call.index, function: { arguments: parsed.delta.partial_json || "" } }] },
+        finish_reason: null,
+      });
+    } else if (parsed.type === "message_delta") {
+      lifecycle.outputTokens = parsed.usage && parsed.usage.output_tokens || lifecycle.outputTokens;
+      const finishMap = { end_turn: "stop", max_tokens: "length", tool_use: "tool_calls" };
+      const finishReason = finishMap[parsed.delta && parsed.delta.stop_reason] || parsed.delta && parsed.delta.stop_reason || "stop";
+      emitChatChunk(output, {
+        index: 0,
+        delta: {},
+        finish_reason: finishReason,
+      }, {
+        prompt_tokens: lifecycle.inputTokens,
+        completion_tokens: lifecycle.outputTokens,
+        total_tokens: lifecycle.inputTokens + lifecycle.outputTokens,
+      });
+    } else if (parsed.type === "message_stop") {
+      return emitCompleted(output);
+    }
+    return false;
+  };
+
+  const transform = new Transform({
+    readableObjectMode: false,
+    writableObjectMode: false,
     transform(chunk, encoding, cb) {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (!data) continue;
-        let parsed;
-        try { parsed = JSON.parse(data); } catch(e) { continue; }
-        if (parsed.type === "message_start") {
-          model = parsed.message?.model || model;
-          inputTokens = parsed.message?.usage?.input_tokens || 0;
-        } else if (parsed.type === "content_block_delta" && parsed.delta?.type === "text_delta") {
-          fullContent += parsed.delta.text;
-          this.push(`data: {"choices":[{"index":0,"delta":{"role":"assistant","content":${JSON.stringify(parsed.delta.text)}},"finish_reason":null}],"object":"chat.completion.chunk","model":${JSON.stringify(model)}}\n\n`);
-        } else if (parsed.type === "content_block_delta" && parsed.delta?.type === "input_json_delta") {
-          this.push(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":${JSON.stringify(parsed.delta.partial_json)}}}]},"finish_reason":null}],"object":"chat.completion.chunk","model":${JSON.stringify(model)}}\n\n`);
-        } else if (parsed.type === "message_delta") {
-          outputTokens = parsed.usage?.output_tokens || outputTokens;
-          const finishMap = { end_turn: "stop", max_tokens: "length", tool_use: "tool_calls" };
-          const fr = finishMap[parsed.delta?.stop_reason] || parsed.delta?.stop_reason || "stop";
-          this.push(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"${fr}"}],"usage":{"prompt_tokens":${inputTokens},"completion_tokens":${outputTokens},"total_tokens":${inputTokens + outputTokens}},"object":"chat.completion.chunk","model":${JSON.stringify(model)}}\n\n`);
-        } else if (parsed.type === "message_stop") {
-          this.push("data: [DONE]\n\n");
+      if (lifecycle.terminalKind || lifecycle.sawDone) { cb(); return; }
+      lineBuffer += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+      let newline;
+      while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+        const line = lineBuffer.slice(0, newline);
+        lineBuffer = lineBuffer.slice(newline + 1);
+        if (processLine(line, this)) {
+          lineBuffer = "";
+          break;
         }
       }
       cb();
     },
     flush(cb) {
-      if (fullContent) {
-        this.push("data: [DONE]\n\n");
+      if (!lifecycle.terminalKind) {
+        lineBuffer += decoder.end();
+        if (lineBuffer) processLine(lineBuffer, this);
+        lineBuffer = "";
       }
+      if (!lifecycle.terminalKind) lifecycle.emitFailed("upstream_eof_without_done");
       cb();
-    }
+    },
   });
+  lifecycle._transform = transform;
+  transform._lifecycle = lifecycle;
+  return transform;
 }
 function messagesToChatResponse(upstreamUrl, msgsBody) {
   const content = msgsBody.content || [];
@@ -10585,6 +11267,7 @@ function createGroupServer(groupName, port) {
             const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
             Object.assign(cur, c);
             normalizeRuntimeStorageConfig(cur);
+            normalizeResponsesStreamConfig(cur);
             const changesDefaultPrices = Object.prototype.hasOwnProperty.call(c, "prices");
             const changesDefaultBytesPerToken = Object.prototype.hasOwnProperty.call(c, "bytesPerToken");
             if (changesDefaultPrices || changesDefaultBytesPerToken) {
@@ -11564,7 +12247,9 @@ function createGroupServer(groupName, port) {
         const chatBody = messagesToChatRequest("", reqBody);
         chatBody.stream = true;
         addEventLog("conversion", 0, `Messages→Chat 转换: ${reqBody.model || "?"}`, "");
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", createChatToMessagesStream(), groupName, { preExtract: taskInsightPreExtract(reqBody) });
+        const lifecycle = createMessagesLifecycle(reqBody.model || chatBody.model || "");
+        const transform = createChatToMessagesStream(lifecycle);
+        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", transform, groupName, { preExtract: taskInsightPreExtract(reqBody) });
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -11619,7 +12304,18 @@ function createGroupServer(groupName, port) {
       return;
     }
     console.log(`[proxy] ${req.method} ${pathname} (group ${groupName})`);
-    forwardWithPriority(req.method, req.headers, body, res, pathname, null, groupName);
+    let nativeResponsesProbe = null;
+    if (pathname === "/responses" && req.method === "POST" && body) {
+      try {
+        const requestBody = JSON.parse(body.toString("utf8"));
+        if (requestBody && requestBody.stream === true) {
+          nativeResponsesProbe = createNativeResponsesTerminalProbe(requestBody.model || "");
+        }
+      } catch (e) {
+        // Leave malformed or non-JSON requests on the existing passthrough path.
+      }
+    }
+    forwardWithPriority(req.method, req.headers, body, res, pathname, nativeResponsesProbe, groupName);
   });
   req.on("error", (e) => { console.error(`[proxy] ${e.message}`); if (!res.destroyed) res.end(); });
 });

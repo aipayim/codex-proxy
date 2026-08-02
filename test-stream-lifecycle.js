@@ -24,13 +24,23 @@ function loadStreamHarness(proxyDir) {
     process: { pid: 999998, argv: [], env: {}, on: () => {}, exit: () => {} },
   };
   sandbox.globalThis = sandbox;
-  const harness = ";globalThis.__streamLifecycleTest={createResponsesLifecycle,createChatToResponsesStream,sanitizeUpstreamErrorMessage,extractUpstreamErrorMessage,classifyUpstreamErrorMessage,captureUpstreamErrorMessage};";
+  const harness = ";globalThis.__streamLifecycleTest={createResponsesLifecycle,createChatToResponsesStream,createNativeResponsesTerminalProbe,createMessagesLifecycle,createChatLifecycle,createChatToMessagesStream,createMessagesToChatStream,normalizeResponsesTimeout,normalizeResponsesStreamConfig,sanitizeUpstreamErrorMessage,extractUpstreamErrorMessage,classifyUpstreamErrorMessage,captureUpstreamErrorMessage};";
   vm.runInNewContext(source.slice(0, cutoff) + harness, sandbox, { filename: "proxy.js", timeout: 5000 });
   return sandbox.__streamLifecycleTest;
 }
 
 function eventNames(output) {
   return [...output.matchAll(/^event: ([^\n]+)$/gm)].map(match => match[1]);
+}
+
+function eventPayloads(output, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [...output.matchAll(new RegExp(`^event: ${escapedName}\\ndata: ([^\\n]+)$`, "gm"))]
+    .map(match => JSON.parse(match[1]));
+}
+
+function chatPayloads(output) {
+  return [...output.matchAll(/^data: (\{[^\n]+\})$/gm)].map(match => JSON.parse(match[1]));
 }
 
 function createLifecycleStream(harness, model) {
@@ -53,6 +63,63 @@ function runStream(harness, chunks, model = "test-model") {
   });
 }
 
+function createNativeResponsesStream(harness, model = "test-model") {
+  const transform = harness.createNativeResponsesTerminalProbe(model);
+  return { lifecycle: transform._lifecycle, transform };
+}
+
+function runNativeResponsesStream(harness, chunks, model = "test-model") {
+  return new Promise((resolve, reject) => {
+    const { lifecycle, transform } = createNativeResponsesStream(harness, model);
+    const output = [];
+    transform.on("data", chunk => { output.push(Buffer.from(chunk)); });
+    transform.once("error", reject);
+    transform.once("end", () => resolve({ lifecycle, output: Buffer.concat(output) }));
+    for (const chunk of chunks) transform.write(chunk);
+    transform.end();
+  });
+}
+
+function createChatToMessagesStream(harness, model = "test-model") {
+  const lifecycle = harness.createMessagesLifecycle(model);
+  const transform = harness.createChatToMessagesStream(lifecycle);
+  return { lifecycle, transform };
+}
+
+function runChatToMessagesStream(harness, chunks, model = "test-model") {
+  return new Promise((resolve, reject) => {
+    const { lifecycle, transform } = createChatToMessagesStream(harness, model);
+    let output = "";
+    transform.on("data", chunk => { output += chunk.toString(); });
+    transform.once("error", reject);
+    transform.once("end", () => resolve({ lifecycle, output }));
+    for (const chunk of chunks) transform.write(chunk);
+    transform.end();
+  });
+}
+
+function createMessagesToChatStream(harness, model = "test-model") {
+  const lifecycle = harness.createChatLifecycle(model);
+  const transform = harness.createMessagesToChatStream(lifecycle);
+  return { lifecycle, transform };
+}
+
+function runMessagesToChatStream(harness, chunks, model = "test-model") {
+  return new Promise((resolve, reject) => {
+    const { lifecycle, transform } = createMessagesToChatStream(harness, model);
+    let output = "";
+    transform.on("data", chunk => { output += chunk.toString(); });
+    transform.once("error", reject);
+    transform.once("end", () => resolve({ lifecycle, output }));
+    for (const chunk of chunks) transform.write(chunk);
+    transform.end();
+  });
+}
+
+function nativeResponseEvent(type, response, extra = {}) {
+  return `event: ${type}\ndata: ${JSON.stringify({ type, response, ...extra })}\n\n`;
+}
+
 function chatChunk(delta, options = {}) {
   return JSON.stringify({
     id: "chatcmpl_test",
@@ -61,6 +128,14 @@ function chatChunk(delta, options = {}) {
     choices: [{ index: 0, delta, finish_reason: options.finishReason || null }],
     ...(options.usage ? { usage: options.usage } : {}),
   });
+}
+
+function messagesEvent(type, payload = {}) {
+  return `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+}
+
+function doneCount(output) {
+  return (output.match(/^data: \[DONE\]$/gm) || []).length;
 }
 
 async function testCompletedStream(harness) {
@@ -105,6 +180,270 @@ async function testEmptyStreamFails(harness) {
   assert.strictEqual(lifecycle.terminalKind, "failed");
   assert.strictEqual(lifecycle.terminalReason, "upstream_eof_without_done");
   assert.deepStrictEqual(eventNames(output), ["response.created", "response.in_progress", "response.failed"]);
+}
+
+async function testNativeResponsesCompletedPassthrough(harness) {
+  const response = { id: "resp_native_complete", object: "response", created_at: 1, model: "native-model", status: "completed" };
+  const raw = nativeResponseEvent("response.created", { ...response, status: "in_progress" }) + nativeResponseEvent("response.completed", response);
+  const { lifecycle, output } = await runNativeResponsesStream(harness, [Buffer.from(raw)]);
+  assert.strictEqual(output.toString("utf8"), raw, "completed native stream must remain byte-for-byte unchanged");
+  assert.strictEqual(lifecycle.responseId, "resp_native_complete");
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.strictEqual(lifecycle.terminalReason, "upstream_done");
+  assert.strictEqual(lifecycle.terminalSource, "native_responses_sse");
+  assert.strictEqual(eventNames(output.toString("utf8")).filter(name => name === "response.completed").length, 1);
+}
+
+async function testNativeResponsesEofAddsFailedTerminal(harness) {
+  const partial = nativeResponseEvent("response.created", { id: "resp_native_partial", object: "response", created_at: 1, model: "native-model", status: "in_progress" }) +
+    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
+  const { lifecycle, output } = await runNativeResponsesStream(harness, [Buffer.from(partial)]);
+  const text = output.toString("utf8");
+  assert.ok(text.startsWith(partial), "native prefix must be preserved before a synthetic terminal");
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "upstream_eof_without_completed");
+  assert.strictEqual(lifecycle.terminalSource, "native_responses_terminal_guard");
+  assert.strictEqual(eventNames(text).filter(name => name === "response.failed").length, 1);
+  assert.ok(!text.includes("data: [DONE]"));
+  assert.ok(!eventNames(text).includes("response.completed"));
+}
+
+async function testNativeResponsesExplicitFailureIsNotDuplicated(harness) {
+  const response = {
+    id: "resp_native_failed",
+    object: "response",
+    created_at: 1,
+    model: "native-model",
+    status: "failed",
+    error: { code: "server_error", message: "Selected model is at capacity. Please try a different model." },
+  };
+  const raw = nativeResponseEvent("response.failed", response);
+  const { lifecycle, output } = await runNativeResponsesStream(harness, [Buffer.from(raw)]);
+  assert.strictEqual(output.toString("utf8"), raw);
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "model_at_capacity");
+  assert.strictEqual(eventNames(output.toString("utf8")).filter(name => name === "response.failed").length, 1);
+}
+
+async function testNativeResponsesIncompleteIsNotDuplicated(harness) {
+  const response = {
+    id: "resp_native_incomplete",
+    object: "response",
+    created_at: 1,
+    model: "native-model",
+    status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" },
+  };
+  const raw = nativeResponseEvent("response.incomplete", response);
+  const { lifecycle, output } = await runNativeResponsesStream(harness, [Buffer.from(raw)]);
+  assert.strictEqual(output.toString("utf8"), raw);
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "upstream_incomplete");
+  assert.ok(!eventNames(output.toString("utf8")).includes("response.failed"));
+}
+
+async function testNativeResponsesSplitUtf8AndEventFrames(harness) {
+  const response = { id: "resp_native_utf8", object: "response", created_at: 1, model: "native-model", status: "completed" };
+  const raw = nativeResponseEvent("response.created", { ...response, status: "in_progress" }) +
+    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"中文\"}\n\n" +
+    nativeResponseEvent("response.completed", response);
+  const bytes = Buffer.from(raw);
+  const chinese = bytes.indexOf(Buffer.from("中"));
+  const chunks = [bytes.subarray(0, chinese + 1), bytes.subarray(chinese + 1, chinese + 2), bytes.subarray(chinese + 2, chinese + 7), bytes.subarray(chinese + 7)];
+  const { lifecycle, output } = await runNativeResponsesStream(harness, chunks);
+  assert.strictEqual(output.toString("utf8"), raw);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.strictEqual(lifecycle.responseId, "resp_native_utf8");
+}
+
+async function testNativeResponsesErrorGetsSingleFailedTerminal(harness) {
+  const raw = "event: error\ndata: {\"error\":{\"message\":\"Selected model is at capacity. Please try a different model.\"}}\n\n";
+  const { lifecycle, output } = await runNativeResponsesStream(harness, [Buffer.from(raw)]);
+  const text = output.toString("utf8");
+  assert.ok(text.startsWith(raw));
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "model_at_capacity");
+  assert.strictEqual(eventNames(text).filter(name => name === "response.failed").length, 1);
+  assert.ok(!eventNames(text).includes("response.completed"));
+}
+
+async function testChatToMessagesCompleted(harness) {
+  const payload = chatChunk({ content: "hello" }, { usage: { prompt_tokens: 3, completion_tokens: 2 } });
+  const { lifecycle, output } = await runChatToMessagesStream(harness, [`data: ${payload}\n`, "data: [DONE]\n"]);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.strictEqual(lifecycle.terminalReason, "upstream_done");
+  assert.strictEqual(lifecycle.sawDone, true);
+  assert.strictEqual(lifecycle.fullContent, "hello");
+  assert.strictEqual(eventNames(output).filter(name => name === "message_stop").length, 1);
+  assert.strictEqual(eventNames(output).filter(name => name === "error").length, 0);
+  assert.strictEqual(eventNames(output).filter(name => name === "content_block_stop").length, 1);
+}
+
+async function testChatToMessagesDoneWithoutContent(harness) {
+  const { lifecycle, output } = await runChatToMessagesStream(harness, ["data: [DONE]"]);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.deepStrictEqual(eventNames(output), ["message_start", "message_delta", "message_stop"]);
+}
+
+async function testChatToMessagesReasoningOnlyClosesOnlyOpenedBlock(harness) {
+  const payload = chatChunk({ reasoning_content: "reasoning" });
+  const { lifecycle, output } = await runChatToMessagesStream(harness, [`data: ${payload}\n`, "data: [DONE]\n"]);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.deepStrictEqual(eventPayloads(output, "content_block_start").map(event => event.index), [0]);
+  assert.deepStrictEqual(eventPayloads(output, "content_block_stop").map(event => event.index), [0]);
+}
+
+async function testChatToMessagesToolBlocksUseContiguousIndices(harness) {
+  const payload = chatChunk({ tool_calls: [
+    { index: 0, id: "tool_a", function: { name: "alpha", arguments: "{\"a\":1}" } },
+    { index: 1, id: "tool_b", function: { name: "beta", arguments: "{\"b\":2}" } },
+  ] }, { finishReason: "tool_calls" });
+  const { lifecycle, output } = await runChatToMessagesStream(harness, [`data: ${payload}\n`, "data: [DONE]\n"]);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.deepStrictEqual(eventPayloads(output, "content_block_start").map(event => event.index), [0, 1]);
+  assert.deepStrictEqual(eventPayloads(output, "content_block_stop").map(event => event.index), [0, 1]);
+}
+
+async function testChatToMessagesEofFailsWithoutMessageStop(harness) {
+  const payload = chatChunk({ content: "partial" });
+  const { lifecycle, output } = await runChatToMessagesStream(harness, [`data: ${payload}\n`]);
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "upstream_eof_without_done");
+  assert.strictEqual(eventNames(output).filter(name => name === "error").length, 1);
+  assert.strictEqual(eventNames(output).filter(name => name === "message_stop").length, 0);
+  assert.match(output, /Upstream chat stream ended before its \[DONE\] terminal/);
+}
+
+async function testChatToMessagesExplicitErrorFails(harness) {
+  const raw = "data: {\"error\":{\"message\":\"Selected model is at capacity. Please try a different model.\"}}\n\n";
+  const { lifecycle, output } = await runChatToMessagesStream(harness, [raw]);
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "model_at_capacity");
+  assert.strictEqual(eventNames(output).filter(name => name === "error").length, 1);
+  assert.strictEqual(eventNames(output).filter(name => name === "message_stop").length, 0);
+}
+
+async function testChatToMessagesSplitUtf8AndDoneTail(harness) {
+  const raw = `data: ${chatChunk({ content: "中文" })}\n\ndata: [DONE]`;
+  const bytes = Buffer.from(raw);
+  const chinese = bytes.indexOf(Buffer.from("中"));
+  const chunks = [bytes.subarray(0, chinese + 1), bytes.subarray(chinese + 1, chinese + 2), bytes.subarray(chinese + 2, chinese + 7), bytes.subarray(chinese + 7)];
+  const { lifecycle, output } = await runChatToMessagesStream(harness, chunks);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.strictEqual(lifecycle.fullContent, "中文");
+  assert.strictEqual(eventNames(output).filter(name => name === "message_stop").length, 1);
+  assert.strictEqual(eventNames(output).filter(name => name === "error").length, 0);
+}
+
+function testChatToMessagesClientCancellation(harness) {
+  const { lifecycle, transform } = createChatToMessagesStream(harness);
+  let output = "";
+  transform.on("data", chunk => { output += chunk.toString(); });
+  assert.strictEqual(lifecycle.noteClientCancelled("client_disconnect"), true);
+  assert.strictEqual(lifecycle.terminalKind, "cancelled");
+  assert.strictEqual(eventNames(output).length, 0);
+  transform.destroy();
+}
+
+async function testMessagesToChatCompletedOnce(harness) {
+  const raw = messagesEvent("message_start", { message: { model: "anthropic-test", usage: { input_tokens: 5 } } }) +
+    messagesEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hello" } }) +
+    messagesEvent("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } }) +
+    'data: {"type":"message_stop"}';
+  const { lifecycle, output } = await runMessagesToChatStream(harness, [raw]);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.strictEqual(lifecycle.terminalReason, "upstream_done");
+  assert.strictEqual(doneCount(output), 1);
+  assert.match(output, /\"content\":\"hello\"/);
+  assert.ok(!output.includes('"error"'));
+}
+
+async function testMessagesToChatEofFailsWithoutDone(harness) {
+  const raw = messagesEvent("message_start", { message: { model: "anthropic-test", usage: { input_tokens: 5 } } }) +
+    messagesEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: "partial" } });
+  const { lifecycle, output } = await runMessagesToChatStream(harness, [raw]);
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "upstream_eof_without_done");
+  assert.strictEqual(doneCount(output), 0);
+  assert.match(output, /Upstream Messages stream ended before message_stop/);
+}
+
+async function testMessagesToChatExplicitErrorFails(harness) {
+  const raw = messagesEvent("error", { error: { type: "overloaded_error", message: "Selected model is at capacity. Please try a different model." } });
+  const { lifecycle, output } = await runMessagesToChatStream(harness, [raw]);
+  assert.strictEqual(lifecycle.terminalKind, "failed");
+  assert.strictEqual(lifecycle.terminalReason, "model_at_capacity");
+  assert.strictEqual(doneCount(output), 0);
+  assert.match(output, /\"error\"/);
+}
+
+async function testMessagesToChatSplitUtf8AndStopTail(harness) {
+  const raw = messagesEvent("message_start", { message: { model: "anthropic-test", usage: { input_tokens: 1 } } }) +
+    messagesEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: "中文" } }) +
+    'data: {"type":"message_stop"}';
+  const bytes = Buffer.from(raw);
+  const chinese = bytes.indexOf(Buffer.from("中"));
+  const chunks = [bytes.subarray(0, chinese + 1), bytes.subarray(chinese + 1, chinese + 2), bytes.subarray(chinese + 2, chinese + 7), bytes.subarray(chinese + 7)];
+  const { lifecycle, output } = await runMessagesToChatStream(harness, chunks);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  assert.strictEqual(lifecycle.fullContent, "中文");
+  assert.strictEqual(doneCount(output), 1);
+}
+
+async function testMessagesToChatToolCallsKeepIdsAndIndices(harness) {
+  const raw = messagesEvent("message_start", { message: { model: "anthropic-test", usage: { input_tokens: 1 } } }) +
+    messagesEvent("content_block_start", { index: 0, content_block: { type: "tool_use", id: "tool_a", name: "alpha", input: {} } }) +
+    messagesEvent("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: "{\"a\":1}" } }) +
+    messagesEvent("content_block_start", { index: 2, content_block: { type: "tool_use", id: "tool_b", name: "beta", input: {} } }) +
+    messagesEvent("content_block_delta", { index: 2, delta: { type: "input_json_delta", partial_json: "{\"b\":2}" } }) +
+    'data: {"type":"message_stop"}';
+  const { lifecycle, output } = await runMessagesToChatStream(harness, [raw]);
+  assert.strictEqual(lifecycle.terminalKind, "completed");
+  const toolDeltas = chatPayloads(output)
+    .map(payload => payload.choices && payload.choices[0] && payload.choices[0].delta && payload.choices[0].delta.tool_calls)
+    .filter(Boolean)
+    .flat();
+  assert.deepStrictEqual(toolDeltas.map(call => call.index), [0, 0, 1, 1]);
+  assert.deepStrictEqual(toolDeltas.filter(call => call.id).map(call => ({ id: call.id, name: call.function.name, type: call.type })), [
+    { id: "tool_a", name: "alpha", type: "function" },
+    { id: "tool_b", name: "beta", type: "function" },
+  ]);
+  assert.strictEqual(doneCount(output), 1);
+}
+
+function testNativeResponsesClientCancellation(harness) {
+  const { lifecycle, transform } = createNativeResponsesStream(harness);
+  let output = "";
+  transform.on("data", chunk => { output += chunk.toString(); });
+  assert.strictEqual(lifecycle.noteClientCancelled("client_disconnect"), true);
+  assert.strictEqual(lifecycle.terminalKind, "cancelled");
+  assert.ok(!output.includes("response.failed"));
+  transform.destroy();
+}
+
+function testResponsesTimeoutConfigNormalization(harness) {
+  assert.strictEqual(harness.normalizeResponsesTimeout(0, 1), 0);
+  assert.strictEqual(harness.normalizeResponsesTimeout(30000, 1), 60000);
+  assert.strictEqual(harness.normalizeResponsesTimeout(999999999, 1), 86400000);
+  const config = harness.normalizeResponsesStreamConfig({ responsesStreamLifetime: 0, responsesIdleTimeout: 0 });
+  assert.strictEqual(config.responsesStreamLifetime, 0);
+  assert.strictEqual(config.responsesIdleTimeout, 0);
+}
+
+function testNativeResponsesRouteContract(proxyDir) {
+  const source = fs.readFileSync(path.join(proxyDir, "proxy.js"), "utf8");
+  assert.match(source, /pathname === "\/responses" && req\.method === "POST" && body/);
+  assert.match(source, /requestBody && requestBody\.stream === true/);
+  assert.match(source, /nativeResponsesProbe = createNativeResponsesTerminalProbe\(requestBody\.model \|\| ""\)/);
+  assert.match(source, /forwardWithPriority\(req\.method, req\.headers, body, res, pathname, nativeResponsesProbe, groupName\)/);
+  assert.match(source, /const codingProtocolStream = lifecycle && \(lifecycle\.protocol === "responses" \|\| lifecycle\.protocol === "messages"\);/);
+  assert.match(source, /const streamLifetime = codingProtocolStream \? RESPONSES_STREAM_LIFETIME : STREAM_LIFETIME/);
+  assert.match(source, /const upstreamIdleTimeout = codingProtocolStream \? RESPONSES_IDLE_TIMEOUT : TIMEOUT/);
+  assert.match(source, /if \(extraTransform\) reqHeaders\["accept-encoding"\] = "identity";/);
+  assert.match(source, /delete safeHeaders\["content-length"\];/);
+  assert.match(source, /apiRes\.unpipe\(transform\);\n\s*apiRes\.destroy\(\);/);
+  assert.match(source, /const lifecycle = createMessagesLifecycle\(reqBody\.model \|\| chatBody\.model \|\| ""\);/);
+  assert.match(source, /const transform = createChatToMessagesStream\(lifecycle\);/);
 }
 
 async function testToolCallCompletion(harness) {
@@ -304,6 +643,28 @@ async function main() {
   await testDoneWithoutTrailingNewline(harness);
   await testEofWithoutDoneFails(harness);
   await testEmptyStreamFails(harness);
+  await testNativeResponsesCompletedPassthrough(harness);
+  await testNativeResponsesEofAddsFailedTerminal(harness);
+  await testNativeResponsesExplicitFailureIsNotDuplicated(harness);
+  await testNativeResponsesIncompleteIsNotDuplicated(harness);
+  await testNativeResponsesSplitUtf8AndEventFrames(harness);
+  await testNativeResponsesErrorGetsSingleFailedTerminal(harness);
+  testNativeResponsesClientCancellation(harness);
+  await testChatToMessagesCompleted(harness);
+  await testChatToMessagesDoneWithoutContent(harness);
+  await testChatToMessagesReasoningOnlyClosesOnlyOpenedBlock(harness);
+  await testChatToMessagesToolBlocksUseContiguousIndices(harness);
+  await testChatToMessagesEofFailsWithoutMessageStop(harness);
+  await testChatToMessagesExplicitErrorFails(harness);
+  await testChatToMessagesSplitUtf8AndDoneTail(harness);
+  testChatToMessagesClientCancellation(harness);
+  await testMessagesToChatCompletedOnce(harness);
+  await testMessagesToChatEofFailsWithoutDone(harness);
+  await testMessagesToChatExplicitErrorFails(harness);
+  await testMessagesToChatSplitUtf8AndStopTail(harness);
+  await testMessagesToChatToolCallsKeepIdsAndIndices(harness);
+  testResponsesTimeoutConfigNormalization(harness);
+  testNativeResponsesRouteContract(__dirname);
   await testToolCallCompletion(harness);
   testClientCancellation(harness);
   await testModelAtCapacityError(harness);

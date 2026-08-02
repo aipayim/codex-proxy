@@ -269,6 +269,13 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
   <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
   <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 流超时</div>
+  <div style="color:#94a3b8;padding:4px 0">其他协议流最大时长 (ms)</div>
+  <div><input id="cfgStreamLifetime" type="number" min="60000" max="7200000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="1800000" title="非 Responses / Messages 编码协议流的绝对超时，默认30分钟"></div>
+  <div style="color:#94a3b8;padding:4px 0">Responses / Messages 编码流最大总时长 (ms)</div>
+  <div><input id="cfgResponsesStreamLifetime" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0" title="0=不设置总时长硬切断；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时"></div>
+  <div style="color:#94a3b8;padding:4px 0">Responses / Messages 上游空闲超时 (ms)</div>
+  <div><input id="cfgResponsesIdleTimeout" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="5400000" title="0=关闭；适用于 Codex Responses 与 Claude Messages。默认90分钟，只在上游完全无数据时触发"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
 </div>
@@ -389,6 +396,9 @@ async function loadConfigUI(){
     renderCodexLogMaintenanceRuntime(c.codexLogMaintenanceRuntime||{});
     document.getElementById("cfgMaxReqPerMin").value=c.maxRequestsPerMin||10;
     document.getElementById("cfgMaxTokPerMin").value=c.maxTokensPerMin||0;
+    document.getElementById("cfgStreamLifetime").value=c.streamLifetime??1800000;
+    document.getElementById("cfgResponsesStreamLifetime").value=c.responsesStreamLifetime??0;
+    document.getElementById("cfgResponsesIdleTimeout").value=c.responsesIdleTimeout??5400000;
     try{
       const sr=await fetch("/__status");
       const sd=await sr.json();
@@ -1218,7 +1228,10 @@ async function saveConfig(){
     proxyLogKeepFiles:configInteger("cfgProxyLogKeepFiles",5),
     codexLogMaintenance:codexLogMaintenanceConfigFromForm(),
     maxRequestsPerMin:parseInt(document.getElementById("cfgMaxReqPerMin").value)||10,
-    maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0
+    maxTokensPerMin:parseInt(document.getElementById("cfgMaxTokPerMin").value)||0,
+    streamLifetime:configInteger("cfgStreamLifetime",1800000),
+    responsesStreamLifetime:configInteger("cfgResponsesStreamLifetime",0),
+    responsesIdleTimeout:configInteger("cfgResponsesIdleTimeout",5400000)
   };
   if(c.codexLogMaintenance.enabled&&!(await checkCodexLogMaintenancePath())){
     document.getElementById("configStatus").textContent="保存失败: Codex SQLite 数据库路径或结构未通过检测";
