@@ -33,6 +33,14 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+function readProcIdentity(pid) {
+  const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8").trim();
+  const end = raw.lastIndexOf(") ");
+  if (end < 0) throw new Error(`invalid proc stat for ${pid}`);
+  const fields = raw.slice(end + 2).trim().split(/\s+/);
+  return { pgid: Number(fields[2]), startTicks: Number(fields[19]) };
+}
+
 function writeExecutable(file, source) {
   fs.writeFileSync(file, source, { encoding: "utf8", mode: 0o700 });
 }
@@ -109,14 +117,33 @@ exit 0
     assert.strictEqual(runningStatus.runId, "runner-signal-1");
     assert.ok(fs.existsSync(signalPidFile), "running runner must hold a lease");
 
-    process.kill(managedRunnerPid, "SIGTERM");
+    const lease = readJson(signalPidFile);
+    assert.strictEqual(lease.schema, 1);
+    assert.strictEqual(lease.runId, "runner-signal-1");
+    assert.strictEqual(lease.pgid, lease.pid, "lease PGID must be the dedicated command process group");
+    assert.ok(Number.isSafeInteger(lease.pid) && lease.pid > 1, "lease must identify the command process");
+    assert.ok(Number.isSafeInteger(lease.processStartTicks) && lease.processStartTicks > 0, "lease must include the command start tick");
+    const procIdentity = readProcIdentity(lease.pid);
+    assert.strictEqual(procIdentity.pgid, lease.pgid, "setsid command must own the leased process group");
+    assert.strictEqual(procIdentity.startTicks, lease.processStartTicks, "lease start tick must match the live command");
+
+    process.kill(-lease.pgid, "SIGTERM");
+    await sleep(200);
+    const afterTermStatus = readJson(signalStatusFile);
+    if (afterTermStatus.phase === "running") {
+      // Some script(1) builds let the PTY child finish its TERM handling
+      // before the wrapper exits. This mirrors the proxy's delayed second
+      // stage without making the regression test wait 30 seconds.
+      process.kill(-lease.pgid, "SIGKILL");
+    }
     const terminatedStatus = await waitFor(() => {
       const value = readJson(signalStatusFile);
-      return value.phase === "terminated" ? value : null;
-    }, "TERM status");
-    assert.deepStrictEqual({ phase: terminatedStatus.phase, exitCode: terminatedStatus.exitCode, signal: terminatedStatus.signal, origin: terminatedStatus.origin }, {
-      phase: "terminated", exitCode: 143, signal: "TERM", origin: "runner_signal",
-    });
+      return ["terminated", "exited", "failed"].includes(value.phase) ? value : null;
+    }, "process-group terminal status");
+    assert.strictEqual(terminatedStatus.phase, "terminated", "process-group signal must produce a terminated runner status");
+    assert.strictEqual(terminatedStatus.origin, "command_signal");
+    assert.ok(terminatedStatus.signal, "terminal status must report a signal after process-group shutdown");
+    assert.ok(terminatedStatus.exitCode >= 128 && terminatedStatus.exitCode <= 192, "terminal status must preserve a signal exit code");
     await waitFor(() => !fs.existsSync(signalPidFile), "lease cleanup");
     managedRunnerPid = 0;
 

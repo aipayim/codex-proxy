@@ -802,6 +802,8 @@ npm run build:release -- --tag v1.2.3 --out ./dist
   "autoResume": false,
   "autoResumeIdleMinutes": 10,
   "autoResumeDebounceMinutes": 3,
+  "autoResumeRunnerStallMinutes": 20,
+  "autoResumeRunnerMaxStallRestarts": 1,
   "autoResumeProjects": [],
   "cmdPath": "/mnt/c/Windows/System32/cmd.exe",
   "weeklySortBy": "priority",
@@ -876,7 +878,9 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `defaultResetHours` | `hourly` 类型的默认重置周期（小时，默认 5）。可在 keys.json 中按 Key 覆盖（`resetHours`） |
 | `autoResume` | 是否启用闲置自动恢复（true/false，默认 false） |
 | `autoResumeIdleMinutes` | 空闲阈值（分钟，默认 10） |
-| `autoResumeDebounceMinutes` | 旧配置兼容字段（分钟，默认 3）；同一 Key 闲置周期仍只会尝试一次 |
+| `autoResumeDebounceMinutes` | 旧配置兼容字段（分钟，默认 3）；同一 Key 闲置周期只执行一次初始启动 |
+| `autoResumeRunnerStallMinutes` | 已验证恢复 runner 的停滞宽限（分钟，默认 20，`0` 关闭，范围 0–1440）。仅在无在途请求、且自 runner 启动或上次实际 Key 应用后都没有新 Key 应用时生效 |
+| `autoResumeRunnerMaxStallRestarts` | 同一 Key 闲置周期允许的已验证 runner 停滞重启次数（默认 1，`0` 关闭，范围 0–3）。不会对普通失败 runner 盲目重放 |
 | `autoResumeProjects` | 项目列表数组，每项含 name/path/cmd，最多 10 个 |
 | `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
 | `weeklySortBy` | weekly 组排序方式：`"priority"`（按 priority+索引）或 `"expiry"`（按最先到期先使用） |
@@ -1217,10 +1221,11 @@ model = "o3#87"
 2. 运行时心跳保存在 `.auto-resume-runtime.json`，并镜像到 `state.json`；因此完整状态写入被节流、代理安全重启或旧状态文件被覆盖时，最近一次 Key 应用时间不会丢失。首次运行且没有历史心跳时，以代理启动时刻建立基线，避免把未知历史误判为故障
 3. 启动和保存配置后立即检测一次，之后每 30 秒检测空闲时长；超过 `autoResumeIdleMinutes`（默认 10 分钟）后进入一个新的 Key 闲置周期
 4. 仍有在途请求时暂缓打开新的 Codex 终端；请求结束后继续用同一个 Key 心跳判断，不会把正常长流误判为失效，也不依赖 `/goal`
-5. 每个项目在同一个闲置周期最多启动一次；只有代理再次实际应用 Key，或用户修改该项目的路径/命令/会话配置后，才会开启下一次尝试。失败 runner 不会按防抖间隔无限重复拉起
+5. 每个项目在同一个闲置周期只执行一次初始启动；只有代理再次实际应用 Key，或用户修改该项目的路径/命令/会话配置后，才会开启下一次初始尝试。普通失败 runner 不会按防抖间隔无限重复拉起
 6. `checkAutoResume()` 遍历 `autoResumeProjects` 列表，为每个项目执行 `triggerResume()`；通过 `cmd.exe /c start` 启动新的 Windows 可见 cmd 窗口 → 运行 wsl.exe → bash → 执行项目命令
 7. 每个 runner 写入原子 JSON 租约到 `/tmp/codex-resume-<项目名>.pid`，其中包含随机运行 ID、PGID 和 Linux 进程启动时间；只要租约仍可验证，就跳过重复启动
-8. 代理绝不按项目目录扫描、终止或 SIGKILL 任意外部 `codex` 进程。`cmd.exe start` 返回成功仅表示 Windows 接受启动请求；只有 runner 状态文件才能表示其已启动、退出或收到信号
+8. 默认另有一次受控停滞重启：已启动的受管 runner 在 `autoResumeRunnerStallMinutes`（默认 20 分钟）内没有新 Key 应用、且代理无在途请求时，代理会重新核验随机运行 ID、PID 启动 tick、独立 PGID 与实际 `/proc` 进程组；仅全部一致才向负 PGID 发送 `SIGTERM`，30 秒仍存活才发送 `SIGKILL`。确认该进程组已退出后，才会在本闲置周期额外启动一次
+9. 代理绝不按项目目录扫描、终止或 SIGKILL 任意外部 `codex` 进程。`cmd.exe start` 返回成功仅表示 Windows 接受启动请求；只有 runner 状态文件才能表示其已启动、退出或收到信号
 
 ### 配置字段
 
@@ -1229,6 +1234,8 @@ model = "o3#87"
   "autoResume": true,
   "autoResumeIdleMinutes": 10,
   "autoResumeDebounceMinutes": 3,
+  "autoResumeRunnerStallMinutes": 20,
+  "autoResumeRunnerMaxStallRestarts": 1,
   "autoResumeProjects": [
     {"name": "project-a", "path": "/mnt/d/projects/project-a", "cmd": "codex chat"},
     {"name": "project-b", "path": "/mnt/d/projects/project-b", "cmd": "./run.sh"},
@@ -1242,7 +1249,9 @@ model = "o3#87"
 |------|------|
 | `autoResume` | 是否启用闲置自动恢复（true/false） |
 | `autoResumeIdleMinutes` | Key 应用阈值（分钟，默认 10）。最后一次实际应用 Key 超过此分钟后触发 |
-| `autoResumeDebounceMinutes` | 旧配置兼容字段（分钟，默认 3）。同一 Key 闲置周期内仍只尝试一次 |
+| `autoResumeDebounceMinutes` | 旧配置兼容字段（分钟，默认 3）。同一 Key 闲置周期内只执行一次初始启动 |
+| `autoResumeRunnerStallMinutes` | 受管 runner 停滞宽限（分钟，默认 20，`0` 关闭）。仅当代理没有在途请求，并且自 runner 启动或最近一次实际 Key 应用后始终无 Key 应用时，才会开始受控接管 |
+| `autoResumeRunnerMaxStallRestarts` | 同一 Key 闲置周期允许的受控停滞重启次数（默认 1，`0` 关闭，范围 0–3）。达到上限后不再反复启动 |
 | `autoResumeProjects` | 项目列表，最多 10 个。每个项目包含 `name`（显示名）、`path`（WSL 路径，支持 `E:\xxx` 格式自动转换）、`cmd`（要执行的命令）；可选 `resumeMode` 和 `sessionId` |
 | `resumeMode` | 项目级可选模式：默认 `command` 原样执行 `cmd`；`fixed_session` 要求 `cmd` 含 `{sessionId}` 占位符 |
 | `sessionId` | `fixed_session` 的 Codex 会话 ID。启动时会安全替换命令中的 `{sessionId}`，避免 `resume --last` 选到不确定的分支/子会话 |
@@ -1271,8 +1280,9 @@ model = "o3#87"
 - **路径必须存在**：`path` 目录在 WSL 中必须可 `cd` 进入
 - **终端边界**：`codex resume` 仍是 TUI，Windows/WSL/PTY 链可能显示控制字符；这不等于任务已经恢复。日志中的 `runner 已启动` 只表示命令进程已创建，新的 Key 应用才表示观察到代理活动
 - **会话选择**：`resume --last` 在并行项目分支或子代理存在时不具确定性。需要可靠续接时，使用 `fixed_session`、会话 ID 和 `{sessionId}`；会话切换后应人工更新该 ID
-- **PID 租约**：存放于 `/tmp/codex-resume-*.pid`，只管理由本功能创建且运行 ID/启动时间可验证的进程。不会清理同目录的人工 Codex
-- **单次尝试**：同一 Key 闲置周期最多尝试一次；需要再次尝试时，应等待新的实际 Key 应用或人工处理，而不是让系统反复重放任务
+- **PID 租约**：存放于 `/tmp/codex-resume-*.pid`，只管理由本功能创建且运行 ID、启动时间、独立进程组都可验证的进程。不会清理同目录的人工 Codex
+- **受控停滞恢复**：默认在一个已验证 runner 连续 20 分钟无新 Key 应用且无在途代理请求时，先温和终止其独立进程组；30 秒仍存活才强制终止，确认退出后只额外重启一次。设置 `autoResumeRunnerStallMinutes: 0` 或 `autoResumeRunnerMaxStallRestarts: 0` 可关闭此保护
+- **初始单次尝试**：普通启动或失败 runner 在同一 Key 闲置周期不会无限重放；只有上面的严格受控停滞恢复可以额外重启一次
 
 #### 快速恢复的工作原理
 
@@ -1475,6 +1485,7 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
+- **2026-08-03 闲置恢复 runner 停滞接管**：修复容量错误后 Codex CLI 停在本地 Planning、代理长期没有新 Key 应用时，已启动的恢复 runner 仍存活而使“同一闲置周期仅一次”永久阻断的问题。新增默认 20 分钟的受控停滞宽限和默认一次的重启上限：只有无在途代理请求、随机运行 ID、PID 启动 tick、租约 PGID 与实际进程组全部匹配时，才会向该 runner 的负 PGID 发 `SIGTERM`；30 秒仍存活才发 `SIGKILL`，确认进程组退出后才额外启动一次。不会扫描、终止或影响手工启动的 Codex/Claude CLI；身份不明、遗留租约、PID 重用或进程组不一致时只记录事件并跳过。新增停滞、TERM/KILL、归属校验、Key 心跳重置和单次重启回归测试。
 - **2026-08-02 SSE 容量错误退避**：修复上游在 HTTP 200 的 Responses / Messages SSE 内明确返回 `model_at_capacity` 时，代理仍误走硬失败路径的问题。此类错误现与 HTTP 429 一样只设置 `capUntil` 临时退避，不写 `failCode`、不触发跨周期废弃或 `all_keys_failed`；所有协议转换和原生 Responses 流共享该处理。已经向客户端输出的数据不会被自动重放，避免重复文本或工具调用。
 - **2026-08-02 Responses / Messages 流终态一致性**：实际 Codex CLI 使用的原生 `/responses` 直通流现以旁路 SSE 探针确认 `response.completed`，上游 HTTP 200 提前 EOF/关闭/中止/错误/超时时会保留原字节并补一次 `response.failed`，不再把裸断流直接交给 CLI。Claude Code 的 `/v1/messages` 转换流新增同等生命周期保护：只有 Chat 上游明确 `[DONE]` 才发送一次 `message_stop`；异常终止改发 Anthropic `event: error`，不会伪造完成或重复终态。反向 Messages→Chat 转换同样只在真实 `message_stop` 后发送一次 `[DONE]`，异常输出 OpenAI 兼容 SSE 错误。专用长流总时长/空闲超时现在同时用于 Responses 与 Messages，保留原配置键名以兼容已有配置；新增双向终态、EOF、错误、UTF-8 分片和无换行终态回归测试。
 - **2026-08-02 闲置恢复安全租约与确定会话**：闲置恢复不再按项目目录扫描、终止或 `SIGKILL` 任意 `codex` 进程，避免误伤人工启动的 CLI、分支或子代理。每次恢复由随机运行 ID、PID、进程组和 `/proc` 启动时间组成的原子 JSON 租约标识；只有租约可验证时才会视为自身 runner，代理不会向外部进程发送终止信号。仍有在途请求时会暂缓打开新终端；每个项目在一次连续 Key 闲置周期只尝试一次，直到实际应用新的 Key 或修改该项目配置才允许下一次，修复失败后不断重放/相互终止的问题。启动器返回成功仅表示 Windows 已接受请求，runner 状态和真实退出信号才是诊断依据；120 秒未收到 runner 状态会明确记录超时。系统配置新增“固定会话”模式，只有该模式才替换 `{sessionId}`，普通命令模式保留原命令；`resume --last` 会记录会话不确定性提示。新增 runner 生命周期回归测试。

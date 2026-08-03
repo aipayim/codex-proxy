@@ -234,12 +234,13 @@ function testBuildMetrics(harness) {
 function testPrune(harness) {
   const tasksDir = path.join(harness.TASK_DIR);
   fs.mkdirSync(tasksDir, { recursive: true });
-  const oldFile = path.join(tasksDir, "2026-01-01.jsonl");
-  const newFile = path.join(tasksDir, "2026-08-02.jsonl");
+  const now = Date.parse("2026-08-03T12:00:00.000Z");
+  const oldFile = path.join(tasksDir, "2026-08-01.jsonl");
+  const newFile = path.join(tasksDir, "2026-08-03.jsonl");
   fs.writeFileSync(oldFile, "{}\n");
   fs.writeFileSync(newFile, "{}\n");
   harness.setConfig({ taskInsight: { enabled: true, retentionDays: 1, signals: { instructions: false, tools: false, usage: false, correlate: false } } });
-  harness.taskInsightPrune(Date.now());
+  harness.taskInsightPrune(now);
   assert.strictEqual(fs.existsSync(oldFile), false, "stale day file pruned");
   assert.strictEqual(fs.existsSync(newFile), true, "recent day file kept");
   fs.rmSync(tasksDir, { recursive: true, force: true });

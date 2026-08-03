@@ -51,6 +51,11 @@ const RELEASE_INTEGRITY_FILE_MAX_BYTES = 8 * 1024 * 1024;
 const AUTO_RESUME_RUNTIME_FILE_MAX_BYTES = 8 * 1024;
 const AUTO_RESUME_LAUNCH_TIMEOUT_MS = 120000;
 const AUTO_RESUME_STATUS_MAX_BYTES = 64 * 1024;
+const AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT = 20;
+const AUTO_RESUME_RUNNER_STALL_MINUTES_MAX = 1440;
+const AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT = 1;
+const AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_MAX = 3;
+const AUTO_RESUME_STALL_TERM_GRACE_MS = 30000;
 const GIT_PROBE_TIMEOUT_MS = 1000;
 const RELEASE_INTEGRITY_FILES = new Set([
   "proxy.js",
@@ -234,7 +239,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS };
+  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeRunnerStallMinutes: AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT, autoResumeRunnerMaxStallRestarts: AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -841,6 +846,7 @@ function loadConfig() {
     const c = JSON.parse(raw);
     normalizeRuntimeStorageConfig(c);
     normalizeResponsesStreamConfig(c);
+    normalizeAutoResumeConfig(c);
     if (c.webhookUrl) config.webhookUrl = c.webhookUrl;
     const defaultPricing = normalizeDefaultPricing(c.prices, c.bytesPerToken);
     config.prices = defaultPricing.prices;
@@ -862,8 +868,10 @@ function loadConfig() {
       .map(v => parseInt(v)).filter(v => !isNaN(v) && v >= 100 && v <= 10000).slice(0, 10);
     if (!config.autoRecoverDelays.length) config.autoRecoverDelays = [800];
     config.autoResume = c.autoResume === true;
-    config.autoResumeIdleMinutes = Math.max(1, parseInt(c.autoResumeIdleMinutes) || 10);
-    config.autoResumeDebounceMinutes = Math.max(1, parseInt(c.autoResumeDebounceMinutes) || 3);
+    config.autoResumeIdleMinutes = c.autoResumeIdleMinutes;
+    config.autoResumeDebounceMinutes = c.autoResumeDebounceMinutes;
+    config.autoResumeRunnerStallMinutes = c.autoResumeRunnerStallMinutes;
+    config.autoResumeRunnerMaxStallRestarts = c.autoResumeRunnerMaxStallRestarts;
     config.autoResumeProjects = normalizeAutoResumeProjects(c.autoResumeProjects);
     config.capacityBackoffSeconds = Math.max(1, parseInt(c.capacityBackoffSeconds) || 60);
     config.capacityMaxWaitSeconds = Math.max(30, parseInt(c.capacityMaxWaitSeconds) || 300);
@@ -913,6 +921,7 @@ function loadConfig() {
   config.logIncidents = normalizeLogIncidentConfig(config.logIncidents);
   config.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(config.codexLogMaintenance);
   normalizeResponsesStreamConfig(config);
+  normalizeAutoResumeConfig(config);
   RESPONSES_STREAM_LIFETIME = config.responsesStreamLifetime;
   RESPONSES_IDLE_TIMEOUT = config.responsesIdleTimeout;
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
@@ -954,6 +963,26 @@ function clampConfigInteger(value, fallback, min, max) {
   const parsed = parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeAutoResumeConfig(value) {
+  const configValue = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  configValue.autoResume = configValue.autoResume === true;
+  configValue.autoResumeIdleMinutes = clampConfigInteger(configValue.autoResumeIdleMinutes, 10, 1, 999);
+  configValue.autoResumeDebounceMinutes = clampConfigInteger(configValue.autoResumeDebounceMinutes, 3, 1, 999);
+  configValue.autoResumeRunnerStallMinutes = clampConfigInteger(
+    configValue.autoResumeRunnerStallMinutes,
+    AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT,
+    0,
+    AUTO_RESUME_RUNNER_STALL_MINUTES_MAX,
+  );
+  configValue.autoResumeRunnerMaxStallRestarts = clampConfigInteger(
+    configValue.autoResumeRunnerMaxStallRestarts,
+    AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT,
+    0,
+    AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_MAX,
+  );
+  return configValue;
 }
 
 function normalizeTaskInsightConfig(value) {
@@ -1477,6 +1506,13 @@ function recordKeyUse(idx, at = Date.now()) {
         attemptCount: 0,
         lastAttemptAt: 0,
         lastAttemptOutcome: "",
+        stallPhase: "",
+        stallRunId: null,
+        stallTermSentAt: 0,
+        stallKillSentAt: 0,
+        stallRestartCount: 0,
+        stallExhaustedAt: 0,
+        stallOwnershipIssue: "",
       };
     }
   }
@@ -1579,6 +1615,13 @@ function autoResumeProjectState(proj, index) {
     attemptCount: 0,
     lastAttemptAt: 0,
     lastAttemptOutcome: "",
+    stallPhase: "",
+    stallRunId: null,
+    stallTermSentAt: 0,
+    stallKillSentAt: 0,
+    stallRestartCount: 0,
+    stallExhaustedAt: 0,
+    stallOwnershipIssue: "",
   };
   runtime.projects[id] = next;
   if (autoResumeStateReady) saveState(true);
@@ -1592,18 +1635,26 @@ function updateAutoResumeProjectState(id, patch, forceSave) {
   saveState(forceSave === true);
 }
 
-function readProcStartTicks(pid) {
+function readProcIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 1) return null;
   try {
     const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8").trim();
     const end = raw.lastIndexOf(") ");
     if (end < 0) return null;
     const fields = raw.slice(end + 2).trim().split(/\s+/);
-    const value = Number(fields[19]); // /proc stat field 22 (start time)
-    return Number.isSafeInteger(value) && value > 0 ? value : null;
+    const pgid = Number(fields[2]); // /proc stat field 5 (process group)
+    const startTicks = Number(fields[19]); // /proc stat field 22 (start time)
+    if (!Number.isSafeInteger(pgid) || pgid <= 1 ||
+        !Number.isSafeInteger(startTicks) || startTicks <= 0) return null;
+    return { pid, pgid, startTicks };
   } catch {
     return null;
   }
+}
+
+function readProcStartTicks(pid) {
+  const identity = readProcIdentity(pid);
+  return identity ? identity.startTicks : null;
 }
 
 function readAutoResumePid(pidFile) {
@@ -1642,11 +1693,23 @@ function isProcessAlive(pid) {
   }
 }
 
-function isOwnedAutoResumeProcess(pidInfo) {
-  if (!pidInfo || pidInfo.legacy || !pidInfo.runId || !pidInfo.processStartTicks) return false;
+function isProcessGroupAlive(pgid) {
+  if (!Number.isSafeInteger(pgid) || pgid <= 1) return false;
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isOwnedAutoResumeProcess(pidInfo, expectedRunId = "") {
+  if (!pidInfo || pidInfo.legacy || !pidInfo.processGroup || !pidInfo.runId || !pidInfo.processStartTicks) return false;
+  if (pidInfo.pid !== pidInfo.pgid) return false;
+  if (expectedRunId && pidInfo.runId !== expectedRunId) return false;
   if (!isProcessAlive(pidInfo.pid)) return false;
-  const currentTicks = readProcStartTicks(pidInfo.pid);
-  return currentTicks !== null && currentTicks === pidInfo.processStartTicks;
+  const identity = readProcIdentity(pidInfo.pid);
+  return Boolean(identity && identity.startTicks === pidInfo.processStartTicks && identity.pgid === pidInfo.pgid);
 }
 
 function readAutoResumeRunnerStatus(statusFile) {
@@ -1713,6 +1776,7 @@ function refreshAutoResumeProjectStatus(proj, index) {
     runnerPid: status.pid || null,
     runnerUpdatedAt: status.updatedAt,
     runnerRunId: status.runId || previous.runnerRunId || null,
+    runnerStartedAt: status.startedAt || previous.runnerStartedAt || null,
     processStartTicks: processStartTicks || previous.processStartTicks || null,
     runnerExitCode: status.exitCode,
     runnerSignal: status.signal || "",
@@ -1744,6 +1808,167 @@ function refreshAutoResumeLaunchTimeout(proj, index, now = Date.now()) {
     runnerDetail: "no runner status arrived before launch timeout",
   }, true);
   addEventLog("auto_resume_launcher_timeout", 0, `闲置恢复：${autoResumeProjectLabel(proj, index)} 启动请求超时，未收到 runner 状态`, "");
+}
+
+function autoResumeRunnerStallReferenceTime(projectState) {
+  return Math.max(
+    normalizeAutoResumeTimestamp(lastKeyUseTime),
+    normalizeAutoResumeTimestamp(projectState && projectState.runnerStartedAt),
+    normalizeAutoResumeTimestamp(projectState && projectState.launchRequestedAt),
+  );
+}
+
+function autoResumeStallRestartCount(projectState) {
+  const count = Number(projectState && projectState.stallRestartCount);
+  return Number.isSafeInteger(count) && count > 0 ? count : 0;
+}
+
+function updateAutoResumeLastResumeTime(now, idleMinutes) {
+  lastResumeTime = now;
+  const runtime = getAutoResumeRuntimeState();
+  runtime.lastResumeTime = lastResumeTime;
+  runtime.lastTriggerIdleMinutes = Math.round(idleMinutes);
+  persistAutoResumeRuntime();
+  saveState(true);
+  broadcastStatus();
+}
+
+function markAutoResumeStallOwnershipUnknown(id, projectState, runnerRunId, reason, label) {
+  const previousReason = String(projectState.stallOwnershipIssue || "");
+  if (previousReason === reason && projectState.stallRunId === runnerRunId) return;
+  updateAutoResumeProjectState(id, {
+    phase: "ownership_unknown",
+    stallPhase: "ownership_unknown",
+    stallRunId: runnerRunId,
+    stallOwnershipIssue: reason,
+    runnerDetail: "runner lease ownership cannot be verified; no signal sent",
+  }, true);
+  addEventLog("auto_resume_stall_ownership_unknown", 0, `闲置恢复：${label} runner 归属无法验证，未终止、未重启`, "");
+}
+
+function checkAutoResumeRunnerStall(proj, index, id, projectState, now, idleMinutes) {
+  const stallMinutes = Number(config.autoResumeRunnerStallMinutes) || 0;
+  const maxRestarts = Number(config.autoResumeRunnerMaxStallRestarts) || 0;
+  const runnerRunId = normalizeAutoResumeSessionId(projectState.runnerRunId);
+  if (stallMinutes <= 0 || maxRestarts <= 0 || !runnerRunId) return false;
+
+  const referenceAt = autoResumeRunnerStallReferenceTime(projectState);
+  if (!referenceAt || now - referenceAt < stallMinutes * 60000) return false;
+
+  const label = autoResumeProjectLabel(proj, index);
+  const files = autoResumeProjectFiles(proj, index);
+  const lease = readAutoResumePid(files.pidFile);
+  const matchingLease = lease && lease.runId === runnerRunId;
+  const ownedLease = matchingLease && isOwnedAutoResumeProcess(lease, runnerRunId);
+  const stallRunId = normalizeAutoResumeSessionId(projectState.stallRunId);
+  const stallPhase = String(projectState.stallPhase || "");
+  const restartCount = autoResumeStallRestartCount(projectState);
+
+  if (stallRunId === runnerRunId && ["terminating", "force_killing", "termination_failed", "force_kill_failed"].includes(stallPhase)) {
+    const trackedPgid = Number(projectState.stallPgid);
+    if (!isProcessGroupAlive(trackedPgid)) {
+      // The process group that was proven to belong to this runner is gone.
+      // Remove only its matching, now-dead lease before launching the single
+      // permitted replacement.
+      if (matchingLease) {
+        try { fs.unlinkSync(files.pidFile); } catch { /* runner may have cleaned it already */ }
+      } else if (lease) {
+        markAutoResumeStallOwnershipUnknown(id, projectState, runnerRunId, "lease_replaced", label);
+        return true;
+      }
+      const nextRestartCount = restartCount + 1;
+      updateAutoResumeProjectState(id, {
+        phase: "relaunching",
+        runnerPid: null,
+        runnerRunId: null,
+        runnerStartedAt: null,
+        processStartTicks: null,
+        stallPhase: "relaunching",
+        stallRunId: runnerRunId,
+        stallRestartCount: nextRestartCount,
+        stallOwnershipIssue: "",
+        attemptCount: Math.max(1, Number(projectState.attemptCount) || 0) + 1,
+        lastAttemptAt: now,
+        lastAttemptOutcome: "stall_relaunching",
+      }, true);
+      addEventLog("auto_resume_stall_relaunching", 0, `闲置恢复：${label} 已确认停滞 runner 退出，执行本周期唯一一次重启`, "");
+      updateAutoResumeLastResumeTime(now, idleMinutes);
+      triggerResume(proj, index);
+      return true;
+    }
+
+    if (!ownedLease) {
+      markAutoResumeStallOwnershipUnknown(id, projectState, runnerRunId, "lease_identity_changed", label);
+      return true;
+    }
+
+    const termSentAt = normalizeAutoResumeTimestamp(projectState.stallTermSentAt);
+    if (stallPhase === "terminating" && termSentAt && now - termSentAt >= AUTO_RESUME_STALL_TERM_GRACE_MS && !normalizeAutoResumeTimestamp(projectState.stallKillSentAt)) {
+      try {
+        process.kill(-lease.pgid, "SIGKILL");
+        updateAutoResumeProjectState(id, {
+          stallPhase: "force_killing",
+          stallKillSentAt: now,
+          stallOwnershipIssue: "",
+        }, true);
+        addEventLog("auto_resume_stall_force_killed", 0, `闲置恢复：${label} 停滞 runner 在 30 秒内未退出，已强制终止已验证进程组`, "");
+      } catch (error) {
+        updateAutoResumeProjectState(id, {
+          stallPhase: "force_kill_failed",
+          stallOwnershipIssue: "force_kill_failed",
+          runnerDetail: "verified runner force kill could not be sent",
+        }, true);
+        addEventLog("auto_resume_stall_force_kill_failed", 0, `闲置恢复：${label} 已验证 runner 无法强制终止，未重启`, "");
+        console.error(`[proxy] auto-resume force kill failed for ${label}: ${error.message}`);
+      }
+    }
+    return true;
+  }
+
+  if (stallRunId === runnerRunId && stallPhase === "relaunching") return true;
+  if (restartCount >= maxRestarts) {
+    if (!normalizeAutoResumeTimestamp(projectState.stallExhaustedAt)) {
+      updateAutoResumeProjectState(id, {
+        stallPhase: "restart_exhausted",
+        stallRunId: runnerRunId,
+        stallExhaustedAt: now,
+        lastAttemptOutcome: "stall_restart_exhausted",
+      }, true);
+      addEventLog("auto_resume_stall_restart_exhausted", 0, `闲置恢复：${label} 已达到本闲置周期的停滞重启上限，未再重启`, "");
+    }
+    return true;
+  }
+  if (!ownedLease) {
+    if (lease) markAutoResumeStallOwnershipUnknown(id, projectState, runnerRunId, "lease_identity_invalid", label);
+    return false;
+  }
+
+  // The lease has a random run ID, a stable process start tick, and a
+  // dedicated process group. Those proofs are required before signaling.
+  updateAutoResumeProjectState(id, {
+    phase: "stall_terminating",
+    stallPhase: "terminating",
+    stallRunId: runnerRunId,
+    stallPid: lease.pid,
+    stallPgid: lease.pgid,
+    stallProcessStartTicks: lease.processStartTicks,
+    stallTermSentAt: now,
+    stallKillSentAt: 0,
+    stallOwnershipIssue: "",
+  }, true);
+  try {
+    process.kill(-lease.pgid, "SIGTERM");
+    addEventLog("auto_resume_stall_terminating", 0, `闲置恢复：${label} runner 长时间无进展，正在终止已验证进程组`, "");
+  } catch (error) {
+    updateAutoResumeProjectState(id, {
+      stallPhase: "termination_failed",
+      stallOwnershipIssue: "term_failed",
+      runnerDetail: "verified runner termination could not be sent",
+    }, true);
+    addEventLog("auto_resume_stall_termination_failed", 0, `闲置恢复：${label} 已验证 runner 无法终止，未重启`, "");
+    console.error(`[proxy] auto-resume stall termination failed for ${label}: ${error.message}`);
+  }
+  return true;
 }
 
 function configureAutoResumeTimer() {
@@ -1782,9 +2007,10 @@ function checkAutoResume(now = Date.now()) {
     const proj = config.autoResumeProjects[index];
     if (!proj.path || !proj.cmd) continue;
     const { id, state: projectState } = autoResumeProjectState(proj, index);
+    if (checkAutoResumeRunnerStall(proj, index, id, projectState, now, idleMinutes)) continue;
     const sinceAttempt = (now - Number(projectState.lastAttemptAt || 0)) / 60000;
-    // One attempt per continuous idle episode. A subsequent real Key use
-    // resets the episode; failed runners must not be replayed forever.
+    // One initial launch per continuous idle episode. A subsequent real Key
+    // use resets the episode; failed runners are never blindly replayed.
     if (projectState.attemptCount > 0 || sinceAttempt < config.autoResumeDebounceMinutes) continue;
     projectState.attemptCount = 1;
     projectState.lastAttemptAt = now;
@@ -1794,15 +2020,9 @@ function checkAutoResume(now = Date.now()) {
     attempted = true;
   }
   if (attempted) {
-    lastResumeTime = now;
-    const runtime = getAutoResumeRuntimeState();
-    runtime.lastResumeTime = lastResumeTime;
-    runtime.lastTriggerIdleMinutes = Math.round(idleMinutes);
-    persistAutoResumeRuntime();
-    saveState(true);
-    broadcastStatus();
+    updateAutoResumeLastResumeTime(now, idleMinutes);
     console.log("[proxy] autoResume triggered after " + Math.round(idleMinutes) + "min without key use");
-    addEventLog("auto_resume_triggered", 0, `闲置恢复触发：Key 已 ${Math.round(idleMinutes)} 分钟未使用（本闲置周期仅尝试一次）`, "");
+    addEventLog("auto_resume_triggered", 0, `闲置恢复触发：Key 已 ${Math.round(idleMinutes)} 分钟未使用（本周期一次初始启动，受管停滞可额外重启一次）`, "");
   }
 }
 
@@ -1810,9 +2030,9 @@ function triggerResume(proj, index) {
   const label = autoResumeProjectLabel(proj, index);
   const files = autoResumeProjectFiles(proj, index);
   const normalizedPath = normalizePath(proj.path);
-  if (autoResumeLaunches.has(files.id)) return;
-
   const currentState = getAutoResumeRuntimeState().projects[files.id] || {};
+  const activeLaunch = autoResumeLaunches.get(files.id);
+  if (activeLaunch && activeLaunch.runId === currentState.runnerRunId) return;
   const livePid = readAutoResumePid(files.pidFile);
   if (livePid && isProcessAlive(livePid.pid)) {
     const owned = isOwnedAutoResumeProcess(livePid);
@@ -1820,6 +2040,7 @@ function triggerResume(proj, index) {
       phase: owned ? "running" : "ownership_unknown",
       runnerPid: livePid.pid,
       runnerRunId: livePid.runId || null,
+      runnerStartedAt: currentState.runnerStartedAt || currentState.launchRequestedAt || null,
       processStartTicks: livePid.processStartTicks || null,
       runnerDetail: owned ? "managed runner is already alive" : "existing PID lease cannot be verified; no signal sent",
     }, true);
@@ -1855,6 +2076,14 @@ function triggerResume(proj, index) {
       launcherExitCode: null,
       launcherSignal: null,
       runnerRunId: runId,
+      runnerStartedAt: startedAt,
+      runnerPid: null,
+      processStartTicks: null,
+      stallPhase: "",
+      stallRunId: null,
+      stallTermSentAt: 0,
+      stallKillSentAt: 0,
+      stallOwnershipIssue: "",
       commandHash: autoResumeCommandHash(command),
       commandWarning,
       runnerDetail: "waiting for runner status",
@@ -1871,11 +2100,13 @@ function triggerResume(proj, index) {
       config.cmdPath || "/mnt/c/Windows/System32/cmd.exe",
       runId,
     ], { detached: true, stdio: "ignore" });
-    autoResumeLaunches.set(files.id, child);
+    const launchRecord = { child, runId };
+    autoResumeLaunches.set(files.id, launchRecord);
     let settled = false;
     const finish = (phase, extra, eventType, message) => {
       if (settled) return;
       settled = true;
+      if (autoResumeLaunches.get(files.id) !== launchRecord) return;
       autoResumeLaunches.delete(files.id);
       updateAutoResumeProjectState(files.id, { launcherPhase: phase, launcherUpdatedAt: Date.now(), ...extra }, true);
       addEventLog(eventType, 0, message, "");
@@ -6325,6 +6556,10 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><input id="cfgAutoResumeIdle" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="10"> 分钟无请求视为空闲</div>
   <div style="color:#94a3b8;padding:4px 0">防抖间隔（分钟）</div>
   <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"> 兼容间隔（同一闲置周期仅一次）</div>
+  <div style="color:#94a3b8;padding:4px 0">runner 停滞宽限（分钟）</div>
+  <div><input id="cfgAutoResumeRunnerStall" type="number" min="0" max="1440" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="20"> 0=关闭；无在途请求且无新 Key 应用时才判定停滞</div>
+  <div style="color:#94a3b8;padding:4px 0">停滞重启上限</div>
+  <div><input id="cfgAutoResumeRunnerRestarts" type="number" min="0" max="3" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="1"> 同一 Key 闲置周期；0=关闭（仅管理已验证 runner）</div>
   <div style="color:#94a3b8;padding:4px 0">cmd.exe 路径</div>
   <div><input id="cfgCmdPath" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="/mnt/c/Windows/System32/cmd.exe"></div>
   <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🚦 容量/429 瞬态退避（capacityBackoff）</div>
@@ -6954,6 +7189,8 @@ async function loadConfigUI(){
     document.getElementById("cfgAutoResume").checked=c.autoResume===true;
     document.getElementById("cfgAutoResumeIdle").value=c.autoResumeIdleMinutes||10;
     document.getElementById("cfgAutoResumeDebounce").value=c.autoResumeDebounceMinutes||3;
+    document.getElementById("cfgAutoResumeRunnerStall").value=c.autoResumeRunnerStallMinutes??20;
+    document.getElementById("cfgAutoResumeRunnerRestarts").value=c.autoResumeRunnerMaxStallRestarts??1;
     document.getElementById("cfgCmdPath").value=c.cmdPath||"/mnt/c/Windows/System32/cmd.exe";
     document.getElementById("cfgCapacityBackoffSeconds").value=c.capacityBackoffSeconds||60;
     document.getElementById("cfgCapacityMaxWaitSeconds").value=c.capacityMaxWaitSeconds||300;
@@ -9480,6 +9717,8 @@ async function saveConfig(){
     autoResume:document.getElementById("cfgAutoResume").checked,
     autoResumeIdleMinutes:parseInt(document.getElementById("cfgAutoResumeIdle").value)||10,
     autoResumeDebounceMinutes:parseInt(document.getElementById("cfgAutoResumeDebounce").value)||3,
+    autoResumeRunnerStallMinutes:configInteger("cfgAutoResumeRunnerStall",20),
+    autoResumeRunnerMaxStallRestarts:configInteger("cfgAutoResumeRunnerRestarts",1),
     cmdPath:document.getElementById("cfgCmdPath").value.trim()||"/mnt/c/Windows/System32/cmd.exe",
     capacityBackoffSeconds:parseInt(document.getElementById("cfgCapacityBackoffSeconds").value)||60,
     capacityMaxWaitSeconds:parseInt(document.getElementById("cfgCapacityMaxWaitSeconds").value)||300,
@@ -11369,6 +11608,7 @@ function createGroupServer(groupName, port) {
             Object.assign(cur, c);
             normalizeRuntimeStorageConfig(cur);
             normalizeResponsesStreamConfig(cur);
+            normalizeAutoResumeConfig(cur);
             const changesDefaultPrices = Object.prototype.hasOwnProperty.call(c, "prices");
             const changesDefaultBytesPerToken = Object.prototype.hasOwnProperty.call(c, "bytesPerToken");
             if (changesDefaultPrices || changesDefaultBytesPerToken) {
