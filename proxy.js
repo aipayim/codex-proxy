@@ -2172,7 +2172,7 @@ function schedulePollRecover() {
     let hasMatch = false;
     for (let i = 0; i < accounts.length; i++) {
       const ks = getKeyState(i);
-      if (ks.failCode && codes.includes(ks.failCode)) { hasMatch = true; break; }
+      if (ks.failCode && ks.failReason !== "insufficient_quota" && codes.includes(ks.failCode)) { hasMatch = true; break; }
     }
     if (!hasMatch) {
       console.log(`[proxy] poll-recover: no matching keys, stopped`);
@@ -2192,6 +2192,7 @@ function autoRecover(optCodes){
   for (let i = 0; i < accounts.length; i++) {
     const ks = getKeyState(i);
     if (ks.status === "shielded") continue;
+    if (ks.failReason === "insufficient_quota") continue;
     if (ks.status === "locked" && !codes.includes(ks.failCode)) continue;
     if (!ks.failCode && ks.status !== "discarded") continue;
     if (ks.status === "discarded" && !checkDiscarded) continue;
@@ -2228,6 +2229,7 @@ function autoRecover(optCodes){
             ks.failTime = null;
             ks.failPeriod = "";
             ks.failCount = 0;
+            ks.failReason = null;
             if (ks.status === "discarded" || ks.status === "locked") ks.status = "active";
             allFailedNotified = false;
             saveState();
@@ -2311,7 +2313,7 @@ function extractUpstreamErrorMessage(payload) {
 function classifyUpstreamErrorMessage(message) {
   const text = String(message || "");
   if (/capacity|at capacity|overloaded|busy|try a different model|not currently available/i.test(text)) return "model_at_capacity";
-  if (/quota|insufficient|billing|billing_hard_limit|limit exceeded|_limit_exceeded|usage limit|usage_limit|daily limit|weekly limit|monthly limit/i.test(text)) return "insufficient_quota";
+  if (/quota|insufficient|billing|billing_hard_limit|_limit_exceeded|usage limit|usage_limit|daily limit|weekly limit|monthly limit/i.test(text)) return "insufficient_quota";
   return "upstream_api_error";
 }
 
@@ -4675,6 +4677,7 @@ function getKeyState(idx) {
   if (ks.status === undefined) ks.status = "active";
   if (ks.failPeriod === undefined) ks.failPeriod = null;
   if (ks.capUntil === undefined) ks.capUntil = 0;
+  if (ks.failReason === undefined) ks.failReason = null;
   if (ks.activatedAt === undefined) {
     ks.activatedAt = Date.now();
     try {
@@ -4869,6 +4872,7 @@ function markSuccess(idx) {
   ks.failTime = null;
   ks.failCount = 0;
   ks.capUntil = 0;
+  ks.failReason = null;
   allFailedNotified = false;
   saveState();
   processQueue();
@@ -4901,7 +4905,7 @@ function markStreamTerminalFailure(idx, lifecycle, clientCancelled) {
   markFailure(idx, 0);
 }
 
-function markFailure(idx, code) {
+function markFailure(idx, code, reason) {
   const ks = getKeyState(idx);
   const acct = accounts[idx];
   const curr = keyPeriod(acct.reset, idx);
@@ -4932,6 +4936,7 @@ function markFailure(idx, code) {
   }
 
   ks.failCode = code;
+  if (reason) ks.failReason = reason;
   if (config.autoRecoverPoll && !autoRecoverPollTimer &&
       (config.autoRecoverPollCodes || []).includes(code)) {
     schedulePollRecover();
@@ -5526,7 +5531,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         if (isCapacity) {
           markCapacityBackoff(idx);
         } else {
-          markFailure(idx, statusCode);
+          markFailure(idx, statusCode, reason);
         }
         recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode, client, requestPricing);
         recordPath(pathname, method, 0, 0, dur);
@@ -11965,6 +11970,7 @@ function createGroupServer(groupName, port) {
           ks.failTime = null;
           ks.failPeriod = "";
           ks.failCount = 0;
+          ks.failReason = null;
           if (ks.status === "discarded" || ks.status === "locked") ks.status = "active";
           allFailedNotified = false;
           saveState(true);
@@ -12002,6 +12008,7 @@ function createGroupServer(groupName, port) {
             ks.failTime = null;
             ks.failPeriod = "";
             ks.failCount = 0;
+            ks.failReason = null;
             if (ks.status === "discarded" || ks.status === "locked") ks.status = "active";
             allFailedNotified = false;
             saveState(true);

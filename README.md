@@ -370,7 +370,7 @@ codex
 | 2xx / 3xx 成功 | `markSuccess` → 响应原路返回 |
 | 其他 4xx | 透传给 Codex（不切换） |
 
-容量不足既可能作为 HTTP `429` / 5xx 返回，也可能在 HTTP `200` 已建立的 SSE 中以 `response.failed`、`error` 或协议等价事件返回。**瞬时**容量压力（`model_at_capacity` 或未归类为配额问题的 `429`）进入 `capUntil` 短暂退避，不写 `failCode`、不触发跨周期废弃。**配额/用量超限**（错误体含 `quota`、`billing`、`usage limit`、`*_limit_exceeded`、`weekly/monthly/daily limit` 等，如 `WEEKLY_LIMIT_EXCEEDED` / `MONTHLY_LIMIT_EXCEEDED`）被归类为 `insufficient_quota`，走 `markFailure` 进入当前周期冷却，避免把所有 Key 拖进无效的容量重试风暴。已向下游输出的流不会自动重放到另一 Key，以免重复文本或工具调用；代理会保留协议失败终态，下一次请求再使用恢复后的可用池。
+容量不足既可能作为 HTTP `429` / 5xx 返回，也可能在 HTTP `200` 已建立的 SSE 中以 `response.failed`、`error` 或协议等价事件返回。**瞬时**容量压力（`model_at_capacity` 或未归类为配额问题的 `429`）进入 `capUntil` 短暂退避，不写 `failCode`、不触发跨周期废弃。**配额/用量超限**（错误体含 `quota`、`billing`、`usage limit`、`*_limit_exceeded`、`weekly/monthly/daily limit` 等，如 `WEEKLY_LIMIT_EXCEEDED` / `MONTHLY_LIMIT_EXCEEDED`）被归类为 `insufficient_quota`，走 `markFailure` 进入当前周期冷却，避免把所有 Key 拖进无效的容量重试风暴。纯瞬时限流文本（如 `rate limit exceeded`，不含上述配额关键词）仍按瞬时容量处理，仅退避、不写冷却。已向下游输出的流不会自动重放到另一 Key，以免重复文本或工具调用；代理会保留协议失败终态，下一次请求再使用恢复后的可用池。
 
 全部 Key 切换失败后返回 `502 {"error": "All keys exhausted"}`（旧版存在全部失败后挂起不响应的 bug，已修复）。
 
@@ -658,6 +658,7 @@ Anthropic 账号和非 Anthropic 账号可共存，无需额外配置。
 | `failCode` | int/null | 上次失败码 |
 | `failTime` | int/null | 上次失败时间戳 |
 | `failPeriod` | string/null | 失效周期标识 |
+| `failReason` | string/null | 失败分类原因（`insufficient_quota` / `model_at_capacity` / `upstream_api_error`）。配额类失败时记录，用于让自动恢复跳过配额耗尽的 Key |
 | `failCount` | int | 连续失败计数（仅 lockFailCodes 中的错误码） |
 | `locked` | bool | 是否被自动锁死 |
 | `active` | bool | 当前是否有请求在处理 |
@@ -875,6 +876,8 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `autoRecoverPollInterval` | 轮询间隔（分钟，默认 5，最小 1） |
 | `autoRecoverPollCodes` | 触发的失败码数组，如 `[500,502,503,504]`。Key 出现其中任意状态码即激活快速轮询 |
 | `autoRecoverDelays` | 检测间隔数组（毫秒），默认 `[800]`。所有检测模式共用，每个 Key 测试完随机选一个值作为下一 Key 的等待时间。最多 10 个，范围 100–10000。推荐 `[800,1200,500]` 模拟人工操作节奏，降低批量风控概率 |
+
+> **配额 Key 不参与自动恢复**：被归类为 `insufficient_quota` 的 Key（配额/用量超限，如 `WEEKLY_LIMIT_EXCEEDED`）会被自动恢复（间隔/固定/快速）跳过，因为 `/v1/models` 探测对已耗尽额度的 Key 仍返回 200，无法区分配额状态。这类 Key 只能靠周期翻转或真实请求成功（`markSuccess`）自然恢复，也可手动「重置冷却」。
 | `rateLimit` | 是否启用分钟级限速（true/false，默认 true） |
 | `maxRequestsPerMin` | 单个 Key 每分钟最大请求数（默认 10）。可在 keys.json 中按 Key 覆盖（`maxReqPerMin`） |
 | `maxTokensPerMin` | 单个 Key 每分钟最大 token 数（默认 0=不限）。可在 keys.json 中按 Key 覆盖（`maxTokPerMin`） |

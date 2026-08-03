@@ -159,6 +159,7 @@ function testQuota429ClassifiedAsInsufficientQuota(harness) {
     "monthly limit exceeded must be classified as insufficient_quota",
   );
   assert.strictEqual(harness.classifyUpstreamErrorMessage("You exceeded your current quota"), "insufficient_quota", "quota wording is insufficient_quota");
+  assert.strictEqual(harness.classifyUpstreamErrorMessage("Rate limit exceeded, please slow down"), "upstream_api_error", "transient rate-limit wording must stay transient, not become quota");
   assert.strictEqual(harness.classifyUpstreamErrorMessage("Selected model is at capacity. Please try a different model."), "model_at_capacity", "capacity wording stays transient");
   assert.strictEqual(harness.classifyUpstreamErrorMessage("boom"), "upstream_api_error", "unrecognized errors remain generic");
 }
@@ -170,6 +171,17 @@ function testQuota429HardFailurePutsKeyInPeriodCooldown(harness) {
   assert.strictEqual(ks.failCode, 429, "quota-classified 429 must be recorded as a hard failure");
   assert.strictEqual(ks.capUntil, 0, "quota-classified 429 must not use the short capacity backoff");
   assert.strictEqual(harness.inCooldown(0), true, "quota-exhausted key must leave rotation for the current period");
+}
+
+function testFailReasonTracking(harness) {
+  harness.reset();
+  assert.strictEqual(harness.getKeyState(0).failReason, null, "fresh key state must default failReason to null");
+  harness.markFailure(0, 429, "insufficient_quota");
+  assert.strictEqual(harness.getKeyState(0).failReason, "insufficient_quota", "markFailure must persist the classified reason");
+  harness.markFailure(1, 500);
+  assert.strictEqual(harness.getKeyState(1).failReason, null, "markFailure without a reason must not fabricate one");
+  harness.markSuccess(0);
+  assert.strictEqual(harness.getKeyState(0).failReason, null, "markSuccess must clear failReason");
 }
 
 function testDefaultsAndFreshKeyState(harness) {
@@ -194,7 +206,8 @@ function testSourceContracts(proxyDir) {
   assert.match(source, /capacity: capacity === true/);
   assert.match(source, /parseInt\(c\.capacityBackoffSeconds\) \|\| 60/);
   assert.match(source, /parseInt\(c\.capacityMaxWaitSeconds\) \|\| 300/);
-  assert.match(source, /limit exceeded\|_limit_exceeded\|usage limit/, "classifier must recognize usage limit wording");
+  assert.match(source, /quota\|insufficient\|billing\|billing_hard_limit\|_limit_exceeded\|usage limit\|usage_limit\|daily limit\|weekly limit\|monthly limit/, "classifier must recognize quota/usage-limit wording");
+  assert.doesNotMatch(source, /\|limit exceeded\|/, "generic rate-limit wording must not be treated as quota");
   assert.match(source, /setImmediate\(\(\) => \{ try \{ processQueue\(\); \} catch \(e\) \{\} \}\)/, "enqueueRequest must drain promptly");
   assert.match(source, /processQueue\(\); \} catch \(e\) \{\} \}, 5000/, "a steady queue drain timer must exist");
   assert.doesNotMatch(source, /requestQueue\.filter\(r => r\.time > qcut/, "stale queue entries must not be silently dropped");
@@ -211,6 +224,7 @@ function main() {
   testCheckAllFailedRequiresHardFailures(harness);
   testQuota429ClassifiedAsInsufficientQuota(harness);
   testQuota429HardFailurePutsKeyInPeriodCooldown(harness);
+  testFailReasonTracking(harness);
   testDefaultsAndFreshKeyState(harness);
   testSourceContracts(__dirname);
   console.log("capacity backoff lifecycle: PASS");
