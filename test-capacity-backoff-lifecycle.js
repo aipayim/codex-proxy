@@ -60,6 +60,8 @@ function loadCapacityHarness(proxyDir) {
       markCapacityBackoff,
       markStreamTerminalFailure,
       markSuccess,
+      markFailure,
+      classifyUpstreamErrorMessage,
       inCooldown,
       checkAllFailed,
       getKeyState,
@@ -145,6 +147,31 @@ function testCheckAllFailedRequiresHardFailures(harness) {
   assert.strictEqual(harness.checkAllFailed(), true, "real hard failures still trigger all-failed");
 }
 
+function testQuota429ClassifiedAsInsufficientQuota(harness) {
+  assert.strictEqual(
+    harness.classifyUpstreamErrorMessage('error: code=429 reason="WEEKLY_LIMIT_EXCEEDED" message="weekly usage limit exceeded" metadata=map[]'),
+    "insufficient_quota",
+    "weekly limit exceeded must be classified as insufficient_quota",
+  );
+  assert.strictEqual(
+    harness.classifyUpstreamErrorMessage('error: code=429 reason="MONTHLY_LIMIT_EXCEEDED" message="monthly usage limit exceeded" metadata=map[]'),
+    "insufficient_quota",
+    "monthly limit exceeded must be classified as insufficient_quota",
+  );
+  assert.strictEqual(harness.classifyUpstreamErrorMessage("You exceeded your current quota"), "insufficient_quota", "quota wording is insufficient_quota");
+  assert.strictEqual(harness.classifyUpstreamErrorMessage("Selected model is at capacity. Please try a different model."), "model_at_capacity", "capacity wording stays transient");
+  assert.strictEqual(harness.classifyUpstreamErrorMessage("boom"), "upstream_api_error", "unrecognized errors remain generic");
+}
+
+function testQuota429HardFailurePutsKeyInPeriodCooldown(harness) {
+  harness.reset();
+  harness.markFailure(0, 429);
+  const ks = harness.getKeyState(0);
+  assert.strictEqual(ks.failCode, 429, "quota-classified 429 must be recorded as a hard failure");
+  assert.strictEqual(ks.capUntil, 0, "quota-classified 429 must not use the short capacity backoff");
+  assert.strictEqual(harness.inCooldown(0), true, "quota-exhausted key must leave rotation for the current period");
+}
+
 function testDefaultsAndFreshKeyState(harness) {
   assert.strictEqual(harness.config.capacityBackoffSeconds, 60, "default backoff is 60s");
   assert.strictEqual(harness.config.capacityMaxWaitSeconds, 300, "default max wait is 300s");
@@ -160,13 +187,17 @@ function testSourceContracts(proxyDir) {
   assert.match(source, /lifecycle && lifecycle\.terminalReason === "model_at_capacity"/);
   assert.match(source, /markStreamTerminalFailure\(idx, lifecycle, clientCancelled\);/);
   assert.match(source, /capacityRetry: isCapacity/);
-  assert.match(source, /statusCode === 429 \|\| reason === "model_at_capacity"/);
+  assert.match(source, /const isCapacity = \(statusCode === 429 && reason !== "insufficient_quota"\) \|\| reason === "model_at_capacity"/);
   assert.match(source, /if \(r\.capacityRetry\)/);
   assert.match(source, /enqueueRequest\(method, headers, body, clientRes, pathname, group, extraTransform, r, true\)/);
   assert.match(source, /r\.capacity \? Math\.max\(1, Number\(config\.capacityMaxWaitSeconds\)\) \* 1000 : QUEUE_TIMEOUT/);
   assert.match(source, /capacity: capacity === true/);
   assert.match(source, /parseInt\(c\.capacityBackoffSeconds\) \|\| 60/);
   assert.match(source, /parseInt\(c\.capacityMaxWaitSeconds\) \|\| 300/);
+  assert.match(source, /limit exceeded\|_limit_exceeded\|usage limit/, "classifier must recognize usage limit wording");
+  assert.match(source, /setImmediate\(\(\) => \{ try \{ processQueue\(\); \} catch \(e\) \{\} \}\)/, "enqueueRequest must drain promptly");
+  assert.match(source, /processQueue\(\); \} catch \(e\) \{\} \}, 5000/, "a steady queue drain timer must exist");
+  assert.doesNotMatch(source, /requestQueue\.filter\(r => r\.time > qcut/, "stale queue entries must not be silently dropped");
 }
 
 function main() {
@@ -178,6 +209,8 @@ function main() {
   testOtherSseFailuresRemainFailures(harness);
   testCancelledSseDoesNotChangeKeyState(harness);
   testCheckAllFailedRequiresHardFailures(harness);
+  testQuota429ClassifiedAsInsufficientQuota(harness);
+  testQuota429HardFailurePutsKeyInPeriodCooldown(harness);
   testDefaultsAndFreshKeyState(harness);
   testSourceContracts(__dirname);
   console.log("capacity backoff lifecycle: PASS");

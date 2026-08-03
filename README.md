@@ -362,21 +362,22 @@ codex
 | 401 Unauthorized | `markFailure` → 切换 |
 | 402 Payment Required | `markFailure` → 切换 |
 | 403 Forbidden | `markFailure` → 切换 |
-| 429 Too Many Requests / 明确的容量不足 | `markCapacityBackoff` → 临时跳过；尚未向下游提交响应时重新入队等待 |
+| 429 且错误体归因为配额/用量超限（`insufficient_quota`） | `markFailure` → 该周期冷却、切换（配额耗尽不会在几秒内恢复） |
+| 429 其他（纯瞬时容量/速率）或明确的 `model_at_capacity` | `markCapacityBackoff` → 临时跳过；尚未向下游提交响应时重新入队等待 |
 | 5xx Server Error（非容量不足） | `markFailure` → 切换 |
 | 连接超时 / DNS 错误 / TLS 错误 | `markFailure` → 切换 |
 | 流传输中断 | `markFailure` → 切换 |
 | 2xx / 3xx 成功 | `markSuccess` → 响应原路返回 |
 | 其他 4xx | 透传给 Codex（不切换） |
 
-容量不足既可能作为 HTTP `429` / 5xx 返回，也可能在 HTTP `200` 已建立的 SSE 中以 `response.failed`、`error` 或协议等价事件返回。两种情况都会进入 `capUntil` 短暂退避，不写 `failCode`、不触发跨周期废弃。已向下游输出的流不会自动重放到另一 Key，以免重复文本或工具调用；代理会保留协议失败终态，下一次请求再使用恢复后的可用池。
+容量不足既可能作为 HTTP `429` / 5xx 返回，也可能在 HTTP `200` 已建立的 SSE 中以 `response.failed`、`error` 或协议等价事件返回。**瞬时**容量压力（`model_at_capacity` 或未归类为配额问题的 `429`）进入 `capUntil` 短暂退避，不写 `failCode`、不触发跨周期废弃。**配额/用量超限**（错误体含 `quota`、`billing`、`usage limit`、`*_limit_exceeded`、`weekly/monthly/daily limit` 等，如 `WEEKLY_LIMIT_EXCEEDED` / `MONTHLY_LIMIT_EXCEEDED`）被归类为 `insufficient_quota`，走 `markFailure` 进入当前周期冷却，避免把所有 Key 拖进无效的容量重试风暴。已向下游输出的流不会自动重放到另一 Key，以免重复文本或工具调用；代理会保留协议失败终态，下一次请求再使用恢复后的可用池。
 
 全部 Key 切换失败后返回 `502 {"error": "All keys exhausted"}`（旧版存在全部失败后挂起不响应的 bug，已修复）。
 
 ## 冷却、废弃与自动锁死
 
-- Key 返回 401/402/403、非容量 5xx、连接或流传输失败 → `failCode` + `failPeriod` 写入 `state.json` → 该周期内 `inCooldown()` 返回 true → 不再被 `pickKey()` 选中
-- HTTP 429 或明确的 `model_at_capacity`（包括 SSE 流终态）仅写入 `capUntil` 短暂退避，不作为跨周期失败或废弃依据
+- Key 返回 401/402/403、配额类 429、非容量 5xx、连接或流传输失败 → `failCode` + `failPeriod` 写入 `state.json` → 该周期内 `inCooldown()` 返回 true → 不再被 `pickKey()` 选中
+- 瞬时容量压力（未归类为配额的 HTTP 429 或明确的 `model_at_capacity`，包括 SSE 流终态）仅写入 `capUntil` 短暂退避，不作为跨周期失败或废弃依据
 - 同 Key **连续两个周期**（天/周）都失败 → 自动标记 `status: "discarded"` → 永久跳过（直到手动重置）
 - `reset: "never"` 的 Key 一次失败即永久冷却
 - **自动锁死**（`enableAutoLock: true`）：对 `lockFailCodes`（默认 401,403）中的错误码，连续失败达到 `lockAfterFailCount`（默认 3 次）后，自动标记 `status: "locked"` → 永久跳过（直到手动解锁）
@@ -534,7 +535,7 @@ SQLite 删除行后通常只会把页留给后续写入复用，物理文件不�
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 其他协议流最大时长（默认30分钟）与 Responses / Messages 编码流专用总时长（默认不限）/上游空闲超时（默认90分钟）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag/源码基线文件自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令/恢复模式 resumeMode/sessionId 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 其他协议流最大时长（默认30分钟）与 Responses / Messages 编码流专用总时长（默认不限）/上游空闲超时（默认90分钟）/无进展看门狗（默认15分钟）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag/源码基线文件自动识别，定制构建可选手动基线）
 
 ## API 接口
 
@@ -607,9 +608,11 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 系统配置将普通协议与编码协议流分开：`streamLifetime` 仍是其他协议流的最大时长（默认 30 分钟）；为兼容既有 `config.json`，配置键仍叫 `responsesStreamLifetime` / `responsesIdleTimeout`，但现在同时适用于 Codex Responses 与 Claude Messages。前者是最大总时长（默认 `0`，即不作硬切断），后者是上游完全无数据时的空闲超时（默认 `5400000` ms，即 90 分钟，`0` 可关闭）。非零值最少 60000 ms、最多 24 小时。这样长时任务不会被普通的 30 分钟总时长中断，同时仍可按需保留空闲连接保护。
 
-每个转换请求和受保护的原生 `/responses` 请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone`、`streamId`、`streamErrorMsg` 和 `terminalSource`，并额外写入一条带上游地址的 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_eof_without_completed`、`upstream_close`、`upstream_aborted`、`upstream_incomplete`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`client_disconnect`、`model_at_capacity`、`insufficient_quota`、`upstream_api_error`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
+编码协议流还有第三道独立保护：**无进展看门狗**（`responsesNoProgressTimeout`，默认 `900000` ms 即 15 分钟，范围 1 分钟–24 小时）。空闲超时从请求发起时起算，无法捕捉「健康前奏之后才开始停滞」的长流；看门狗则跟踪距离最近一次真实上游 SSE 数据的时间，只要编码流连续超过该时长没有任何字节到达，代理会强制写入失败终态（`response.failed` / Anthropic `event: error`）并销毁上游连接，向 CLI 明确报错，而不是让已接受但永不返回的连接永久挂起。`responsesStreamLifetime=0` 不受影响。
 
-上游在 SSE 流内或非 2xx HTTP 错误体内返回的错误对象（例如 `Selected model is at capacity. Please try a different model.`、`You exceeded your current quota` 等）不再被静默丢弃：代理会把限长并脱敏后的错误信息记入 `streamErrorMsg`，同时按内容归类为 `model_at_capacity` / `insufficient_quota` / `upstream_api_error`。SSE 错误会向 Codex CLI 输出 `response.failed`，向 Claude Code 输出 Anthropic `event: error`；如果一个请求的所有可用 Key 均失败且最终返回 `502`，代理还会写入 `downstream_terminal` 事件。自动切换到其他 Key 后成功不会产生该事件，也不会算作下游失败。日志列表、全文检索和 CSV 可查看错误分类、信息及来源；趋势图「🔻 下游」已改为按下游应用（请求 User-Agent）归集的请求数堆叠图，不再展示流终态，流终态细节请通过日志/CSV 的「流结果/流终态原因」字段查看。代理只能记录实际经过代理的 HTTP/SSE 内容，无法读取 Codex CLI 本地终端中未经过代理的提示。
+每个转换请求和受保护的原生 `/responses` 请求会在普通请求日志中记录 `streamOutcome`、`streamReason`、`streamSawDone`、`streamId`、`streamErrorMsg` 和 `terminalSource`，并额外写入一条带上游地址的 `stream_terminal` 事件。可搜索终态原因：`upstream_done`、`upstream_eof_without_done`、`upstream_eof_without_completed`、`upstream_close`、`upstream_aborted`、`upstream_incomplete`、`upstream_error`、`upstream_idle_timeout`、`stream_lifetime_timeout`、`no_progress_timeout`、`client_disconnect`、`model_at_capacity`、`insufficient_quota`、`upstream_api_error`。HTTP 状态码仍表示传输层响应；HTTP `200` 但 `streamOutcome=failed` 会按失败计入成功率、模型错误数和错误分布。
+
+上游在 SSE 流内或非 2xx HTTP 错误体内返回的错误对象（例如 `Selected model is at capacity. Please try a different model.`、`You exceeded your current quota`、`WEEKLY_LIMIT_EXCEEDED` / `MONTHLY_LIMIT_EXCEEDED` 等）不再被静默丢弃：代理会把限长并脱敏后的错误信息记入 `streamErrorMsg`，同时按内容归类为 `model_at_capacity` / `insufficient_quota` / `upstream_api_error`。SSE 错误会向 Codex CLI 输出 `response.failed`，向 Claude Code 输出 Anthropic `event: error`；如果一个请求的所有可用 Key 均失败且最终返回 `502`，代理还会写入 `downstream_terminal` 事件。自动切换到其他 Key 后成功不会产生该事件，也不会算作下游失败。日志列表、全文检索和 CSV 可查看错误分类、信息及来源；趋势图「🔻 下游」已改为按下游应用（请求 User-Agent）归集的请求数堆叠图，不再展示流终态，流终态细节请通过日志/CSV 的「流结果/流终态原因」字段查看。代理只能记录实际经过代理的 HTTP/SSE 内容，无法读取 Codex CLI 本地终端中未经过代理的提示。
 
 出现 Codex CLI 的 `stream disconnected before completion` 后，先检查工作区和日志，确认是否已有部分文件修改、命令执行或工具调用结果；不要盲目重放整个编码任务。此类改动在代理重启后生效，应等待所有在途 CLI 任务结束，再在维护窗口重启。
 
@@ -881,7 +884,7 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 | `autoResumeDebounceMinutes` | 旧配置兼容字段（分钟，默认 3）；同一 Key 闲置周期只执行一次初始启动 |
 | `autoResumeRunnerStallMinutes` | 已验证恢复 runner 的停滞宽限（分钟，默认 20，`0` 关闭，范围 0–1440）。仅在无在途请求、且自 runner 启动或上次实际 Key 应用后都没有新 Key 应用时生效 |
 | `autoResumeRunnerMaxStallRestarts` | 同一 Key 闲置周期允许的已验证 runner 停滞重启次数（默认 1，`0` 关闭，范围 0–3）。不会对普通失败 runner 盲目重放 |
-| `autoResumeProjects` | 项目列表数组，每项含 name/path/cmd，最多 10 个 |
+| `autoResumeProjects` | 项目列表数组，最多 10 个。每项含 `name`/`path`/`cmd`；`resumeMode` 可选 `"command"`（默认，`resume --last` 等原样命令）或 `"fixed_session"`；`fixed_session` 需提供 `sessionId`，且 `cmd` 必须包含 `{sessionId}` 占位符（启动时替换为该会话 ID）。`resume --last` 会恢复到「最近一个」会话，多个 Codex 实例并发时可能互踢或恢复错会话；需要确定性恢复请使用 `fixed_session` |
 | `cmdPath` | cmd.exe 路径（默认 `/mnt/c/Windows/System32/cmd.exe`） |
 | `weeklySortBy` | weekly 组排序方式：`"priority"`（按 priority+索引）或 `"expiry"`（按最先到期先使用） |
 | `roundRobin` | 是否启用轮询均摊模式（见「Key 调度顺序」） |
@@ -1485,6 +1488,7 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
+- **2026-08-03 编码流挂起根因修复（8h41m 长卡）**：Codex CLI 在一次上游周配额耗尽风暴中永久等待（本次实际约 8h41m）。根因修复：① `responsesIdleTimeout` 单位 bug——默认值误写成 `90*60*60*1000`（90 小时），实际被钳制为 24 小时，与文档声称的 90 分钟不符；已改为 `90*60*1000`，默认生效 90 分钟。② 配额/用量超限 429（`WEEKLY_LIMIT_EXCEEDED`、`MONTHLY_LIMIT_EXCEEDED`、`usage limit exceeded` 等）此前被当作瞬时容量反复退避+重排队，刷遍全部 Key 形成 429 风暴；现归因为 `insufficient_quota` 走 `markFailure` 当前周期冷却并快速失败，只有未归因为配额问题的 429 与 `model_at_capacity` 才走 `capUntil` 瞬时退避。③ 队列死锁——`enqueueRequest` 不触发 `processQueue`，且周期清理会静默丢弃等待中的请求（socket 不关、CLI 永久挂起）；现入队即 `setImmediate` 排空、新增 5 秒周期排空，让 `capacityMaxWaitSeconds` 超时的请求真正收到 503，并移除静默丢弃逻辑。④ 新增编码协议流**无进展看门狗** `responsesNoProgressTimeout`（默认 15 分钟）：长流上游停止发送字节但不断开时强制写失败终态并销毁上游连接，兜底「已接受但永不返回」的挂死连接；空闲超时只从请求发起时起算，无法覆盖这种中途停滞。⑤ `autoResume` 从 `resume --last`（多实例并发时会互踢/恢复错会话）改为 `fixed_session` + 确定 `sessionId`（固定到具体编码会话，消除重复会话竞争）。新增队列排空与配额分类回归测试。
 - **2026-08-03 闲置恢复 runner 停滞接管**：修复容量错误后 Codex CLI 停在本地 Planning、代理长期没有新 Key 应用时，已启动的恢复 runner 仍存活而使“同一闲置周期仅一次”永久阻断的问题。新增默认 20 分钟的受控停滞宽限和默认一次的重启上限：只有无在途代理请求、随机运行 ID、PID 启动 tick、租约 PGID 与实际进程组全部匹配时，才会向该 runner 的负 PGID 发 `SIGTERM`；30 秒仍存活才发 `SIGKILL`，确认进程组退出后才额外启动一次。不会扫描、终止或影响手工启动的 Codex/Claude CLI；身份不明、遗留租约、PID 重用或进程组不一致时只记录事件并跳过。新增停滞、TERM/KILL、归属校验、Key 心跳重置和单次重启回归测试。
 - **2026-08-02 SSE 容量错误退避**：修复上游在 HTTP 200 的 Responses / Messages SSE 内明确返回 `model_at_capacity` 时，代理仍误走硬失败路径的问题。此类错误现与 HTTP 429 一样只设置 `capUntil` 临时退避，不写 `failCode`、不触发跨周期废弃或 `all_keys_failed`；所有协议转换和原生 Responses 流共享该处理。已经向客户端输出的数据不会被自动重放，避免重复文本或工具调用。
 - **2026-08-02 Responses / Messages 流终态一致性**：实际 Codex CLI 使用的原生 `/responses` 直通流现以旁路 SSE 探针确认 `response.completed`，上游 HTTP 200 提前 EOF/关闭/中止/错误/超时时会保留原字节并补一次 `response.failed`，不再把裸断流直接交给 CLI。Claude Code 的 `/v1/messages` 转换流新增同等生命周期保护：只有 Chat 上游明确 `[DONE]` 才发送一次 `message_stop`；异常终止改发 Anthropic `event: error`，不会伪造完成或重复终态。反向 Messages→Chat 转换同样只在真实 `message_stop` 后发送一次 `[DONE]`，异常输出 OpenAI 兼容 SSE 错误。专用长流总时长/空闲超时现在同时用于 Responses 与 Messages，保留原配置键名以兼容已有配置；新增双向终态、EOF、错误、UTF-8 分片和无换行终态回归测试。

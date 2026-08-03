@@ -428,6 +428,21 @@ function testResponsesTimeoutConfigNormalization(harness) {
   const config = harness.normalizeResponsesStreamConfig({ responsesStreamLifetime: 0, responsesIdleTimeout: 0 });
   assert.strictEqual(config.responsesStreamLifetime, 0);
   assert.strictEqual(config.responsesIdleTimeout, 0);
+  const defaults = harness.normalizeResponsesStreamConfig({});
+  assert.strictEqual(defaults.responsesIdleTimeout, 5400000, "idle timeout default must be 90 minutes");
+  assert.strictEqual(defaults.responsesNoProgressTimeout, 900000, "no-progress watchdog default must be 15 minutes");
+  const zero = harness.normalizeResponsesStreamConfig({ responsesNoProgressTimeout: 0 });
+  assert.strictEqual(zero.responsesNoProgressTimeout, 900000, "no-progress watchdog cannot be disabled to 0; falls back to default");
+}
+
+function testNoProgressWatchdogContracts(proxyDir) {
+  const source = fs.readFileSync(path.join(proxyDir, "proxy.js"), "utf8");
+  assert.match(source, /const RESPONSES_IDLE_TIMEOUT_DEFAULT_MS = 90 \* 60 \* 1000;/, "idle default must be 90 minutes, not 90 hours");
+  assert.match(source, /RESPONSES_NO_PROGRESS_DEFAULT_MS = 15 \* 60 \* 1000/, "watchdog default must be 15 minutes");
+  assert.match(source, /const lastActivity = transform\.lastActivity \|\| reqStart/, "watchdog must measure time since the last real upstream chunk");
+  assert.match(source, /terminateAttachedStream\("no_progress_timeout"\)/, "watchdog must force a failure terminal");
+  assert.match(source, /"no_progress_timeout",\n\s*"client_disconnect"/, "no_progress_timeout must be a recognized terminal reason");
+  assert.match(source, /progressTimer\) \{ clearInterval\(progressTimer\); progressTimer = null; \}/, "watchdog timer must be cleared on cleanup");
 }
 
 function testNativeResponsesRouteContract(proxyDir) {
@@ -666,6 +681,7 @@ async function main() {
   await testMessagesToChatToolCallsKeepIdsAndIndices(harness);
   testResponsesTimeoutConfigNormalization(harness);
   testNativeResponsesRouteContract(__dirname);
+  testNoProgressWatchdogContracts(__dirname);
   await testToolCallCompletion(harness);
   testClientCancellation(harness);
   await testModelAtCapacityError(harness);

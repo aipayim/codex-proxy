@@ -29,9 +29,12 @@ const QUEUE_TIMEOUT = 30000;
 const RESTART_FORCE_MIN_WAIT_MS = 30000;
 let STREAM_LIFETIME = 1800000;
 const RESPONSES_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
-const RESPONSES_IDLE_TIMEOUT_DEFAULT_MS = 90 * 60 * 60 * 1000;
+const RESPONSES_IDLE_TIMEOUT_DEFAULT_MS = 90 * 60 * 1000;
 let RESPONSES_STREAM_LIFETIME = 0;
 let RESPONSES_IDLE_TIMEOUT = RESPONSES_IDLE_TIMEOUT_DEFAULT_MS;
+const RESPONSES_NO_PROGRESS_DEFAULT_MS = 15 * 60 * 1000;
+const RESPONSES_NO_PROGRESS_MAX_MS = 24 * 60 * 60 * 1000;
+let RESPONSES_NO_PROGRESS_TIMEOUT = RESPONSES_NO_PROGRESS_DEFAULT_MS;
 const LOG_DIR = path.join(__dirname, "logs");
 const LOG_QUERY_WORKER_FILE = path.join(__dirname, "log-query-worker.js");
 const LOG_SUMMARY_FILE = path.join(LOG_DIR, ".log-summary.json");
@@ -239,7 +242,7 @@ const updateCheckState = {
   inFlight: null,
 };
 let localBuildProvenance = null;
-  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeRunnerStallMinutes: AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT, autoResumeRunnerMaxStallRestarts: AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS };
+  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeRunnerStallMinutes: AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT, autoResumeRunnerMaxStallRestarts: AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS, responsesNoProgressTimeout: RESPONSES_NO_PROGRESS_DEFAULT_MS };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -831,14 +834,19 @@ setInterval(() => {
   for (const p in pathStats) {
     if (pathStats[p].requests === 0) delete pathStats[p];
   }
-  // Trim stale queue entries
-  const qcut = Date.now() - 30000;
-  requestQueue = requestQueue.filter(r => r.time > qcut && !r.clientRes.destroyed);
   cleanOldLogs();
   if (pruneLogRollups()) scheduleLogSummaryPersist();
   if (compactState()) scheduleStateSave();
   scheduleLogIncidentEvaluation();
 }, 600000); // every 10 minutes
+
+// Periodic queue drain. Capacity/cooldown waits are served by re-queueing, but
+// nothing short-circuits an already-waiting request until a backoff timer fires.
+// A steady drain guarantees max-wait requests are 503'd instead of hanging.
+(() => {
+  const queueDrainTimer = setInterval(() => { try { processQueue(); } catch (e) {} }, 5000);
+  if (queueDrainTimer && typeof queueDrainTimer.unref === "function") queueDrainTimer.unref();
+})();
 
 function loadConfig() {
   try {
@@ -903,6 +911,8 @@ function loadConfig() {
     RESPONSES_IDLE_TIMEOUT = c.responsesIdleTimeout;
     config.responsesStreamLifetime = RESPONSES_STREAM_LIFETIME;
     config.responsesIdleTimeout = RESPONSES_IDLE_TIMEOUT;
+    RESPONSES_NO_PROGRESS_TIMEOUT = c.responsesNoProgressTimeout;
+    config.responsesNoProgressTimeout = RESPONSES_NO_PROGRESS_TIMEOUT;
     config.adminToken = c.adminToken || "";
     config.updateBaselineTag = normalizeUpdateBaselineTag(c.updateBaselineTag);
     config.rateLimit = c.rateLimit !== false;
@@ -924,6 +934,7 @@ function loadConfig() {
   normalizeAutoResumeConfig(config);
   RESPONSES_STREAM_LIFETIME = config.responsesStreamLifetime;
   RESPONSES_IDLE_TIMEOUT = config.responsesIdleTimeout;
+  RESPONSES_NO_PROGRESS_TIMEOUT = config.responsesNoProgressTimeout;
   if (autoRecoverTimer) { clearInterval(autoRecoverTimer); autoRecoverTimer = null; }
   if (config.autoRecover) {
     const ms = config.autoRecoverInterval * 3600000;
@@ -1107,6 +1118,8 @@ function normalizeResponsesStreamConfig(value) {
   const configValue = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   configValue.responsesStreamLifetime = normalizeResponsesTimeout(configValue.responsesStreamLifetime, 0);
   configValue.responsesIdleTimeout = normalizeResponsesTimeout(configValue.responsesIdleTimeout, RESPONSES_IDLE_TIMEOUT_DEFAULT_MS);
+  configValue.responsesNoProgressTimeout = normalizeResponsesTimeout(configValue.responsesNoProgressTimeout, RESPONSES_NO_PROGRESS_DEFAULT_MS);
+  if (configValue.responsesNoProgressTimeout === 0) configValue.responsesNoProgressTimeout = RESPONSES_NO_PROGRESS_DEFAULT_MS;
   return configValue;
 }
 
@@ -2298,7 +2311,7 @@ function extractUpstreamErrorMessage(payload) {
 function classifyUpstreamErrorMessage(message) {
   const text = String(message || "");
   if (/capacity|at capacity|overloaded|busy|try a different model|not currently available/i.test(text)) return "model_at_capacity";
-  if (/quota|insufficient|billing|billing_hard_limit/i.test(text)) return "insufficient_quota";
+  if (/quota|insufficient|billing|billing_hard_limit|limit exceeded|_limit_exceeded|usage limit|usage_limit|daily limit|weekly limit|monthly limit/i.test(text)) return "insufficient_quota";
   return "upstream_api_error";
 }
 
@@ -5185,6 +5198,9 @@ function enqueueRequest(method, headers, body, clientRes, pathname, group, extra
   group = group || "A";
   requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform, failureContext: failureContext || null, capacity: capacity === true });
   console.log(`[proxy] Queue depth: ${requestQueue.length}`);
+  // Drain promptly so queued requests reach the 503 max-wait path instead of
+  // lingering until the next backoff timer or an hourly sweep.
+  setImmediate(() => { try { processQueue(); } catch (e) {} });
   clientRes.on("close", () => {
     const i = requestQueue.findIndex(r => r.clientRes === clientRes);
     if (i >= 0) { requestQueue.splice(i, 1); if (!clientRes.destroyed) clientRes.destroy(); }
@@ -5392,6 +5408,7 @@ function makeUsageTransform(idx, inputBytes, reqStart, ttfb, model) {
     transform(chunk, encoding, cb) {
       outputBytes += chunk.length;
       tr.accBytes = outputBytes;
+      tr.lastActivity = Date.now();
       if (scanUsage || scanTools) {
         scanBuf += chunk.toString();
         scanBytes += chunk.length;
@@ -5415,6 +5432,7 @@ function makeUsageTransform(idx, inputBytes, reqStart, ttfb, model) {
     }
   });
   tr.accBytes = 0;
+  tr.lastActivity = Date.now();
   tr._taskTools = taskTools;
   tr._taskFiles = taskFiles;
   Object.defineProperty(tr, "insightUsage", {
@@ -5499,10 +5517,11 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         const reason = errorMessage
           ? classifyUpstreamErrorMessage(errorMessage)
           : (statusCode === 402 ? "insufficient_quota" : "upstream_api_error");
-        // 429 and message-classified capacity errors are transient: back the key
-        // off briefly and let the caller retry, instead of marking a hard
-        // failure that cascades into whole-period cooldown for every key.
-        const isCapacity = statusCode === 429 || reason === "model_at_capacity";
+        // Quota-exhausted 429s (usage limits, billing) will not clear within a
+        // few seconds: back the key off for its whole period instead of churning
+        // every key through capacity retries. Message-classified capacity errors
+        // remain transient and use the short capacity backoff.
+        const isCapacity = (statusCode === 429 && reason !== "insufficient_quota") || reason === "model_at_capacity";
         activeDecr(idx);
         if (isCapacity) {
           markCapacityBackoff(idx);
@@ -5577,10 +5596,12 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     let cleaned = false;
     let endedNormally = false;
     let streamTimer = null;
+    let progressTimer = null;
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
       if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
+      if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
       activeDecr(idx);
       const dur = Date.now() - reqStart;
       const accBytes = transform.accBytes || 0;
@@ -5694,6 +5715,26 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         if (terminateAttachedStream && terminateAttachedStream("stream_lifetime_timeout")) return;
         if (!apiRes.destroyed) apiRes.destroy();
       }, streamLifetime);
+    }
+    // Long-running coding streams can hang when the upstream stops sending any
+    // bytes but never closes the socket. The idle timeout counts from request
+    // start, so it cannot catch a stall that begins after a healthy preamble.
+    // Track bytes observed since the last real chunk and force a failure
+    // terminal when nothing has arrived for the configured window.
+    const noProgressMs = (RESPONSES_NO_PROGRESS_TIMEOUT > 0 && codingProtocolStream && lifecycle)
+      ? Math.min(RESPONSES_NO_PROGRESS_MAX_MS, RESPONSES_NO_PROGRESS_TIMEOUT)
+      : 0;
+    if (noProgressMs > 0) {
+      progressTimer = setInterval(() => {
+        if (cleaned || clientCancelled || (lifecycle && lifecycle.terminalKind)) return;
+        const lastActivity = transform.lastActivity || reqStart;
+        const idleMs = Date.now() - lastActivity;
+        if (idleMs >= noProgressMs) {
+          console.error(`[proxy] #${idx+1} No upstream progress for ${Math.round(idleMs / 60000)}min, terminating coding stream`);
+          terminateAttachedStream("no_progress_timeout");
+        }
+      }, Math.min(60000, noProgressMs));
+      if (progressTimer.unref) progressTimer.unref();
     }
     if (extraTransform) {
       apiRes.pipe(transform).pipe(extraTransform).pipe(clientRes);
@@ -10159,6 +10200,7 @@ const STREAM_TERMINAL_REASONS = new Set([
   "upstream_error",
   "upstream_idle_timeout",
   "stream_lifetime_timeout",
+  "no_progress_timeout",
   "client_disconnect",
   "model_at_capacity",
   "insufficient_quota",
@@ -10342,6 +10384,7 @@ function createNativeResponsesTerminalProbe(model) {
         upstream_error: "Upstream response stream failed before response.completed",
         upstream_idle_timeout: "Upstream response stream was idle before response.completed",
         stream_lifetime_timeout: "Upstream response stream exceeded its configured maximum duration",
+        no_progress_timeout: "Upstream response stream made no progress before timing out",
       };
       const safeMessage = sanitizeUpstreamErrorMessage(message || fallbackMessages[reason] || "Upstream response stream failed before response.completed");
       if (!this._setTerminal("failed", reason, safeMessage, "native_responses_terminal_guard")) return false;
@@ -10522,6 +10565,7 @@ function createMessagesLifecycle(model) {
         upstream_error: "Upstream chat stream failed before its [DONE] terminal",
         upstream_idle_timeout: "Upstream chat stream was idle before its [DONE] terminal",
         stream_lifetime_timeout: "Upstream chat stream exceeded its configured maximum duration",
+        no_progress_timeout: "Upstream chat stream made no progress before timing out",
       };
       const safeMessage = sanitizeUpstreamErrorMessage(message || fallbackMessages[reason] || "Upstream chat stream failed");
       this.terminalKind = "failed";
