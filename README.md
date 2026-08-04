@@ -706,7 +706,9 @@ Anthropic 账号和非 Anthropic 账号可共存，无需额外配置。
 {"type": "notification", "notificationType": "all_keys_failed", "time": "..."}
 ```
 
-WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
+`status` 推送是全量快照且**已节流合并**：任意窗口内最多每秒广播 1 次，期间发生的多次状态变更合并为一次推送（全量非增量，不丢信息）；另有 10 秒心跳兜底保证最终一致。WebSocket 连接失败时前端自动降级为 HTTP 轮询（每 5 秒）。
+
+为避免慢速/后台标签页的看板客户端无限缓冲导致代理进程内存耗尽（OOM），每个 WebSocket 连接的发送缓冲超过 4MiB 时会被主动断开；前端会自动重连（断开期间继续以 HTTP 轮询维持展示），重连后立即收到全量状态。
 
 ## 失败码含义
 
@@ -1491,6 +1493,7 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
+- **2026-08-04 WebSocket 状态推送节流与发送背压（OOM 治理）**：Dashboard 状态广播此前在每次请求完成/状态变更时全量序列化全部 Key 状态并实时群发，无节流、无发送队列上限；后台或慢速标签页使 `ws.send` 缓冲无限增长，多次触发 `JavaScript heap out of memory`（堆 4GB）。现改为节流合并：任意窗口内状态推送最多每秒 1 次，多次变更合并为一次全量快照（全量非增量，不丢信息），另有 10 秒心跳兜底保证最终一致；每个 WebSocket 连接发送缓冲超过 4MiB 时主动断开，前端自动重连（断开期间以 5 秒 HTTP 轮询维持展示），重连后立即收到全量状态。容量退避/恢复、请求队列等业务路径不受影响。另细化 429/配额处理：分类正则加固（去除可能误判的裸 `limit exceeded` 匹配，改为限定 `usage limit`/具体限额消息）、`failReason` 持久化到状态文件，并让自动恢复跳过配额耗尽的 Key（每日探针不会把配额已尽的 Key 误恢复后再次 429）。
 - **2026-08-03 编码流挂起根因修复（8h41m 长卡）**：Codex CLI 在一次上游周配额耗尽风暴中永久等待（本次实际约 8h41m）。根因修复：① `responsesIdleTimeout` 单位 bug——默认值误写成 `90*60*60*1000`（90 小时），实际被钳制为 24 小时，与文档声称的 90 分钟不符；已改为 `90*60*1000`，默认生效 90 分钟。② 配额/用量超限 429（`WEEKLY_LIMIT_EXCEEDED`、`MONTHLY_LIMIT_EXCEEDED`、`usage limit exceeded` 等）此前被当作瞬时容量反复退避+重排队，刷遍全部 Key 形成 429 风暴；现归因为 `insufficient_quota` 走 `markFailure` 当前周期冷却并快速失败，只有未归因为配额问题的 429 与 `model_at_capacity` 才走 `capUntil` 瞬时退避。③ 队列死锁——`enqueueRequest` 不触发 `processQueue`，且周期清理会静默丢弃等待中的请求（socket 不关、CLI 永久挂起）；现入队即 `setImmediate` 排空、新增 5 秒周期排空，让 `capacityMaxWaitSeconds` 超时的请求真正收到 503，并移除静默丢弃逻辑。④ 新增编码协议流**无进展看门狗** `responsesNoProgressTimeout`（默认 15 分钟）：长流上游停止发送字节但不断开时强制写失败终态并销毁上游连接，兜底「已接受但永不返回」的挂死连接；空闲超时只从请求发起时起算，无法覆盖这种中途停滞。⑤ `autoResume` 从 `resume --last`（多实例并发时会互踢/恢复错会话）改为 `fixed_session` + 确定 `sessionId`（固定到具体编码会话，消除重复会话竞争）。新增队列排空与配额分类回归测试。
 - **2026-08-03 闲置恢复 runner 停滞接管**：修复容量错误后 Codex CLI 停在本地 Planning、代理长期没有新 Key 应用时，已启动的恢复 runner 仍存活而使“同一闲置周期仅一次”永久阻断的问题。新增默认 20 分钟的受控停滞宽限和默认一次的重启上限：只有无在途代理请求、随机运行 ID、PID 启动 tick、租约 PGID 与实际进程组全部匹配时，才会向该 runner 的负 PGID 发 `SIGTERM`；30 秒仍存活才发 `SIGKILL`，确认进程组退出后才额外启动一次。不会扫描、终止或影响手工启动的 Codex/Claude CLI；身份不明、遗留租约、PID 重用或进程组不一致时只记录事件并跳过。新增停滞、TERM/KILL、归属校验、Key 心跳重置和单次重启回归测试。
 - **2026-08-02 SSE 容量错误退避**：修复上游在 HTTP 200 的 Responses / Messages SSE 内明确返回 `model_at_capacity` 时，代理仍误走硬失败路径的问题。此类错误现与 HTTP 429 一样只设置 `capUntil` 临时退避，不写 `failCode`、不触发跨周期废弃或 `all_keys_failed`；所有协议转换和原生 Responses 流共享该处理。已经向客户端输出的数据不会被自动重放，避免重复文本或工具调用。

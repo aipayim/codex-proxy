@@ -111,6 +111,9 @@ const STATE_HOURLY_MODEL_NAME_MAX_CHARS = 160;
 const STATE_HOURLY_OTHER_MODEL = "(其他)";
 const STATUS_HOURLY_BUCKET_LIMIT = 31 * 24 + 48;
 const STATUS_DAILY_BUCKET_LIMIT = 35;
+const STATUS_BROADCAST_INTERVAL_MS = 1000;
+const STATUS_HEARTBEAT_MS = 10000;
+const STATUS_WS_BUFFER_LIMIT = 4 * 1024 * 1024;
 const RATE_WINDOW_MS = 60000;
 const STATE_COMPACTION_INTERVAL_MS = 10 * 60 * 1000;
 const STATE_COMPACTION_BUCKET_ADD_THRESHOLD = 100;
@@ -246,6 +249,8 @@ let localBuildProvenance = null;
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
+let statusBroadcastTimer = null;
+let statusHeartbeatTimer = null;
 let allFailedNotified = false;
 let autoRecoverTimer = null;
 let autoRecoverNextTime = 0;
@@ -5978,41 +5983,81 @@ function setupWebSocket(server) {
     ws._logSubscribed = false;
     const data = buildStatusData();
     const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastKeyUseTime, lastResumeTime });
-    ws.send(msg);
+    safeWsSend(ws, msg);
     ws.on("message", raw => {
       try {
         const message = JSON.parse(String(raw));
         if (message && message.type === "log_subscribe") {
           ws._logSubscribed = message.enabled === true;
-          ws.send(JSON.stringify({ type: "log_subscription", enabled: ws._logSubscribed }));
+          safeWsSend(ws, JSON.stringify({ type: "log_subscription", enabled: ws._logSubscribed }));
         }
       } catch { /* ignore malformed dashboard messages */ }
     });
     ws.on("close", () => wsClients.delete(ws));
     ws.on("error", () => wsClients.delete(ws));
   });
+  if (!statusHeartbeatTimer) {
+    statusHeartbeatTimer = setInterval(() => {
+      try {
+        if (wsClients.size) doBroadcastStatus();
+      } catch (e) { /* never let the heartbeat take down the proxy */ }
+    }, STATUS_HEARTBEAT_MS).unref();
+  }
 }
 
+// Send to a dashboard WebSocket only while it is healthy. A stalled/backgrounded
+// browser tab would otherwise buffer unlimited outgoing messages and drive the
+// proxy into the 4GB JS heap limit (observed as recurring OOM crashes). Once the
+// buffer exceeds STATUS_WS_BUFFER_LIMIT the client is dropped; the dashboard
+// reconnects and re-fetches the full status on connect.
+function safeWsSend(ws, msg) {
+  if (!ws || ws.readyState !== 1) return;
+  if (ws.bufferedAmount > STATUS_WS_BUFFER_LIMIT) {
+    try { ws.terminate(); } catch { /* ignore */ }
+    wsClients.delete(ws);
+    return;
+  }
+  try {
+    ws.send(msg);
+  } catch { /* ignore send errors on half-closed sockets */ }
+}
+
+// Coalesce status broadcasts to at most one per STATUS_BROADCAST_INTERVAL_MS.
+// State is always sent as a full snapshot, never as a delta, so merging multiple
+// changes into a single broadcast loses nothing. The periodic heartbeat in
+// setupWebSocket guarantees every client eventually receives fresh state even if
+// an edge case ever swallows a trailing update.
 function broadcastStatus() {
+  if (statusBroadcastTimer) return;
+  statusBroadcastTimer = setTimeout(() => {
+    statusBroadcastTimer = null;
+    try {
+      doBroadcastStatus();
+    } catch (e) { /* never let a broadcast failure take down the proxy */ }
+  }, STATUS_BROADCAST_INTERVAL_MS);
+  if (statusBroadcastTimer.unref) statusBroadcastTimer.unref();
+}
+
+function doBroadcastStatus() {
   const data = buildStatusData();
   const msg = JSON.stringify({ type: "status", data, boostedIdx: _boostKey >= 0 ? _boostKey + 1 : -1, boostedBatch: _boostBatch.map(i => i + 1), boostedBatchMode: _boostBatchMode, lastRequestTime, lastKeyUseTime, lastResumeTime });
   lastBroadcast = msg;
   for (const ws of wsClients) {
-    if (ws.readyState === 1) ws.send(msg);
+    safeWsSend(ws, msg);
   }
 }
 
 function broadcastNotification(type, data = {}) {
   const msg = JSON.stringify({ type: "notification", notificationType: type, time: new Date().toISOString(), ...data });
   for (const ws of wsClients) {
-    if (ws.readyState === 1) ws.send(msg);
+    safeWsSend(ws, msg);
   }
 }
 
 function broadcastLog(entry) {
   if (!wsClients.size) return;
   for (const ws of wsClients) {
-    if (ws.readyState === 1 && ws._logSubscribed === true) ws.send(JSON.stringify({ type: "log", data: entry }));
+    if (ws._logSubscribed === true) safeWsSend(ws, JSON.stringify({ type: "log", data: entry }));
   }
 }
 
