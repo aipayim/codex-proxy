@@ -61,15 +61,17 @@ function sha256(buffer) {
 }
 
 function parseArgs(argv) {
-  const options = { tag: "", out: DEFAULT_OUTPUT_DIR, commit: null };
+  const options = { tag: "", out: DEFAULT_OUTPUT_DIR, commit: null, bundleDeps: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--tag" || arg === "--out" || arg === "--commit") {
       const value = argv[++i];
       if (!value) fail(`Missing value for ${arg}`);
       options[arg.slice(2)] = value;
+    } else if (arg === "--bundle") {
+      options.bundleDeps = true;
     } else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: node build-release.js --tag vX.Y.Z [--out ./dist] [--commit <sha>]");
+      console.log("Usage: node build-release.js --tag vX.Y.Z [--out ./dist] [--commit <sha>] [--bundle]");
       process.exit(0);
     } else {
       fail(`Unknown option: ${arg}`);
@@ -78,7 +80,8 @@ function parseArgs(argv) {
   const tag = normalizeTag(options.tag || process.env.GITHUB_REF_NAME);
   if (!tag) fail("A stable release tag is required, for example --tag v1.2.3");
   const outputDir = path.resolve(options.out || DEFAULT_OUTPUT_DIR);
-  return { tag, outputDir, commit: normalizeCommit(options.commit || process.env.GITHUB_SHA) };
+  const bundleDeps = options.bundleDeps || process.env.RELEASE_BUNDLE_DEPS === "1";
+  return { tag, outputDir, commit: normalizeCommit(options.commit || process.env.GITHUB_SHA), bundleDeps };
 }
 
 function getGitCommit() {
@@ -153,6 +156,17 @@ function buildRelease(options) {
       if (!copied.has(required)) fail(`Required release file is missing: ${required}`);
     }
     setReleasePackageVersion(releaseDir, options.tag);
+    if (options.bundleDeps) {
+      const install = spawnSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund"], {
+        cwd: releaseDir,
+        encoding: "utf8",
+        timeout: 120000,
+        windowsHide: true,
+      });
+      if (install.error || install.status !== 0) {
+        fail(`npm install failed: ${(install.stderr || install.error?.message || "").trim()}`);
+      }
+    }
     fs.writeFileSync(path.join(releaseDir, "release-baseline.txt"), `${options.tag}\n`, { mode: 0o644 });
 
     const files = {};
