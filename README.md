@@ -26,10 +26,11 @@
 codex-proxy/
 ├── proxy.js              # 核心代理服务器（含内嵌完整监控面板）
 ├── keys.json             # API Key 列表（每个 key 可独立配置 url/reset/status/remark）
-├── config.json           # 系统配置（prices、webhookUrl、notifications、groups、log 等）
+├── config.json           # 系统配置（prices、webhookUrl、notifications、groups、log、discussions 等）
 ├── state.json            # 自动生成，持久化统计数据与冷却/废弃状态
 ├── state.json.bak        # 每小时自动备份
 ├── dashboard.html        # 独立监控面板文件（file:// 打开会有引导提示）
+├── discussions-cache.json # 自动生成，GitHub 会话流本地快照（最新 10 条+回复+分类，200KB 软上限，可安全删除）
 ├── codex-proxy.service   # systemd 服务模板（含 {{PROXY_DIR}} 占位符）
 ├── install.sh            # 一键安装脚本（自动读取自身路径，替换 {{PROXY_DIR}}）
 ├── edit-keys.sh          # 命令行快速编辑 keys.json 的辅助脚本
@@ -44,6 +45,7 @@ codex-proxy/
 ├── test-resume-runner-lifecycle.js # 闲置恢复 runner 租约、退出与信号回归测试
 ├── test-log-operations-lifecycle.js # 日志游标、汇总与事件处置回归测试
 ├── test-runtime-storage-lifecycle.js # state/JSONL/proxy.log 容量治理回归测试
+├── test-discussions-lifecycle.js # GitHub 会话流（列表/缓存/快照/降级/回退链/写防抖/token 保留）回归测试
 ├── logs/                 # 自动生成，按天分段的 JSONL 日志及本地汇总/事件 sidecar
 ├── watchdog.sh           # 进程守护脚本（WSL 无 systemd 环境用），每 10 秒检测崩溃并自动重启
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
@@ -535,7 +537,14 @@ SQLite 删除行后通常只会把页留给后续写入复用，物理文件不�
 增删改、屏蔽/取消屏蔽、软删除（`status="deleted"` 保留在 JSON）、重置冷却状态、设置每周重置日（周一~周日或自动）、搜索/分组/拖拽排序、全选批量操作、批量导入 CSV、单 Key 连通性测试
 ### 系统配置
 
-Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令/恢复模式 resumeMode/sessionId 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 其他协议流最大时长（默认30分钟）与 Responses / Messages 编码流专用总时长（默认不限）/上游空闲超时（默认90分钟）/无进展看门狗（默认15分钟）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag/源码基线文件自动识别，定制构建可选手动基线）
+Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却 Key（间隔/固定/快速三种模式独立配置）、失败码列表、是否检测 discarded Key、🔁 轮询均摊、📅 每周 Key 按到期日排序、🧬 闲置自动恢复（autoResume）、项目列表（项目名/WSL 路径/启动命令/恢复模式 resumeMode/sessionId 动态增减）、cmd.exe 路径、🔒 自动锁死阈值与监控码、日志文件/保留天数/详情级别、运行时文件容量/保留策略（JSONL、`state.json`、WSL `proxy.log`）、🗄 Codex SQLite 日志维护（开关、路径检测、容量阈值、保留时长、周期与立即检查）、日志事件规则（失败/流失败/可选延迟阈值与默认静默时间）、⏱ 其他协议流最大时长（默认30分钟）与 Responses / Messages 编码流专用总时长（默认不限）/上游空闲超时（默认90分钟）/无进展看门狗（默认15分钟）、🔐 管理 Token（可选，设置后管理接口需 Bearer 认证，Dashboard 弹窗输入）、🔌 端口分组管理（动态添加/删除/修改端口）、🔄 重启代理按钮（全屏显示提交、排空、取消重启、30 秒后可二次确认强制重启、watchdog 拉起和新实例就绪进度）、⬆ GitHub Release 更新检查（官方发布包/干净官方 Tag/源码基线文件自动识别，定制构建可选手动基线）、💬 GitHub 互动（会话流：启用开关、显示条数、可选 GitHub Token）
+
+> **GitHub 互动（会话流）配置字段**（`config.json` 的 `discussions` 分组，面板「系统配置 → 💬 GitHub 互动」维护）：
+> - `enabled`（布尔）：会话流面板总开关，默认 `false`
+> - `maxItems`（1~50，默认 10）：列表条数
+> - `githubToken`（可选）：GitHub Token，需对目标仓库具备 Discussions 读/写权限（fine-grained PAT：Repository permissions → Discussions 设为 Read and write；classic token：勾选 `repo` 作用域）。仅存本地 `config.json`，面板回显掩码、永不明文泄露（`GET /__config` 返回 `hasDiscussionsToken`）；保存时省略该键则保留原值，传显式空串可清除
+> - 无 Token 时面板只读（`writeEnabled=false`），所有写端点返回 401 `missing_github_token`
+> - 该分组仅影响会话流，不影响代理转发主流程
 
 ## API 接口
 
@@ -581,6 +590,13 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/v1/messages` | POST | **协议转换**：接收 Claude Code CLI 的 Messages API 请求，自动转换为 Chat Completions 格式转发给上游（非 Anthropic），并将响应流式转换回 Messages 格式；仅在上游明确 `[DONE]` 后发送 `message_stop` |
 | `/v1/chat/completions` | POST | **协议转换**：接收 Chat Completions 请求，如上游为 Anthropic 则自动转换为 Messages 格式转发，并将响应流式转换回 Chat 格式；非 Anthropic 上游直接透传 |
 | `ws://localhost:3456/?token=<token>` | WS | WebSocket 实时推送（设置了管理 Token 时需在 URL 中携带 token 参数） |
+| `/__discussions` | GET | GitHub 会话流：最新 `maxItems` 条 Discussions 列表（只读，匿名即可）；`?number=n` 附带该会话回复。服务端 60s 缓存 + 落盘快照回退；失败返回 `lastError` 与缓存/快照数据，不影响代理主流程 |
+| `/__discussions/categories` | GET | 会话分类（GraphQL，需已配置 Token；未配置返回空） |
+| `/__discussions/test-token` | POST | 用已保存的 GitHub Token 测试连通性（`GET /user` + Discussions 只读探测），返回 `{ok, login, discussionsScope}`；**仅验证 Token 有效与读取权限，发布/回复的写权限以实际发布为准**。可传 `{"token":"..."}` 一次性测试新值（不保存） |
+| `/__discussions/comment` | POST | 在指定会话发布公开留言：`{"number": 1, "body": "..."}`；需已配置 Token，30s 防抖，正文最长 1000 字 |
+| `/__discussions/create` | POST | 发起新会话：`{"title": "...", "body": "...", "category": "<分类 id>"}`；需已配置 Token，标题最长 120、正文最长 1000 |
+
+> **会话流（GitHub 互动）**：Dashboard「💬 会话流」面板展示 `aipayim/codex-proxy` 仓库最近动态，定位是「最近动态提醒 + 轻阅读 + 快速参与」，**不是完整 Discussions 客户端**——深度浏览/历史检索引导 GitHub 官方页面（每条「在 GitHub 打开 ↗」）。未配置 GitHub Token 时仅可查看；配置后可在面板内直接留言、回复与发起新会话（内容将**公开发布**到 GitHub Discussions）。Token 仅存本地 `config.json`，前端掩码回显；读取走 60s 缓存 + 匿名配额绰绰有余，未读提醒为 60s 低频轮询（**自己发布的留言/发起的会话不计入未读提醒**）。`discussions-cache.json` 为本地落盘快照（最新 10 条 + 已展开回复 + 分类，200KB 软上限），是**运行时数据，可安全删除**，重启或网络恢复后自动重建。**权限说明**：「测试连通」仅验证 Token 有效与读取权限，GitHub 不提供只读方式预判写权限；若发布/回复提示 `Resource not accessible by personal access token`，请到 GitHub 将 Token 的 Discussions 权限改为 Read and write（或 classic token 补 `repo` 作用域）。**安全提示**：留言/发起会话是写端点，若将管理端口暴露到局域网/公网，必须同时设置「管理 Token」。
 
 ### 协议转换说明
 

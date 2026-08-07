@@ -8,6 +8,7 @@ config*.json.bak
 state*.json
 !state.example.json
 state*.json.bak
+discussions-cache.json
 .auto-resume-runtime.json
 logs/
 tasks/

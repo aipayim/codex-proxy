@@ -81,6 +81,29 @@ const UPDATE_CHECK_MIN_REFRESH_MS = 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 8000;
 const UPDATE_MAX_RESPONSE_BYTES = 64 * 1024;
 const UPDATE_MAX_RELEASE_NOTES_CHARS = 24000;
+const DISCUSSIONS_REPO = "aipayim/codex-proxy";
+const DISCUSSIONS_API_URL = "https://api.github.com/repos/aipayim/codex-proxy";
+const DISCUSSIONS_API_BASE = "https://api.github.com/repos/aipayim/codex-proxy/discussions";
+const DISCUSSIONS_GRAPHQL_API = "https://api.github.com/graphql";
+const DISCUSSIONS_DISCUSSIONS_HOME = "https://github.com/aipayim/codex-proxy/discussions";
+const DISCUSSIONS_SNAPSHOT_FILE = path.join(__dirname, "discussions-cache.json");
+const DISCUSSIONS_CACHE_TTL_MS = 60 * 1000;
+const DISCUSSIONS_REPLIES_TTL_MS = 60 * 1000;
+const DISCUSSIONS_REPLIES_MAX_CACHED = 20;
+const DISCUSSIONS_CATEGORIES_TTL_MS = 10 * 60 * 1000;
+const DISCUSSIONS_MAX_ITEMS_DEFAULT = 10;
+const DISCUSSIONS_MAX_ITEMS_MAX = 50;
+const DISCUSSIONS_BODY_PREVIEW = 200;
+const DISCUSSIONS_COMMENT_MAX_LEN = 1000;
+const DISCUSSIONS_TITLE_MAX_LEN = 120;
+const DISCUSSIONS_TOKEN_MAX_LEN = 255;
+const DISCUSSIONS_MAX_RESPONSE_BYTES = 200 * 1024;
+const DISCUSSIONS_REQUEST_TIMEOUT_MS = 8000;
+const DISCUSSIONS_COMMENT_MIN_INTERVAL_MS = 30000;
+const DISCUSSIONS_SNAPSHOT_MAX_BYTES = 200 * 1024;
+const DISCUSSIONS_OWN_MARK_TTL_MS = 10 * 60 * 1000;
+const DISCUSSIONS_SNAPSHOT_BODY_MAX = 2000;
+const DISCUSSIONS_DEFAULT_CONFIG = { enabled: true, maxItems: DISCUSSIONS_MAX_ITEMS_DEFAULT, githubToken: "" };
 const LOG_RECENT_DEFAULT_LIMIT = 50;
 const LOG_HISTORY_MAX_LIMIT = 100;
 const LOG_EXPORT_MAX_LIMIT = 2000;
@@ -244,8 +267,27 @@ const updateCheckState = {
   lastError: "",
   inFlight: null,
 };
+const discussionsState = {
+  items: [],
+  checkedAt: 0,
+  etag: "",
+  lastError: "",
+  stale: false,
+  snapshotSavedAt: 0,
+  replyCache: new Map(),
+  categoryCache: { items: [], checkedAt: 0 },
+  snapshot: null,
+  fromSnapshot: false,
+  lastWriteAt: 0,
+  inFlight: null,
+  repoNodeId: "",
+  repoNodeFetchedAt: 0,
+  pendingOwnReplies: new Map(),
+  ownNumbers: new Map(),
+  ownUpdatedAt: new Map(),
+};
 let localBuildProvenance = null;
-  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeRunnerStallMinutes: AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT, autoResumeRunnerMaxStallRestarts: AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS, responsesNoProgressTimeout: RESPONSES_NO_PROGRESS_DEFAULT_MS };
+  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeRunnerStallMinutes: AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT, autoResumeRunnerMaxStallRestarts: AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, discussions: { ...DISCUSSIONS_DEFAULT_CONFIG }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS, responsesNoProgressTimeout: RESPONSES_NO_PROGRESS_DEFAULT_MS };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -799,6 +841,468 @@ function getUpdateStatus(forceRefresh = false) {
   return updateCheckState.inFlight;
 }
 
+function normalizeDiscussionsConfig(discussions) {
+  const out = { enabled: DISCUSSIONS_DEFAULT_CONFIG.enabled, maxItems: DISCUSSIONS_DEFAULT_CONFIG.maxItems, githubToken: "" };
+  if (discussions && typeof discussions === "object" && !Array.isArray(discussions)) {
+    if (typeof discussions.enabled === "boolean") out.enabled = discussions.enabled;
+    const maxItems = parseInt(discussions.maxItems, 10);
+    if (Number.isFinite(maxItems)) out.maxItems = Math.max(1, Math.min(DISCUSSIONS_MAX_ITEMS_MAX, maxItems));
+    if (typeof discussions.githubToken === "string") out.githubToken = discussions.githubToken.trim().slice(0, DISCUSSIONS_TOKEN_MAX_LEN);
+  }
+  return out;
+}
+
+function githubJsonRequest(url, { method = "GET", headers = {}, body = null, timeoutMs = DISCUSSIONS_REQUEST_TIMEOUT_MS, maxBytes = DISCUSSIONS_MAX_RESPONSE_BYTES } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; fn(value); } };
+    const req = https.request(url, { method, headers }, (res) => {
+      const chunks = [];
+      let size = 0;
+      res.on("data", (chunk) => {
+        if (settled) return;
+        size += chunk.length;
+        if (size > maxBytes) {
+          req.destroy(new Error("GitHub response exceeded size limit"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("error", (err) => finish(reject, err));
+      res.on("end", () => {
+        if (settled) return;
+        const raw = Buffer.concat(chunks).toString("utf8");
+        let parsed = null;
+        if (raw) {
+          try { parsed = JSON.parse(raw); } catch { parsed = null; }
+        }
+        finish(resolve, { status: res.statusCode || 0, body: parsed, raw, etag: res.headers.etag || "" });
+      });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error("GitHub request timed out")));
+    req.on("error", (err) => finish(reject, err));
+    if (body != null) req.write(body);
+    req.end();
+  });
+}
+
+function cleanMarkdownBody(raw) {
+  if (typeof raw !== "string") return "";
+  let text = raw.replace(/<!--[\s\S]*?-->/g, " ");
+  text = text
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (/^(```+|~~~+)/.test(trimmed)) return "";
+      if (trimmed.startsWith(">")) return trimmed.replace(/^>\s?/, "");
+      return line;
+    })
+    .join("\n");
+  text = text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, (m, alt) => alt || "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, (m, label) => label || "");
+  return text.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function pickDiscussionFields(item) {
+  if (!item || typeof item !== "object") return null;
+  const user = item.user && typeof item.user === "object" ? item.user : {};
+  const category = item.category && typeof item.category === "object" ? item.category : {};
+  return {
+    number: typeof item.number === "number" ? item.number : 0,
+    title: typeof item.title === "string" ? item.title : "",
+    body: cleanMarkdownBody(item.body),
+    author: typeof user.login === "string" ? user.login : "",
+    comments: typeof item.comments === "number" ? item.comments : 0,
+    answered: item.answer_chosen_at != null,
+    createdAt: typeof item.created_at === "string" ? item.created_at : "",
+    updatedAt: typeof item.updated_at === "string" ? item.updated_at : "",
+    htmlUrl: typeof item.html_url === "string" ? item.html_url : "",
+    nodeId: typeof item.node_id === "string" ? item.node_id : "",
+    category: typeof category.name === "string" ? category.name : "",
+    locked: item.locked === true,
+    state: typeof item.state === "string" ? item.state : "",
+  };
+}
+
+function pickReplyFields(item) {
+  if (!item || typeof item !== "object") return null;
+  const user = item.user && typeof item.user === "object" ? item.user : {};
+  return {
+    id: typeof item.id === "number" ? item.id : (typeof item.id === "string" ? item.id : ""),
+    author: typeof user.login === "string" ? user.login : "",
+    body: cleanMarkdownBody(item.body),
+    createdAt: typeof item.created_at === "string" ? item.created_at : "",
+    htmlUrl: typeof item.html_url === "string" ? item.html_url : "",
+  };
+}
+
+function mergeOwnReplies(num, items) {
+  const ownList = discussionsState.pendingOwnReplies.get(num);
+  if (!ownList || !ownList.length) return items;
+  const ids = new Set(items.map((r) => String(r.id || "")));
+  const remaining = [];
+  const added = [];
+  for (const own of ownList) {
+    if (own.id && ids.has(String(own.id))) continue;
+    remaining.push(own);
+    if (!added.some((a) => String(a.id) === String(own.id))) added.push(own);
+  }
+  if (remaining.length) discussionsState.pendingOwnReplies.set(num, remaining);
+  else discussionsState.pendingOwnReplies.delete(num);
+  if (!added.length) return items;
+  return items.concat(added);
+}
+
+function buildDiscussionsPayload() {
+  return {
+    items: discussionsState.items.slice(),
+    checkedAt: discussionsState.checkedAt,
+    lastError: discussionsState.lastError,
+    stale: discussionsState.stale,
+    savedAt: discussionsState.snapshotSavedAt,
+    writeEnabled: !!(config.discussions && config.discussions.githubToken),
+    ownNumbers: Array.from(discussionsState.ownNumbers.keys()).map(Number),
+  };
+}
+
+function fetchDiscussions(force = false) {
+  if (discussionsState.inFlight) return discussionsState.inFlight;
+  const now = Date.now();
+  if (!force && discussionsState.checkedAt && now - discussionsState.checkedAt < DISCUSSIONS_CACHE_TTL_MS) {
+    return Promise.resolve(buildDiscussionsPayload());
+  }
+  discussionsState.inFlight = (async () => {
+    try {
+      const maxItems = (config.discussions && config.discussions.maxItems) || DISCUSSIONS_MAX_ITEMS_DEFAULT;
+      const headers = { accept: "application/vnd.github+json", "user-agent": "codex-proxy-discussions" };
+      if (discussionsState.etag) headers["if-none-match"] = discussionsState.etag;
+      const res = await githubJsonRequest(`${DISCUSSIONS_API_BASE}?per_page=${maxItems}&state=open&sort=updated&order=desc`, { headers });
+      if (res.status === 304 && discussionsState.items.length) {
+        discussionsState.lastError = "";
+        discussionsState.checkedAt = Date.now();
+        return buildDiscussionsPayload();
+      }
+      if (res.status !== 200) throw new Error(`GitHub discussions returned HTTP ${res.status}`);
+      if (!Array.isArray(res.body) && res.raw) throw new Error("GitHub discussions returned invalid JSON");
+      const items = (Array.isArray(res.body) ? res.body : []).map(pickDiscussionFields).filter(Boolean).slice(0, maxItems);
+      const nowMs = Date.now();
+      for (const it of items) {
+        const ownTs = discussionsState.ownUpdatedAt.get(it.number);
+        if (ownTs) {
+          const cur = new Date(it.updatedAt || 0).getTime();
+          if (!Number.isFinite(cur) || cur < ownTs) it.updatedAt = new Date(ownTs).toISOString();
+        }
+      }
+      for (const [n, ts] of discussionsState.ownNumbers) {
+        if (nowMs - ts > DISCUSSIONS_OWN_MARK_TTL_MS) {
+          discussionsState.ownNumbers.delete(n);
+          discussionsState.ownUpdatedAt.delete(n);
+        }
+      }
+      discussionsState.items = items;
+      discussionsState.etag = res.etag || "";
+      discussionsState.lastError = "";
+      discussionsState.stale = false;
+      discussionsState.fromSnapshot = false;
+      discussionsState.checkedAt = Date.now();
+      discussionsState.snapshotSavedAt = Date.now();
+      scheduleSaveDiscussionsSnapshot();
+      return buildDiscussionsPayload();
+    } catch (err) {
+      discussionsState.lastError = String(err && err.message ? err.message : err).slice(0, 240);
+      discussionsState.checkedAt = Date.now();
+      if (discussionsState.items.length) {
+        discussionsState.stale = discussionsState.fromSnapshot;
+        return buildDiscussionsPayload();
+      }
+      if (discussionsState.snapshot) {
+        discussionsState.items = (discussionsState.snapshot.items || []).slice();
+        discussionsState.stale = true;
+        return buildDiscussionsPayload();
+      }
+      throw err;
+    } finally {
+      discussionsState.inFlight = null;
+    }
+  })();
+  return discussionsState.inFlight;
+}
+
+async function fetchDiscussionReplies(number) {
+  const num = parseInt(number, 10);
+  if (!Number.isFinite(num) || !discussionsState.items.some((d) => d.number === num)) {
+    throw new Error("会话不存在或尚未加载");
+  }
+  const cached = discussionsState.replyCache.get(num);
+  const now = Date.now();
+  if (cached && now - cached.checkedAt < DISCUSSIONS_REPLIES_TTL_MS) return { ok: true, items: mergeOwnReplies(num, cached.items), checkedAt: cached.checkedAt };
+  const res = await githubJsonRequest(`${DISCUSSIONS_API_BASE}/${num}/comments?per_page=50`, {
+    headers: { accept: "application/vnd.github+json", "user-agent": "codex-proxy-discussions" },
+  });
+  if (res.status !== 200) throw new Error(`GitHub comments returned HTTP ${res.status}`);
+  if (!Array.isArray(res.body) && res.raw) throw new Error("GitHub comments returned invalid JSON");
+  const items = mergeOwnReplies(num, (Array.isArray(res.body) ? res.body : []).map(pickReplyFields).filter(Boolean));
+  discussionsState.replyCache.set(num, { items, checkedAt: Date.now() });
+  if (discussionsState.replyCache.size > DISCUSSIONS_REPLIES_MAX_CACHED) {
+    const oldest = discussionsState.replyCache.keys().next().value;
+    discussionsState.replyCache.delete(oldest);
+  }
+  scheduleSaveDiscussionsSnapshot();
+  return { ok: true, items, checkedAt: Date.now() };
+}
+
+function buildSnapshotPayload() {
+  const replies = {};
+  for (const [num, entry] of discussionsState.replyCache) {
+    replies[String(num)] = { items: entry.items, checkedAt: entry.checkedAt };
+  }
+  return {
+    schema: 1,
+    savedAt: Date.now(),
+    items: discussionsState.items.map((d) => Object.assign({}, d, { body: String(d.body || "").slice(0, DISCUSSIONS_SNAPSHOT_BODY_MAX) })),
+    replies,
+    categories: discussionsState.categoryCache,
+  };
+}
+
+function degradeSnapshotPayload(payload) {
+  const json = () => JSON.stringify(payload);
+  const keys = Object.keys(payload.replies || {});
+  while (Buffer.byteLength(json(), "utf8") > DISCUSSIONS_SNAPSHOT_MAX_BYTES && keys.length) {
+    delete payload.replies[keys.shift()];
+  }
+  if (Buffer.byteLength(json(), "utf8") > DISCUSSIONS_SNAPSHOT_MAX_BYTES) {
+    payload.items = payload.items.slice(0, Math.max(1, Math.floor(payload.items.length / 2)));
+  }
+  if (Buffer.byteLength(json(), "utf8") > DISCUSSIONS_SNAPSHOT_MAX_BYTES) {
+    payload.items = payload.items.slice(0, 5);
+    payload.replies = {};
+  }
+  return payload;
+}
+
+let snapshotSaveTimer = null;
+let snapshotSaveRunning = false;
+let lastSnapshotJson = "";
+function scheduleSaveDiscussionsSnapshot() {
+  if (snapshotSaveTimer) return;
+  snapshotSaveTimer = setTimeout(() => {
+    snapshotSaveTimer = null;
+    saveDiscussionsSnapshotAsync().catch(() => {});
+  }, 400);
+  if (snapshotSaveTimer && typeof snapshotSaveTimer.unref === "function") snapshotSaveTimer.unref();
+}
+
+async function saveDiscussionsSnapshotAsync() {
+  if (snapshotSaveRunning) return;
+  snapshotSaveRunning = true;
+  try {
+    const payload = degradeSnapshotPayload(buildSnapshotPayload());
+    const json = JSON.stringify(payload);
+    const fingerprint = JSON.stringify(Object.assign({}, payload, { savedAt: 0 }));
+    if (fingerprint === lastSnapshotJson) return;
+    await fs.promises.writeFile(DISCUSSIONS_SNAPSHOT_FILE + ".tmp", json, "utf8");
+    await fs.promises.rename(DISCUSSIONS_SNAPSHOT_FILE + ".tmp", DISCUSSIONS_SNAPSHOT_FILE);
+    lastSnapshotJson = fingerprint;
+  } catch {} finally {
+    snapshotSaveRunning = false;
+  }
+}
+
+async function loadDiscussionsSnapshot() {
+  try {
+    const raw = await fs.promises.readFile(DISCUSSIONS_SNAPSHOT_FILE, "utf8");
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== "object") return;
+    if (Array.isArray(saved.items)) discussionsState.items = saved.items;
+    discussionsState.fromSnapshot = Array.isArray(saved.items) && saved.items.length > 0;
+    if (saved.replies && typeof saved.replies === "object") {
+      for (const key of Object.keys(saved.replies)) {
+        const entry = saved.replies[key];
+        if (entry && Array.isArray(entry.items)) {
+          const num = parseInt(key, 10);
+          if (Number.isFinite(num)) discussionsState.replyCache.set(num, { items: entry.items, checkedAt: entry.checkedAt || 0 });
+        }
+      }
+    }
+    if (saved.categories && Array.isArray(saved.categories.items)) discussionsState.categoryCache = saved.categories;
+    discussionsState.snapshot = saved;
+    discussionsState.snapshotSavedAt = typeof saved.savedAt === "number" ? saved.savedAt : 0;
+  } catch {}
+}
+
+function graphqlQuery(token, query, variables) {
+  const body = JSON.stringify({ query, variables });
+  const headers = {
+    "content-type": "application/json",
+    "user-agent": "codex-proxy-discussions",
+    authorization: `Bearer ${token}`,
+  };
+  return githubJsonRequest(DISCUSSIONS_GRAPHQL_API, { method: "POST", headers, body });
+}
+
+function graphQLErrorText(res) {
+  if (res && res.body && Array.isArray(res.body.errors) && res.body.errors.length && res.body.errors[0]) {
+    return String(res.body.errors[0].message || "").slice(0, 240);
+  }
+  return "";
+}
+
+function withDiscussionsScopeHint(msg) {
+  if (!msg) return msg;
+  return /not accessible|insufficient scope|permission|forbidden|\b403\b|\b401\b/i.test(msg)
+    ? msg + "。请确认 Token 已授予该仓库 Discussions 读/写权限"
+    : msg;
+}
+
+async function fetchDiscussionCategories(force = false) {
+  const token = (config.discussions && config.discussions.githubToken) || "";
+  if (!token) return { ok: true, items: [], reason: "no-token" };
+  const now = Date.now();
+  if (!force && discussionsState.categoryCache.items.length && now - discussionsState.categoryCache.checkedAt < DISCUSSIONS_CATEGORIES_TTL_MS) {
+    return { ok: true, items: discussionsState.categoryCache.items, checkedAt: discussionsState.categoryCache.checkedAt };
+  }
+  const query = "query { repository(owner: \"aipayim\", name: \"codex-proxy\") { discussionCategories(first: 20) { nodes { id name slug } } } }";
+  const res = await graphqlQuery(token, query, {});
+  if (res.status !== 200) throw new Error(`GitHub categories returned HTTP ${res.status}`);
+  const nodes = res.body && res.body.data && res.body.data.repository && res.body.data.repository.discussionCategories
+    ? res.body.data.repository.discussionCategories.nodes
+    : null;
+  if (!Array.isArray(nodes)) {
+    const msg = res.body && res.body.errors && res.body.errors[0] ? String(res.body.errors[0].message).slice(0, 240) : "unknown";
+    throw new Error(`GitHub categories error: ${msg}`);
+  }
+  const items = nodes.map((n) => ({ id: String(n.id || ""), name: String(n.name || ""), slug: String(n.slug || "") })).filter((c) => c.id && c.name);
+  discussionsState.categoryCache = { items, checkedAt: Date.now() };
+  return { ok: true, items, checkedAt: Date.now() };
+}
+
+async function getRepositoryNodeId(token) {
+  const now = Date.now();
+  if (discussionsState.repoNodeId && now - discussionsState.repoNodeFetchedAt < 24 * 60 * 60 * 1000) return discussionsState.repoNodeId;
+  const res = await githubJsonRequest(DISCUSSIONS_API_URL, {
+    headers: { accept: "application/vnd.github+json", "user-agent": "codex-proxy-discussions", authorization: `Bearer ${token}` },
+  });
+  if (res.status !== 200 || !res.body || typeof res.body.node_id !== "string" || !res.body.node_id) {
+    throw new Error("无法获取仓库信息，请检查 Token 权限");
+  }
+  discussionsState.repoNodeId = res.body.node_id;
+  discussionsState.repoNodeFetchedAt = Date.now();
+  return discussionsState.repoNodeId;
+}
+
+async function testGitHubToken(tokenOverride) {
+  let token = (config.discussions && config.discussions.githubToken) || "";
+  if (typeof tokenOverride === "string" && tokenOverride.trim()) {
+    token = tokenOverride.trim().slice(0, DISCUSSIONS_TOKEN_MAX_LEN);
+  }
+  if (!token) return { ok: false, error: "未配置 GitHub Token" };
+  const res = await githubJsonRequest("https://api.github.com/user", {
+    headers: { accept: "application/vnd.github+json", "user-agent": "codex-proxy-discussions", authorization: `Bearer ${token}` },
+  });
+  if (res.status !== 200) return { ok: false, error: `HTTP ${res.status}` };
+  const login = res.body && typeof res.body.login === "string" ? res.body.login : "";
+  if (!login) return { ok: false, error: "响应格式异常" };
+  const result = { ok: true, login, name: typeof res.body.name === "string" ? res.body.name : "" };
+  try {
+    const scopeQuery = "query { repository(owner: \"aipayim\", name: \"codex-proxy\") { discussionCategories(first: 1) { totalCount } } }";
+    const scopeRes = await graphqlQuery(token, scopeQuery, {});
+    if (scopeRes.status === 200 && scopeRes.body && scopeRes.body.data && scopeRes.body.data.repository) {
+      result.discussionsScope = { ok: true };
+    } else {
+      const msg = graphQLErrorText(scopeRes) || `HTTP ${scopeRes.status}`;
+      result.discussionsScope = { ok: false, message: String(msg).slice(0, 240) };
+    }
+  } catch (err) {
+    result.discussionsScope = { ok: false, message: String(err && err.message ? err.message : err).slice(0, 240) };
+  }
+  return result;
+}
+
+async function postDiscussionComment(number, body) {
+  const token = (config.discussions && config.discussions.githubToken) || "";
+  if (!token) throw new Error("GitHub token not configured");
+  const now = Date.now();
+  if (discussionsState.lastWriteAt && now - discussionsState.lastWriteAt < DISCUSSIONS_COMMENT_MIN_INTERVAL_MS) {
+    throw new Error("操作过于频繁，请稍后再试");
+  }
+  const cleanBody = String(body == null ? "" : body).trim();
+  if (!cleanBody) throw new Error("留言内容不能为空");
+  const limitedBody = cleanBody.slice(0, DISCUSSIONS_COMMENT_MAX_LEN);
+  const item = discussionsState.items.find((d) => d.number === parseInt(number, 10));
+  if (!item || !item.nodeId) throw new Error("会话不存在或尚未加载");
+  discussionsState.lastWriteAt = now;
+  const query = "mutation($id: ID!, $body: String!) { addDiscussionComment(input: { discussionId: $id, body: $body }) { comment { id author { login } createdAt } } }";
+  const res = await graphqlQuery(token, query, { id: item.nodeId, body: limitedBody });
+  if (res.status !== 200) {
+    const msg = graphQLErrorText(res) || `HTTP ${res.status}`;
+    throw new Error(withDiscussionsScopeHint(msg));
+  }
+  const gqlErr = graphQLErrorText(res);
+  if (gqlErr) throw new Error(withDiscussionsScopeHint(gqlErr));
+  const comment = res.body && res.body.data && res.body.data.addDiscussionComment && res.body.data.addDiscussionComment.comment;
+  const ownReply = {
+    id: comment && comment.id ? String(comment.id) : "local-" + now,
+    author: comment && comment.author && comment.author.login ? String(comment.author.login) : "",
+    body: limitedBody,
+    createdAt: comment && comment.createdAt ? String(comment.createdAt) : new Date(now).toISOString(),
+  };
+  const existing = discussionsState.replyCache.get(item.number);
+  if (existing) {
+    if (!existing.items.some((r) => String(r.id) === String(ownReply.id))) existing.items = existing.items.concat(ownReply);
+    existing.checkedAt = 0;
+  }
+  const pending = discussionsState.pendingOwnReplies.get(item.number) || [];
+  if (!pending.some((r) => String(r.id) === String(ownReply.id))) {
+    pending.push(ownReply);
+    discussionsState.pendingOwnReplies.set(item.number, pending);
+  }
+  const it = discussionsState.items.find((d) => d.number === item.number);
+  if (it) {
+    it.comments = (parseInt(String(it.comments), 10) || 0) + 1;
+    it.updatedAt = new Date(now).toISOString();
+  }
+  discussionsState.ownNumbers.set(item.number, now);
+  discussionsState.ownUpdatedAt.set(item.number, now);
+  discussionsState.checkedAt = 0;
+  scheduleSaveDiscussionsSnapshot();
+  return { ok: true, number: item.number };
+}
+
+async function createDiscussion(title, body, categoryId) {
+  const token = (config.discussions && config.discussions.githubToken) || "";
+  if (!token) throw new Error("GitHub token not configured");
+  const cleanTitle = String(title == null ? "" : title).trim().slice(0, DISCUSSIONS_TITLE_MAX_LEN);
+  const cleanBody = String(body == null ? "" : body).trim().slice(0, DISCUSSIONS_COMMENT_MAX_LEN);
+  if (!cleanTitle) throw new Error("标题不能为空");
+  if (!cleanBody) throw new Error("正文不能为空");
+  if (!categoryId || typeof categoryId !== "string" || !categoryId) throw new Error("请选择分类");
+  if (!discussionsState.categoryCache.items.some((c) => c.id === categoryId)) {
+    const cats = await fetchDiscussionCategories(true);
+    if (!cats.items.some((c) => c.id === categoryId)) throw new Error("分类无效，请刷新后重试");
+  }
+  const now = Date.now();
+  if (discussionsState.lastWriteAt && now - discussionsState.lastWriteAt < DISCUSSIONS_COMMENT_MIN_INTERVAL_MS) {
+    throw new Error("操作过于频繁，请稍后再试");
+  }
+  discussionsState.lastWriteAt = now;
+  const repoId = await getRepositoryNodeId(token);
+  const query = "mutation($rid: ID!, $cid: ID!, $title: String!, $body: String!) { createDiscussion(input: { repositoryId: $rid, categoryId: $cid, title: $title, body: $body }) { discussion { id number url } } }";
+  const res = await graphqlQuery(token, query, { rid: repoId, cid: categoryId, title: cleanTitle, body: cleanBody });
+  if (res.status !== 200) {
+    const msg = graphQLErrorText(res) || `HTTP ${res.status}`;
+    throw new Error(withDiscussionsScopeHint(msg));
+  }
+  const gqlErr = graphQLErrorText(res);
+  if (gqlErr) throw new Error(withDiscussionsScopeHint(gqlErr));
+  const discussion = res.body && res.body.data && res.body.data.createDiscussion && res.body.data.createDiscussion.discussion;
+  if (!discussion) throw new Error("GitHub 未返回新会话信息");
+  discussionsState.replyCache.clear();
+  scheduleSaveDiscussionsSnapshot();
+  return { ok: true, id: String(discussion.id || ""), number: discussion.number, url: String(discussion.url || "") };
+}
+
 process.on("uncaughtException", err => {
   console.error("[proxy] UNCAUGHT EXCEPTION:", err.stack || err.message);
   process.exit(1);
@@ -860,6 +1364,7 @@ function loadConfig() {
     normalizeRuntimeStorageConfig(c);
     normalizeResponsesStreamConfig(c);
     normalizeAutoResumeConfig(c);
+    config.discussions = normalizeDiscussionsConfig(c.discussions);
     if (c.webhookUrl) config.webhookUrl = c.webhookUrl;
     const defaultPricing = normalizeDefaultPricing(c.prices, c.bytesPerToken);
     config.prices = defaultPricing.prices;
@@ -6351,6 +6856,43 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .update-badge.neutral:hover{background:#334155;color:#e2e8f0}
 .update-badge:hover{background:#6b3809;color:#fde68a}
 @keyframes update-pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}50%{box-shadow:0 0 0 5px rgba(245,158,11,.24)}}
+#discBtn{position:relative}
+#discBtn.flash-unread{animation:disc-pulse 1.2s ease-in-out infinite}
+.disc-unread{display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;line-height:14px;font-weight:700;vertical-align:1px}
+@keyframes disc-pulse{0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,0)}50%{box-shadow:0 0 0 5px rgba(59,130,246,.35)}}
+.disc-item{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:8px 10px;margin-bottom:6px;cursor:pointer}
+.disc-item:hover{background:#334155}
+.disc-item.open{border-color:#3b82f6}
+.disc-title{font-weight:600;color:#e2e8f0;font-size:13px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.disc-meta{color:#64748b;font-size:11px;margin-top:3px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.disc-meta .author{color:#60a5fa}
+.disc-badges{display:flex;gap:7px;align-items:center;white-space:nowrap}
+.disc-badges .cnt{color:#94a3b8;font-size:11px}
+.disc-badges .answered{color:#4ade80;font-size:11px}
+.disc-badges a{color:#60a5fa;text-decoration:none;font-size:11px}
+.disc-badges a:hover{color:#93c5fd}
+.disc-cat{background:#312e81;color:#c7d2fe;border-radius:3px;padding:0 5px;font-size:10px}
+.disc-body{display:none;margin-top:8px;padding-top:8px;border-top:1px solid #334155}
+.disc-item.open .disc-body{display:block}
+.disc-body-text{color:#cbd5e1;font-size:12px;white-space:pre-wrap;word-break:break-word;line-height:1.6}
+.disc-reply{border-left:2px solid #334155;padding:4px 0 4px 10px;margin:6px 0;font-size:12px;color:#cbd5e1}
+.disc-reply .author{color:#60a5fa}
+.disc-reply .t{color:#64748b;font-size:10px}
+.disc-actions{margin-top:8px}
+.disc-actions textarea{background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:6px;border-radius:4px;width:100%;font-size:12px;font-family:inherit;box-sizing:border-box;resize:vertical}
+.disc-actions textarea:focus{outline:none;border-color:#3b82f6}
+.disc-count{font-size:10px;color:#64748b}
+.disc-count.over{color:#f87171}
+.disc-err{color:#f87171;font-size:11px}
+.disc-guide{background:#0f172a;border:1px solid #334155;border-radius:4px;padding:8px 10px;font-size:11px;color:#94a3b8;margin-top:6px;line-height:1.6}
+.disc-guide a{color:#60a5fa}
+.disc-guide a:hover{color:#93c5fd}
+.disc-status{font-size:11px;color:#64748b;margin:0 0 8px}
+.disc-status.err{color:#f87171}
+.disc-foot{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.disc-link{color:#60a5fa;text-decoration:none;font-size:11px;cursor:pointer}
+.disc-link:hover{color:#93c5fd}
+@media(max-width:600px){.disc-meta{gap:6px}.disc-badges a{font-size:10px}.disc-title{font-size:12px}}
 .update-notes{margin-top:10px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#0f172a;border:1px solid #334155;border-radius:4px;padding:10px;color:#cbd5e1;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 @media(max-width:600px){
   .controls{flex-direction:column;align-items:stretch}
@@ -6369,6 +6911,7 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
 <h1>OpenAPI Multi-Key Proxy</h1>
 <div style="display:flex;gap:6px;flex-wrap:wrap">
+<button class="btn" id="discBtn" onclick="openDiscussions()" title="查看 GitHub 会话流（最近动态）">💬 会话流<span class="disc-unread" id="discUnreadDot">0</span></button>
 <button class="btn" onclick="openLogs()">📋 日志</button>
 <button class="btn" onclick="openTaskInsight()">📊 任务流水</button>
 <button class="btn" onclick="openExportCover()">⬇ 导出 CSV</button>
@@ -6723,6 +7266,23 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
   <div><input id="cfgAdminToken" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="留空=无认证" title="设置后所有管理接口需 Bearer token 认证"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">💬 GitHub 互动（会话流）</div>
+  <div style="color:#94a3b8;padding:4px 0">启用会话流</div>
+  <div><label><input type="checkbox" id="cfgDiscussionsEnabled"> 在 Dashboard 显示会话流面板</label></div>
+  <div style="color:#94a3b8;padding:4px 0">显示条数</div>
+  <div><input id="cfgDiscussionsMaxItems" type="number" min="1" max="50" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"></div>
+  <div style="color:#94a3b8;padding:4px 0">GitHub Token（可选）</div>
+  <div>
+    <span style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <input id="cfgDiscGitHubToken" type="password" style="width:220px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="未配置，仅可查看留言" autocomplete="off">
+      <button class="btn" type="button" onclick="toggleDiscTokenVisibility()" title="显示/隐藏 Token">👁</button>
+      <button class="btn" type="button" onclick="testDiscToken()" title="用已保存的 Token 测试连通性">测试连通</button>
+      <span id="cfgDiscTokenTest" style="font-size:10px;color:#64748b"></span>
+    </span>
+  </div>
+  <div style="grid-column:1/-1;font-size:10px;color:#64748b;margin:2px 0 6px">
+    配置后可在面板内留言、回复与发起新会话（内容将公开发布到 GitHub Discussions）。Token 仅存本地、掩码展示；需 fine-grained PAT 并授予仓库 Discussions 读/写权限。「测试连通」仅验证 Token 有效与读取权限，写权限以实际发布结果为准（若发布提示 Resource not accessible，请到 GitHub 将 Discussions 权限改为 Read and write）。若将本管理端口暴露到局域网/公网，请务必同时设置「管理 Token」。
+  </div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔎 任务洞察（代理流水解析/提炼）</div>
   <div style="color:#94a3b8;padding:4px 0">启用任务洞察</div>
   <div><label><input type="checkbox" id="cfgTaskInsightEnabled"> 记录代理流水任务（默认不落盘原文，仅结构化信号）</label></div>
@@ -6901,6 +7461,31 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
     <button class="btn" id="restartOverlayDismiss" type="button" style="display:none;margin-top:14px">返回 Dashboard</button>
   </div>
 </div>
+
+<div class="modal" id="discModal">
+<div class="mcontent" style="max-width:760px">
+<div class="mtitle"><span>💬 会话流</span><span style="display:flex;gap:6px"><button class="btn" onclick="loadDiscussions(true)">↻ 刷新</button><a class="btn" href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer" title="查看全部会话与历史">在 GitHub 打开 ↗</a><button class="btn" onclick="closeDiscussions()">✕</button></span></div>
+<div class="disc-status" id="discStatus"></div>
+<div id="discList"></div>
+<div class="disc-foot">
+  <button class="btn" id="discCreateBtn" onclick="showDiscCreate()" style="display:none">✚ 发起会话</button>
+  <a class="disc-link" id="discGuideLogin" href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer" style="display:none">🔗 登录 GitHub 参与互动 ↗</a>
+</div>
+<div id="discCreate" style="display:none;margin-top:10px;border-top:1px solid #334155;padding-top:10px">
+  <div style="color:#94a3b8;padding:4px 0">标题</div>
+  <div><input id="discCreateTitle" maxlength="120" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:6px;border-radius:4px;font-size:12px" placeholder="新会话标题"></div>
+  <div style="color:#94a3b8;padding:4px 0">分类</div>
+  <div><select id="discCreateCat" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:5px 6px;border-radius:4px;font-size:12px"></select></div>
+  <div style="color:#94a3b8;padding:4px 0">正文</div>
+  <div><textarea id="discCreateBody" rows="4" maxlength="1000" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:6px;border-radius:4px;font-size:12px;font-family:inherit;resize:vertical" placeholder="内容将公开发布到 GitHub Discussions"></textarea></div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+    <button class="btn btn-p" onclick="submitDiscCreate()">发布</button>
+    <button class="btn" onclick="hideDiscCreate()">取消</button>
+    <span class="disc-count" id="discCreateCount">0/1000</span>
+    <span class="disc-err" id="discCreateErr"></span>
+  </div>
+</div>
+</div></div>
 
 <script>
 const __adminTokenState=(()=>{
@@ -7302,6 +7887,13 @@ async function loadConfigUI(){
     document.getElementById("cfgTaskInsightDistillReport").value=tiDistill.report||"daily";
     taskInsightEngineChanged();
     refreshTaskInsightDistillStatus();
+    const disc=c.discussions||{};
+    document.getElementById("cfgDiscussionsEnabled").checked=disc.enabled!==false;
+    document.getElementById("cfgDiscussionsMaxItems").value=disc.maxItems||10;
+    const discTokenInput=document.getElementById("cfgDiscGitHubToken");
+    if(discTokenInput)discTokenInput.value=(c.hasDiscussionsToken===true||!!disc.githubToken)?DISC_TOKEN_MASK:"";
+    const discTokenTest=document.getElementById("cfgDiscTokenTest");
+    if(discTokenTest){discTokenTest.textContent="";discTokenTest.style.color="#64748b";}
     renderResumeProjects(c.autoResumeProjects||[]);
     if(c.autoRecoverNextTime)autoRecoverNextTime=parseInt(c.autoRecoverNextTime);else autoRecoverNextTime=0;
     if(c.autoRecoverDailyNextTime)autoRecoverDailyNextTime=parseInt(c.autoRecoverDailyNextTime);else autoRecoverDailyNextTime=0;
@@ -7616,7 +8208,7 @@ function renderResumeProjects(projects){
     const mode=p.resumeMode==="fixed_session"?"fixed_session":"command";
     html+='<div class="resume-proj-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px">'+
       '<input placeholder="项目名" class="rp-name" value="'+esc(p.name||'')+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-      '<input placeholder="WSL 路径 /mnt/d/..." class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+      '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
       '<input placeholder="命令 codex ..." class="rp-cmd" value="'+esc(p.cmd||'')+'" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
       '<select class="rp-mode" title="固定会话模式会将命令中的 {sessionId} 替换为下方会话 ID" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command"'+(mode==="command"?" selected":"")+'>命令</option><option value="fixed_session"'+(mode==="fixed_session"?" selected":"")+'>固定会话</option></select>'+
       '<input placeholder="会话 ID" class="rp-session" value="'+esc(p.sessionId||'')+'" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="固定会话模式需要合法 Codex 会话 ID，且命令中必须含 {sessionId}">'+
@@ -7634,7 +8226,7 @@ function addResumeProject(){
   div.className="resume-proj-row";
   div.style.cssText="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px";
   div.innerHTML='<input placeholder="项目名" class="rp-name" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-    '<input placeholder="WSL 路径 /mnt/d/..." class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+    '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
     '<input placeholder="命令 codex ..." class="rp-cmd" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
     '<select class="rp-mode" title="固定会话模式会将命令中的 {sessionId} 替换为下方会话 ID" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command">命令</option><option value="fixed_session">固定会话</option></select>'+
     '<input placeholder="会话 ID" class="rp-session" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="固定会话模式需要合法 Codex 会话 ID，且命令中必须含 {sessionId}">'+
@@ -9066,6 +9658,382 @@ function closeLogs(){
   setLogSubscription(false);
 }
 
+let discPollTimer=null;
+let discItems=[];
+let discWriteEnabled=false;
+
+function discEsc(s){
+  if(typeof s!=="string")return "";
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function discSafeUrl(url){
+  if(typeof url==="string"&&url.indexOf("https://github.com/aipayim/codex-proxy/discussions")===0)return url;
+  return "https://github.com/aipayim/codex-proxy/discussions";
+}
+
+function discRelTime(iso){
+  if(!iso)return "";
+  const t=new Date(iso).getTime();
+  if(!Number.isFinite(t))return "";
+  const diff=Date.now()-t;
+  if(diff<60000)return "刚刚";
+  if(diff<3600000)return Math.floor(diff/60000)+" 分钟前";
+  if(diff<86400000)return Math.floor(diff/3600000)+" 小时前";
+  return Math.floor(diff/86400000)+" 天前";
+}
+
+function discTimeText(ts){
+  if(!ts)return "";
+  const d=new Date(ts);
+  if(!Number.isFinite(d.getTime()))return "";
+  const h=d.getHours(),m=d.getMinutes();
+  return (h<10?"0"+h:h)+":"+(m<10?"0"+m:m);
+}
+
+function markDiscSeen(){
+  let maxTs=0;
+  for(let i=0;i<discItems.length;i++){
+    const u=new Date(discItems[i].updatedAt||0).getTime();
+    if(Number.isFinite(u)&&u>maxTs)maxTs=u;
+  }
+  if(maxTs)localStorage.setItem("discLastSeenUpdatedAt",String(maxTs));
+}
+
+function bumpDiscOwnSeen(){
+  const seen=parseInt(localStorage.getItem("discLastSeenUpdatedAt")||"0",10);
+  const nowTs=Date.now();
+  if(nowTs>seen)localStorage.setItem("discLastSeenUpdatedAt",String(nowTs));
+}
+
+function openDiscussions(){
+  document.getElementById("discModal").classList.add("on");
+  document.getElementById("discBtn").classList.remove("flash-unread");
+  const dot=document.getElementById("discUnreadDot");
+  if(dot)dot.style.display="none";
+  stopDiscUnreadPoll();
+  loadDiscussions(false);
+}
+
+function closeDiscussions(){
+  const modal=document.getElementById("discModal");
+  if(modal)modal.classList.remove("on");
+  startDiscUnreadPoll();
+}
+
+async function loadDiscussions(force){
+  const list=document.getElementById("discList");
+  const status=document.getElementById("discStatus");
+  if(status){status.textContent="正在从 GitHub 加载会话…";status.className="disc-status";}
+  try{
+    const response=await fetch("/__discussions"+(force?"?refresh=1":""),{cache:"no-store"});
+    const payload=await response.json();
+    if(!payload||payload.ok===false&&!(payload.items&&payload.items.length)){
+      if(status){status.textContent="读取失败："+((payload&&payload.error)||"未知错误")+"（点「↻ 刷新」重试）";status.className="disc-status err";}
+      return;
+    }
+    discItems=Array.isArray(payload.items)?payload.items:[];
+    discWriteEnabled=!!payload.writeEnabled;
+    renderDiscList();
+    const discModalEl=document.getElementById("discModal");
+    if(discModalEl&&discModalEl.classList.contains("on"))markDiscSeen();
+    if(status){
+      if(payload.lastError)status.textContent="上次更新失败："+payload.lastError+"（可点「↻ 刷新」重试）";
+      else if(discItems.length){
+        if(payload.stale&&payload.savedAt)status.textContent="上次更新 "+discTimeText(payload.savedAt)+"（离线快照，恢复网络后自动更新）";
+        else status.textContent="已更新，可点「↻ 刷新」";
+      }else status.textContent="暂无公开会话";
+      status.className=payload.lastError?"disc-status err":"disc-status";
+    }
+  }catch(e){
+    if(status){status.textContent="读取失败："+e.message+"（点「↻ 刷新」重试）";status.className="disc-status err";}
+  }
+}
+
+function renderDiscList(){
+  const list=document.getElementById("discList");
+  if(!list)return;
+  let html="";
+  if(!discItems.length){
+    html='<div class="disc-guide">暂无公开会话，去 GitHub 看看全部讨论 <a href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer">↗</a></div>';
+  }else{
+    for(let i=0;i<discItems.length;i++){
+      const d=discItems[i];
+      const badges='<span class="cnt">💬'+d.comments+'</span>'+(d.answered?'<span class="answered" title="已有解答">✅</span>':'')+'<a href="'+discSafeUrl(d.htmlUrl)+'" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="在 GitHub 打开">↗</a>';
+      html+='<div class="disc-item" id="discItem'+d.number+'" onclick="toggleDisc('+d.number+',event)">'
+        +'<div class="disc-title"><span>'+discEsc(d.title)+'</span><span class="disc-badges">'+badges+'</span></div>'
+        +'<div class="disc-meta"><span class="author">@'+discEsc(d.author)+'</span><span>'+discRelTime(d.updatedAt)+'</span>'+(d.category?'<span class="disc-cat">'+discEsc(d.category)+'</span>':'')+'</div>'
+        +'<div class="disc-body" id="discBody'+d.number+'"></div>'
+        +'</div>';
+    }
+  }
+  list.innerHTML=html;
+  const footCreate=document.getElementById("discCreateBtn");
+  const footGuide=document.getElementById("discGuideLogin");
+  if(footCreate)footCreate.style.display=discWriteEnabled?"inline-block":"none";
+  if(footGuide)footGuide.style.display=discWriteEnabled?"none":"inline";
+  const create=document.getElementById("discCreate");
+  if(create&&!discWriteEnabled)create.style.display="none";
+}
+
+function toggleDisc(number,event){
+  if(event&&event.target&&event.target.closest&&event.target.closest("textarea,button,a,input,select,label,.disc-actions,.disc-body"))return;
+  const item=document.getElementById("discItem"+number);
+  if(!item)return;
+  const isOpen=item.classList.contains("open");
+  item.classList.toggle("open");
+  if(!isOpen)loadDiscBody(number);
+}
+
+async function loadDiscBody(number){
+  const body=document.getElementById("discBody"+number);
+  if(!body||body.getAttribute("data-loaded"))return;
+  body.setAttribute("data-loaded","1");
+  body.textContent="加载回复中…";
+  try{
+    const response=await fetch("/__discussions?number="+number,{cache:"no-store"});
+    const payload=await response.json();
+    if(!payload||!payload.ok){
+      body.textContent="加载失败："+((payload&&payload.error)||"未知错误");
+      return;
+    }
+    let item=null;
+    for(let i=0;i<discItems.length;i++){if(discItems[i].number===number){item=discItems[i];break;}}
+    renderDiscBody(body,item,Array.isArray(payload.replies)?payload.replies:[]);
+  }catch(e){
+    body.textContent="加载失败："+e.message;
+  }
+}
+
+function renderDiscBody(body,item,replies){
+  body.textContent="";
+  const text=document.createElement("div");
+  text.className="disc-body-text";
+  const content=(item&&item.body)?item.body:"";
+  if(content.length>200){
+    text.textContent=content.slice(0,200)+"…";
+    const more=document.createElement("button");
+    more.className="btn";
+    more.style.cssText="font-size:10px;padding:2px 6px;margin-top:6px";
+    more.type="button";
+    more.textContent="展开全文";
+    more.addEventListener("click",function(){text.textContent=content;more.style.display="none";});
+    body.appendChild(text);
+    body.appendChild(more);
+  }else{
+    text.textContent=content||"（无正文）";
+    body.appendChild(text);
+  }
+  if(item&&item.htmlUrl){
+    const openLink=document.createElement("a");
+    openLink.href=discSafeUrl(item.htmlUrl);
+    openLink.target="_blank";openLink.rel="noopener noreferrer";
+    openLink.textContent="在 GitHub 打开 ↗";
+    openLink.style.cssText="color:#60a5fa;font-size:11px;text-decoration:none;display:inline-block;margin-top:8px";
+    body.appendChild(document.createElement("br"));
+    body.appendChild(openLink);
+  }
+  if(replies.length){
+    for(let i=0;i<replies.length;i++){
+      const r=replies[i];
+      const row=document.createElement("div");
+      row.className="disc-reply";
+      const head=document.createElement("div");
+      head.innerHTML='<span class="author">@'+discEsc(r.author)+'</span> <span class="t">'+discRelTime(r.createdAt)+'</span>';
+      row.appendChild(head);
+      const t=document.createElement("div");
+      t.textContent=r.body||"";
+      row.appendChild(t);
+      body.appendChild(row);
+    }
+  }
+  const actions=document.createElement("div");
+  actions.className="disc-actions";
+  if(!discWriteEnabled){
+    const guide=document.createElement("div");
+    guide.className="disc-guide";
+    guide.innerHTML='🔗 <a href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer">登录 GitHub 参与互动 ↗</a>（留言将公开发布到 GitHub Discussions）';
+    actions.appendChild(guide);
+  }else{
+    const ta=document.createElement("textarea");
+    ta.rows=3;ta.maxLength=1000;ta.placeholder="发布公开留言…";
+    const row=document.createElement("div");
+    row.style.cssText="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap";
+    const btn=document.createElement("button");
+    btn.className="btn btn-p";btn.type="button";btn.textContent="发布";
+    const err=document.createElement("span");
+    err.className="disc-err";
+    const cnt=document.createElement("span");
+    cnt.className="disc-count";cnt.textContent="0/1000";
+    ta.addEventListener("input",function(){cnt.textContent=ta.value.length+"/1000";cnt.classList.toggle("over",ta.value.length>1000);});
+    btn.addEventListener("click",function(){
+      const bodyText=ta.value;
+      if(!bodyText.trim()){err.textContent="留言不能为空";return;}
+      btn.disabled=true;btn.textContent="发布中…";err.textContent="";
+      fetch("/__discussions/comment",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({number:item?item.number:0,body:bodyText})})
+        .then(function(r){return r.json();})
+        .then(function(res){
+          btn.disabled=false;btn.textContent="发布";
+          if(res&&res.ok){
+            ta.value="";cnt.textContent="0/1000";
+            err.textContent="已发布，正在刷新…";
+            bumpDiscOwnSeen();
+            const num=item?item.number:0;
+            const node=document.getElementById("discItem"+num);
+            if(node){
+              const c=node.querySelector(".cnt");
+              if(c)c.textContent="💬"+(parseInt((c.textContent||"").replace(/\\D/g,"")||"0",10)+1);
+            }
+            loadDiscBodyForce(num);
+          }else{
+            err.textContent="发布失败："+((res&&res.error)||"未知错误");
+          }
+        })
+        .catch(function(e){btn.disabled=false;btn.textContent="发布";err.textContent="发布失败："+e.message;});
+    });
+    row.appendChild(btn);
+    row.appendChild(cnt);
+    row.appendChild(err);
+    actions.appendChild(ta);
+    actions.appendChild(row);
+  }
+  body.appendChild(actions);
+}
+
+function loadDiscBodyForce(number){
+  const body=document.getElementById("discBody"+number);
+  if(!body)return;
+  body.removeAttribute("data-loaded");
+  body.textContent="刷新中…";
+  loadDiscBody(number);
+}
+
+function startDiscUnreadPoll(){
+  if(discPollTimer)return;
+  discPollTimer=setInterval(pollDiscUnread,60000);
+}
+
+function stopDiscUnreadPoll(){
+  if(discPollTimer){clearInterval(discPollTimer);discPollTimer=null;}
+}
+
+async function pollDiscUnread(){
+  try{
+    const response=await fetch("/__discussions",{cache:"no-store"});
+    const payload=await response.json();
+    if(!payload||!payload.ok||!Array.isArray(payload.items)||!payload.items.length)return;
+    const ownSet=new Set((Array.isArray(payload.ownNumbers)?payload.ownNumbers:[]).map(Number));
+    let maxTs=0;
+    for(let i=0;i<payload.items.length;i++){
+      if(ownSet.has(Number(payload.items[i].number)))continue;
+      const u=new Date(payload.items[i].updatedAt||0).getTime();
+      if(Number.isFinite(u)&&u>maxTs)maxTs=u;
+    }
+    if(!maxTs)return;
+    let lastSeen=parseInt(localStorage.getItem("discLastSeenUpdatedAt")||"0",10);
+    if(!lastSeen){localStorage.setItem("discLastSeenUpdatedAt",String(maxTs));return;}
+    if(maxTs>lastSeen){
+      document.getElementById("discBtn").classList.add("flash-unread");
+      const dot=document.getElementById("discUnreadDot");
+      if(dot){
+        let count=0;
+        for(let i=0;i<payload.items.length;i++){
+          if(ownSet.has(Number(payload.items[i].number)))continue;
+          const u=new Date(payload.items[i].updatedAt||0).getTime();
+          if(Number.isFinite(u)&&u>lastSeen)count++;
+        }
+        dot.style.display="inline-block";
+        dot.textContent=count>99?"99+":String(count);
+      }
+    }
+  }catch(e){}
+}
+
+function showDiscCreate(){
+  const create=document.getElementById("discCreate");
+  if(!create)return;
+  create.style.display="block";
+  loadDiscCategories();
+  const btn=document.getElementById("discCreateBtn");
+  if(btn)btn.style.display="none";
+}
+
+function hideDiscCreate(){
+  const create=document.getElementById("discCreate");
+  if(create)create.style.display="none";
+  const btn=document.getElementById("discCreateBtn");
+  if(btn)btn.style.display=discWriteEnabled?"inline-block":"none";
+  const err=document.getElementById("discCreateErr");
+  if(err)err.textContent="";
+}
+
+async function loadDiscCategories(){
+  const sel=document.getElementById("discCreateCat");
+  if(!sel)return;
+  try{
+    const response=await fetch("/__discussions/categories",{cache:"no-store"});
+    const payload=await response.json();
+    let html="";
+    if(payload&&payload.ok&&Array.isArray(payload.items)&&payload.items.length){
+      for(let i=0;i<payload.items.length;i++){
+        html+='<option value="'+payload.items[i].id+'">'+discEsc(payload.items[i].name)+'</option>';
+      }
+    }
+    if(!html)html='<option value="">暂无可用分类</option>';
+    sel.innerHTML=html;
+  }catch(e){
+    sel.innerHTML='<option value="">分类加载失败</option>';
+  }
+}
+
+function submitDiscCreate(){
+  const title=document.getElementById("discCreateTitle");
+  const body=document.getElementById("discCreateBody");
+  const cat=document.getElementById("discCreateCat");
+  const err=document.getElementById("discCreateErr");
+  if(!title||!body||!cat||!err)return;
+  const cleanTitle=(title.value||"").trim();
+  const cleanBody=(body.value||"").trim();
+  if(!cleanTitle){err.textContent="标题不能为空";return;}
+  if(!cleanBody){err.textContent="正文不能为空";return;}
+  if(!cat.value){err.textContent="请选择分类";return;}
+  const btn=document.querySelector("#discCreate .btn-p");
+  err.textContent="";
+  if(btn){btn.disabled=true;btn.textContent="发布中…";}
+  fetch("/__discussions/create",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:cleanTitle,body:cleanBody,category:cat.value})})
+    .then(function(r){return r.json();})
+    .then(function(res){
+      if(btn){btn.disabled=false;btn.textContent="发布";}
+      if(res&&res.ok){
+        hideDiscCreate();
+        err.textContent="已发布到 GitHub ↗";
+        bumpDiscOwnSeen();
+        loadDiscussions(true);
+      }else{
+        err.textContent="发布失败："+((res&&res.error)||"未知错误");
+      }
+    })
+    .catch(function(e){
+      if(btn){btn.disabled=false;btn.textContent="发布";}
+      err.textContent="发布失败："+e.message;
+    });
+}
+
+(function initDiscussions(){
+  const body=document.getElementById("discCreateBody");
+  const count=document.getElementById("discCreateCount");
+  if(body&&count){
+    body.addEventListener("input",function(){count.textContent=body.value.length+"/1000";count.classList.toggle("over",body.value.length>1000);});
+  }
+  document.addEventListener("keydown",function(e){
+    if(e.key==="Escape"){
+      const disc=document.getElementById("discModal");
+      if(disc&&disc.classList.contains("on"))closeDiscussions();
+    }
+  });
+  startDiscUnreadPoll();
+})();
+
 async function openLogs(){
   document.getElementById("logModal").classList.add("on");
   logForceHistory=false;
@@ -9831,8 +10799,15 @@ async function saveConfig(){
         report:document.getElementById("cfgTaskInsightDistillReport").value
       }
     },
+    discussions:{
+      enabled:document.getElementById("cfgDiscussionsEnabled").checked,
+      maxItems:configInteger("cfgDiscussionsMaxItems",10)
+    },
     autoResumeProjects:collectResumeProjects()
   };
+  const discTokenInput=document.getElementById("cfgDiscGitHubToken");
+  const discRawToken=discTokenInput?discTokenInput.value.trim():"";
+  if(discRawToken&&discRawToken!==DISC_TOKEN_MASK)c.discussions.githubToken=discRawToken;
   const invalidResumeProject=c.autoResumeProjects.find(p=>p.resumeMode==="fixed_session"&&(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(p.sessionId||"")||!String(p.cmd||"").includes("{sessionId}")));
   if(invalidResumeProject){
     document.getElementById("configStatus").textContent="保存失败: 固定会话模式需要合法会话 ID，且启动命令必须包含 {sessionId}";
@@ -9847,6 +10822,44 @@ async function saveConfig(){
     const j=await r.json();
     if(j.ok){closeConfig();checkForUpdates(false)}else{document.getElementById("configStatus").textContent="保存失败: "+(j.error||"未知错误")};
   }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
+}
+const DISC_TOKEN_MASK="********";
+function toggleDiscTokenVisibility(){
+  const input=document.getElementById("cfgDiscGitHubToken");
+  if(!input)return;
+  if(input.value===DISC_TOKEN_MASK){
+    const hint=document.getElementById("cfgDiscTokenTest");
+    if(hint){hint.textContent="已保存的 Token 出于安全考虑不回显，如需更换请直接输入新值";hint.style.color="#fbbf24";}
+    return;
+  }
+  input.type=input.type==="password"?"text":"password";
+}
+async function testDiscToken(){
+  const el=document.getElementById("cfgDiscTokenTest");
+  const btn=event&&event.target?event.target:null;
+  if(el){el.textContent="测试中…";el.style.color="#64748b";}
+  if(btn){btn.disabled=true;btn.textContent="测试中…";}
+  try{
+    const discTokenInput=document.getElementById("cfgDiscGitHubToken");
+    const discTokenVal=discTokenInput?discTokenInput.value.trim():"";
+    let opts={method:"POST"};
+    if(discTokenVal&&discTokenVal!==DISC_TOKEN_MASK){opts.headers={"content-type":"application/json"};opts.body=JSON.stringify({token:discTokenVal});}
+    const r=await fetch("/__discussions/test-token",opts);
+    const j=await r.json();
+    if(el){
+      if(j&&j.ok&&j.login){
+        let txt="✅ 已连接为 @"+j.login;
+        if(j.discussionsScope&&j.discussionsScope.ok===false){txt+=" ⚠️ Discussions 权限不足："+((j.discussionsScope.message)||"未知");el.style.color="#fbbf24";}
+        else{txt+="（读权限已通；发布/回复写权限以实际发布为准）";el.style.color="#4ade80";}
+        el.textContent=txt;
+      }
+      else{el.textContent="❌ "+((j&&j.error)||"测试失败");el.style.color="#f87171";}
+    }
+  }catch(e){
+    if(el){el.textContent="❌ "+e.message;el.style.color="#f87171";}
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent="测试连通";}
+  }
 }
 let restartPollTimer=null,restartElapsedTimer=null,restartPollingActive=false,restartOldInstanceId="",restartStartedAt=0,restartLastStatus=null,restartActionInFlight=false;
 function restartElapsedText(){
@@ -11468,6 +12481,108 @@ function createGroupServer(groupName, port) {
     return;
   }
 
+  if (req.method === "GET" && pathname === "/__discussions") {
+    const requestUrl = new URL(req.url, "http://localhost");
+    const numberParam = requestUrl.searchParams.get("number") || "";
+    fetchDiscussions(false).then(async (payload) => {
+      let replies = null;
+      if (/^\d+$/.test(numberParam)) {
+        const n = parseInt(numberParam, 10);
+        if (discussionsState.items.some((d) => d.number === n)) {
+          try { replies = (await fetchDiscussionReplies(n)).items; } catch (e) {}
+        }
+      }
+      if (res.destroyed) return;
+      res.writeHead(200, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({ ok: true, ...payload, replies }));
+    }).catch((err) => {
+      if (res.destroyed) return;
+      res.writeHead(200, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({
+        ok: false,
+        error: String(err && err.message ? err.message : err).slice(0, 240),
+        items: discussionsState.items.slice(),
+        checkedAt: discussionsState.checkedAt,
+        stale: discussionsState.stale,
+        savedAt: discussionsState.snapshotSavedAt,
+        lastError: discussionsState.lastError,
+        writeEnabled: !!(config.discussions && config.discussions.githubToken),
+      }));
+    });
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/__discussions/categories") {
+    fetchDiscussionCategories(false).then((payload) => {
+      if (res.destroyed) return;
+      res.writeHead(200, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({ ok: true, ...payload }));
+    }).catch((err) => {
+      if (res.destroyed) return;
+      res.writeHead(200, { ...cors, "cache-control": "no-store" });
+      res.end(JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err).slice(0, 240) }));
+    });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/__discussions/test-token") {
+    let bodyText = "";
+    req.on("data", (chunk) => { if (bodyText.length < 4096) bodyText += chunk; });
+    req.on("end", () => {
+      let payload = null;
+      try { payload = JSON.parse(bodyText || "{}"); } catch { payload = {}; }
+      const override = payload && typeof payload.token === "string" ? payload.token : null;
+      testGitHubToken(override).then((result) => {
+        if (res.destroyed) return;
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      }).catch((err) => {
+        if (res.destroyed) return;
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err).slice(0, 240) }));
+      });
+    });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/__discussions/comment") {
+    let bodyText = "";
+    req.on("data", (chunk) => { if (bodyText.length < 4096) bodyText += chunk; });
+    req.on("end", () => {
+      let payload = null;
+      try { payload = JSON.parse(bodyText || "{}"); } catch { payload = {}; }
+      postDiscussionComment(payload.number, payload.body).then((result) => {
+        if (res.destroyed) return;
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify(result));
+      }).catch((err) => {
+        if (res.destroyed) return;
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err).slice(0, 240) }));
+      });
+    });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/__discussions/create") {
+    let bodyText = "";
+    req.on("data", (chunk) => { if (bodyText.length < 16384) bodyText += chunk; });
+    req.on("end", () => {
+      let payload = null;
+      try { payload = JSON.parse(bodyText || "{}"); } catch { payload = {}; }
+      createDiscussion(payload.title, payload.body, payload.category).then((result) => {
+        if (res.destroyed) return;
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify(result));
+      }).catch((err) => {
+        if (res.destroyed) return;
+        res.writeHead(200, { ...cors, "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err).slice(0, 240) }));
+      });
+    });
+    return;
+  }
+
   if (req.method === "GET" && pathname === "/__task-insight-status") {
     res.writeHead(200, { ...cors, "cache-control": "no-store" });
     res.end(JSON.stringify({ ok: true, ...taskInsightStatusPayload() }));
@@ -11673,8 +12788,12 @@ function createGroupServer(groupName, port) {
 
   if (pathname === "/__config") {
     if (req.method === "GET") {
+      const safeConfig = { ...config };
+      if (safeConfig.discussions && typeof safeConfig.discussions === "object") {
+        safeConfig.discussions = { ...safeConfig.discussions, githubToken: "" };
+      }
       res.writeHead(200, cors);
-      res.end(JSON.stringify({ ...config, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime, lastRequestTime, lastKeyUseTime, lastResumeTime, codexLogMaintenanceRuntime: getCodexLogMaintenanceRuntimeStatus() }, null, 2));
+      res.end(JSON.stringify({ ...safeConfig, autoRecoverNextTime, autoRecoverDailyNextTime, autoRecoverPollNextTime, lastRequestTime, lastKeyUseTime, lastResumeTime, codexLogMaintenanceRuntime: getCodexLogMaintenanceRuntimeStatus(), hasDiscussionsToken: !!(config.discussions && config.discussions.githubToken) }, null, 2));
       return;
     }
     if (req.method === "PUT") {
@@ -11699,6 +12818,7 @@ function createGroupServer(groupName, port) {
             }
             const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
             const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
+            const priorDiscussions = cur.discussions && typeof cur.discussions === "object" ? { ...cur.discussions } : null;
             Object.assign(cur, c);
             normalizeRuntimeStorageConfig(cur);
             normalizeResponsesStreamConfig(cur);
@@ -11718,6 +12838,10 @@ function createGroupServer(groupName, port) {
             }
             if (Object.prototype.hasOwnProperty.call(c, "taskInsight")) {
               cur.taskInsight = normalizeTaskInsightConfig(c.taskInsight);
+            }
+            if (Object.prototype.hasOwnProperty.call(c, "discussions")) {
+              const mergedDiscussions = Object.assign({}, priorDiscussions || DISCUSSIONS_DEFAULT_CONFIG, c.discussions);
+              cur.discussions = normalizeDiscussionsConfig(mergedDiscussions);
             }
             if (Object.prototype.hasOwnProperty.call(c, "codexLogMaintenance")) {
               cur.codexLogMaintenance = normalizeCodexLogMaintenanceConfig(cur.codexLogMaintenance);
@@ -12850,6 +13974,7 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Start servers
 loadConfig();
+loadDiscussionsSnapshot();
 refreshLocalBuildProvenance();
 cleanOldLogs();
 loadLogSummary();
