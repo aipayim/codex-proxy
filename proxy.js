@@ -9965,6 +9965,10 @@ function hideDiscCreate(){
   if(btn)btn.style.display=discWriteEnabled?"inline-block":"none";
   const err=document.getElementById("discCreateErr");
   if(err)err.textContent="";
+  const title=document.getElementById("discCreateTitle");
+  const body=document.getElementById("discCreateBody");
+  if(title)title.value="";
+  if(body)body.value="";
 }
 
 async function loadDiscCategories(){
