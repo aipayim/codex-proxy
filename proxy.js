@@ -2822,6 +2822,7 @@ function extractUpstreamErrorMessage(payload) {
 
 function classifyUpstreamErrorMessage(message) {
   const text = String(message || "");
+  if (/model (not found|does not exist|is not supported|is not available|not allowed)|no such model|unknown model|model_not_found|model_does_not_exist|invalid model|model .*doesn'?t exist|is not a valid model|model .*not found|does not support.*model|unsupported model|not supported by this model/i.test(text)) return "model_not_found";
   if (/capacity|at capacity|overloaded|busy|try a different model|not currently available/i.test(text)) return "model_at_capacity";
   if (/quota|insufficient|billing|billing_hard_limit|_limit_exceeded|usage limit|usage_limit|daily limit|weekly limit|monthly limit/i.test(text)) return "insufficient_quota";
   return "upstream_api_error";
@@ -5824,6 +5825,7 @@ function processQueue() {
 
 function loadAccounts() {
   _boostKey = -1; _boostBatch=[]; _boostBatchMode=""; _boostBatchCursor=0; _boostBatchPool=[]; _boostBatchPoolIdx=0; // clear boost on key reload
+  upstreamModelsCache.clear(); // key indices may shift on reload; drop stale capability cache
   const raw = fs.readFileSync(KEYS_FILE, "utf-8");
   const parsed = JSON.parse(raw);
   const oldAccounts = accounts;
@@ -5964,6 +5966,192 @@ function activeDecr(idx) {
   }
 }
 
+// --- Upstream model capability discovery & model-name adaptation ---
+const UPSTREAM_MODELS_TTL_MS = 10 * 60 * 1000;
+// Failed probes retry much sooner than healthy ones (e.g. a relay being probed
+// at startup while 343 keys hammer its /v1/models should recover in seconds,
+// not stay "unknown" for the whole TTL).
+const UPSTREAM_PROBE_FAIL_TTL_MS = 30 * 1000;
+const UPSTREAM_PROBE_MAX_CONCURRENT = 3;
+const upstreamModelsCache = new Map(); // upstream URL -> capability entry
+const upstreamProbeInFlight = new Map(); // upstream URL -> in-flight Promise
+const upstreamProbeQueue = [];
+let upstreamProbeActive = 0;
+const CLAUDE_TIER_MODELS = ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
+
+function classifyUpstreamCapability(ids) {
+  const claudeModels = [];
+  const gptModels = [];
+  for (const id of ids || []) {
+    const s = String(id);
+    if (/^claude/i.test(s)) claudeModels.push(s);
+    else if (/^(gpt|o[0-9]|o1|o3|o4|davinci|text-)/i.test(s)) gptModels.push(s);
+  }
+  let capability = "unknown";
+  if (claudeModels.length && gptModels.length) capability = "mixed";
+  else if (claudeModels.length) capability = "claude";
+  else if (gptModels.length) capability = "gpt";
+  return { models: (ids || []).slice(), claudeModels, gptModels, capability };
+}
+
+function parseUpstreamModels(data) {
+  try {
+    const j = JSON.parse(data);
+    const arr = Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : null;
+    if (!arr) return [];
+    return arr.map(m => (m && m.id) || m).filter(x => typeof x === "string" && x);
+  } catch (e) { return []; }
+}
+
+// Multiple keys behind the SAME upstream URL share one capability entry, so a
+// group of 343 keys to the same relay triggers exactly one probe instead of a
+// startup storm that rate-limits the relay and leaves capability "unknown".
+function upstreamCacheKeyFor(idx) {
+  const acct = accounts[idx];
+  if (!acct) return null;
+  let key = acct.url;
+  try {
+    const u = new URL(acct.url);
+    key = u.origin + u.pathname.replace(/\/+$/, "");
+  } catch (e) {}
+  return key;
+}
+
+function cachedCapabilityTTL(cap) {
+  return cap && cap.failed ? UPSTREAM_PROBE_FAIL_TTL_MS : UPSTREAM_MODELS_TTL_MS;
+}
+
+function getCachedCapability(idx) {
+  const key = upstreamCacheKeyFor(idx);
+  if (!key) return null;
+  const cap = upstreamModelsCache.get(key);
+  if (!cap) return null;
+  if (Date.now() - cap.fetchedAt >= cachedCapabilityTTL(cap)) return null;
+  return cap;
+}
+
+function pumpUpstreamProbes() {
+  while (upstreamProbeActive < UPSTREAM_PROBE_MAX_CONCURRENT && upstreamProbeQueue.length) {
+    const job = upstreamProbeQueue.shift();
+    job();
+  }
+}
+
+function doProbeUpstream(acct) {
+  return new Promise((resolve) => {
+    let targetUrl;
+    try { targetUrl = new URL(acct.url); } catch (e) { resolve({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true, fetchedAt: Date.now() }); return; }
+    const mod = HTTP_MOD[targetUrl.protocol] || https;
+    const opts = {
+      hostname: targetUrl.hostname,
+      port: targetUrl.port || (targetUrl.protocol === "http:" ? 80 : 443),
+      path: "/v1/models",
+      method: "GET",
+      headers: { authorization: "Bearer " + acct.key, "content-type": "application/json", "user-agent": "codex-proxy/3" },
+      timeout: 8000,
+    };
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      resolve({ ...result, fetchedAt: Date.now() });
+    };
+    const req = mod.request(opts, (apiRes) => {
+      let data = "";
+      apiRes.on("data", (c) => (data += c));
+      apiRes.on("end", () => {
+        if (apiRes.statusCode === 200) finish(classifyUpstreamCapability(parseUpstreamModels(data)));
+        else finish({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true });
+      });
+    });
+    req.on("error", () => finish({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true }));
+    req.on("timeout", () => { req.destroy(); finish({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true }); });
+    req.end();
+  });
+}
+
+function probeUpstreamModels(idx) {
+  const acct = accounts[idx];
+  if (!acct) return Promise.resolve(null);
+  const key = upstreamCacheKeyFor(idx);
+  if (!key) return Promise.resolve(null);
+  const cap = upstreamModelsCache.get(key);
+  if (cap && Date.now() - cap.fetchedAt < cachedCapabilityTTL(cap)) return Promise.resolve(cap);
+  if (upstreamProbeInFlight.has(key)) return upstreamProbeInFlight.get(key);
+  const run = () => doProbeUpstream(acct).then(result => {
+    upstreamModelsCache.set(key, result);
+    return result;
+  }).finally(() => {
+    upstreamProbeActive--;
+    upstreamProbeInFlight.delete(key);
+    pumpUpstreamProbes();
+  });
+  const start = () => { upstreamProbeActive++; return run(); };
+  const promise = upstreamProbeActive >= UPSTREAM_PROBE_MAX_CONCURRENT
+    ? new Promise((resolve, reject) => { upstreamProbeQueue.push(() => start().then(resolve, reject)); })
+    : start();
+  upstreamProbeInFlight.set(key, promise);
+  return promise;
+}
+
+function getUpstreamCapability(idx) {
+  const cap = getCachedCapability(idx);
+  if (!cap) return null;
+  return cap;
+}
+
+function ensureUpstreamCapability(idx) {
+  const cap = getCachedCapability(idx);
+  if (cap) return Promise.resolve(cap);
+  return probeUpstreamModels(idx);
+}
+
+function modelStrengthRank(id) {
+  const s = String(id).toLowerCase();
+  let rank = 0;
+  const ver = s.match(/(?:gpt|o)[- ]?(\d+(?:\.\d+)?)/i);
+  if (ver) rank = parseFloat(ver[1]) * 100;
+  if (/pro|max|ultra|opus|sol/.test(s)) rank += 30;
+  else if (/sonnet/.test(s)) rank += 20;
+  else if (/mini|small|nano|haiku|light|lite|fast/.test(s)) rank -= 20;
+  return rank;
+}
+
+function pickNearestModel(candidates, requestedModel) {
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+  const sorted = candidates.slice().sort((a, b) => modelStrengthRank(b) - modelStrengthRank(a));
+  const req = String(requestedModel || "").toLowerCase();
+  if (/opus|pro|max|ultra|top|best/.test(req)) return sorted[0];
+  if (/haiku|mini|small|nano|light|lite|fast/.test(req)) return sorted[sorted.length - 1];
+  return sorted[0];
+}
+
+function resolveUpstreamModel(acct, capability, requestedModel) {
+  if (acct && acct.model) return acct.model;
+  if (!requestedModel) return requestedModel;
+  if (!capability || !Array.isArray(capability.models)) return requestedModel;
+  const req = String(requestedModel);
+  const isClaudeReq = /^claude/i.test(req);
+  const isGptReq = /^(gpt|o[0-9]|o1|o3|o4|davinci|text-)/i.test(req);
+  if (isClaudeReq) {
+    if (capability.capability === "claude" || capability.capability === "mixed") return requestedModel;
+    if (capability.capability === "gpt" && capability.gptModels.length) {
+      return pickNearestModel(capability.gptModels, req) || requestedModel;
+    }
+    return requestedModel;
+  }
+  if (isGptReq) {
+    if (capability.capability === "gpt" || capability.capability === "mixed") return requestedModel;
+    if (capability.capability === "claude" && capability.claudeModels.length) {
+      return pickNearestModel(capability.claudeModels, req) || requestedModel;
+    }
+    return requestedModel;
+  }
+  return requestedModel;
+}
+// --- End upstream model adaptation ---
+
 function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel, taskInsightSink) {
   const lifecycle = extraTransform?._lifecycle || null;
   // Keep the legacy Responses-named settings, but use the long-running coding
@@ -6037,8 +6225,22 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         // every key through capacity retries. Message-classified capacity errors
         // remain transient and use the short capacity backoff.
         const isCapacity = (statusCode === 429 && reason !== "insufficient_quota") || reason === "model_at_capacity";
+        // Model-level errors (the requested model does not exist / is not
+        // supported on this upstream) are deterministic for EVERY key behind the
+        // same upstream URL. Switching keys cannot help, and cooling a healthy
+        // key for a model the upstream never had would burn the whole pool. The
+        // key is not the problem, so leave it untouched and let the caller fail
+        // fast (optionally retrying a DIFFERENT upstream URL).
+        const isModelLevel = reason === "model_not_found";
         activeDecr(idx);
-        if (isCapacity) {
+        if (isModelLevel) {
+          // No markFailure, no capacity backoff: the key stays healthy.
+        } else if (isCapacity) {
+          markCapacityBackoff(idx);
+        } else if (isServerError) {
+          // 5xx is transient upstream pressure, not key invalidation. Use a
+          // short soft backoff so a deterministic upstream failure (e.g. a
+          // gpt-only relay rejecting a claude model) never hard-cools keys.
           markCapacityBackoff(idx);
         } else {
           markFailure(idx, statusCode, reason);
@@ -6057,7 +6259,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         });
         addLog(logEntry);
         const _ks1=getKeyState(idx);_ks1.lastStatus=statusCode;_ks1.lastTime=Date.now();_ks1.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
-        onDone({ switched: true, idx, code: statusCode, reason, errorMessage, source: "upstream_http_error", capacityRetry: isCapacity });
+        onDone({ switched: true, idx, code: statusCode, reason, errorMessage, source: "upstream_http_error", capacityRetry: isCapacity, modelLevel: isModelLevel, urlLevel: isModelLevel || isServerError });
       });
       return;
     }
@@ -6313,19 +6515,17 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
 
   if (body) {
     let bodyToWrite = body;
-    if (acct.model) {
-      try {
-        const parsed = JSON.parse(body.toString());
-        parsed.model = acct.model;
+    try {
+      const parsed = JSON.parse(body.toString());
+      const reqModel = cleanModel || parsed.model;
+      const capability = getUpstreamCapability(idx);
+      const effective = acct.model || resolveUpstreamModel(acct, capability, reqModel);
+      if (effective && effective !== parsed.model) {
+        parsed.model = effective;
         bodyToWrite = Buffer.from(JSON.stringify(parsed));
-      } catch(e) {}
-    } else if (cleanModel) {
-      try {
-        const parsed = JSON.parse(body.toString());
-        parsed.model = cleanModel;
-        bodyToWrite = Buffer.from(JSON.stringify(parsed));
-      } catch(e) {}
-    }
+        if (!acct.model && !logEntry.overrideModel) logEntry.overrideModel = effective;
+      }
+    } catch(e) {}
     if (!supportsCacheControl(acct.url)) {
       try {
         const parsed = JSON.parse(bodyToWrite.toString());
@@ -6352,6 +6552,12 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
   group = group || "A";
   let responded = false;
   const usedKeys = new Set();
+  // Upstream URLs that already failed this request at the model/server level.
+  // Switching to another key behind the SAME URL is deterministic: it will fail
+  // identically and only cool healthy keys. Keys behind a DIFFERENT URL may
+  // still be tried (a claude-capable relay in the same group can serve a model
+  // a gpt-only relay rejects).
+  const failedUrls = new Set();
   const activeCount = accounts.filter(a => a.status === "active" && (a.group || "A") === group).length;
   let retries = 0;
   const MAX_RETRIES = Math.max(activeCount * 2, 10);
@@ -6397,7 +6603,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       addDownstreamTerminalLog(failure.idx, {
         reason: failure.reason || "upstream_api_error",
         errorMessage: failure.errorMessage || "",
-        status: 502,
+        status: failure.modelLevel ? 400 : 502,
         group,
         method,
         path: pathname,
@@ -6406,10 +6612,42 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       });
     }
     if (canRespond && !clientRes.headersSent) {
-      clientRes.writeHead(502, { "content-type": "application/json" });
-      clientRes.end(JSON.stringify({ error: fallbackMessage || "All keys exhausted" }));
+      if (failure && failure.modelLevel) {
+        // Deterministic model rejection: the requested model does not exist on
+        // any live upstream. Return a clear client error so the app can switch
+        // models instead of hammering the proxy. Keys stay healthy.
+        const msg = failure.errorMessage || "Requested model is not supported by the upstream";
+        clientRes.writeHead(400, { "content-type": "application/json" });
+        clientRes.end(JSON.stringify({ error: { message: msg, type: "invalid_request_error", code: "model_not_found" } }));
+      } else {
+        clientRes.writeHead(502, { "content-type": "application/json" });
+        clientRes.end(JSON.stringify({ error: fallbackMessage || "All keys exhausted" }));
+      }
     }
     responded = true;
+  }
+  function pickNextKey() {
+    // Prefer keys behind upstream URLs that have not already failed this request.
+    // When all remaining healthy keys point at failed upstreams, return -1 so the
+    // caller fails fast instead of churning the same deterministic failure.
+    let idx = pickKey(model, group);
+    if (idx < 0) return -1;
+    if (!failedUrls.has(accounts[idx].url)) return idx;
+    // Scan for the best candidate behind a still-live URL.
+    const candidates = [];
+    for (let i = 0; i < accounts.length; i++) {
+      const a = accounts[i];
+      if (!a || a.status !== "active" || (a.group || "A") !== group) continue;
+      if (failedUrls.has(a.url)) continue;
+      if (usedKeys.has(i)) continue;
+      if (inCooldown(i) || getKeyState(i).status === "discarded" || getKeyState(i).status === "locked") continue;
+      if (!isInTimeWindow(a)) continue;
+      if (!rateLimitAllow(i)) continue;
+      candidates.push(i);
+    }
+    if (!candidates.length) return -1;
+    candidates.sort((x, y) => (accounts[y].priority || 0) - (accounts[x].priority || 0) || x - y);
+    return candidates[0];
   }
   function attempt() {
     if (responded) return;
@@ -6439,14 +6677,25 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
       return;
     }
     retries++;
-    const idx = pickKey(model, group);
-    if (idx < 0 || (usedKeys.has(idx) && inCooldown(idx))) {
-      if (idx < 0) {
-        console.log(`[proxy] No available keys, queueing request`);
-        enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, lastFailure);
-        responded = true;
+    // Prefer keys behind upstream URLs that have not already failed this request
+    // at the model/server level. Trying another key on the SAME failed upstream
+    // is deterministic and would only cool a healthy key for nothing.
+    const idx = pickNextKey();
+    if (idx < 0) {
+      // Every eligible key sits behind a URL that already failed at the model or
+      // server level this request: retrying/queueing the same upstreams cannot
+      // succeed, so fail fast instead of re-burning the pool.
+      if (failedUrls.size) {
+        console.error(`[proxy] All upstream URLs failed for this request, failing fast`);
+        reportFinalFailure(lastFailure, lastFailure && lastFailure.modelLevel ? "Requested model is not supported by any upstream in this group" : "All upstreams failed for this request");
         return;
       }
+      console.log(`[proxy] No available keys, queueing request`);
+      enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, lastFailure);
+      responded = true;
+      return;
+    }
+    if (usedKeys.has(idx) && inCooldown(idx)) {
       console.error(`[proxy] All accounts exhausted`);
       reportFinalFailure(lastFailure, "All keys exhausted");
       return;
@@ -6457,6 +6706,7 @@ function forwardWithPriority(method, headers, body, clientRes, pathname, extraTr
     console.log(`[proxy] → #${idx + 1}${tag} ${a.url}`);
     forwardRequest(idx, method, headers, body, clientRes, pathname, (r) => {
       if (r.switched) lastFailure = r;
+      if (r.urlLevel) failedUrls.add(a.url);
       if (r.capacityRetry) {
         // Transient capacity: requeue the request instead of hot-cycling every
         // key (each of which would just 429 again). It waits in the queue up to
@@ -13859,6 +14109,39 @@ function createGroupServer(groupName, port) {
   }
   // --- End protocol conversion routes ---
 
+  if (pathname === "/v1/models" && req.method === "GET") {
+    const ua = String(req.headers["user-agent"] || "");
+    const isClaudeClient = /claude/i.test(ua);
+    if (isClaudeClient) {
+      // Claude Code 只识别 claude-* 模型名。若组内有 claude 能力上游则返回其列表，
+      // 否则返回合成的 claude 档位列表，实际请求由 resolveUpstreamModel 按上游能力就近映射。
+      const groupIdxs = [];
+      for (let i = 0; i < accounts.length; i++) {
+        const a = accounts[i];
+        if (a.status === "active" && (a.group || "A") === groupName) groupIdxs.push(i);
+      }
+      const respond = (list) => {
+        res.writeHead(200, { ...cors, "access-control-allow-origin": "*", "cache-control": "no-store" });
+        res.end(JSON.stringify({ object: "list", data: list.map((id) => ({ id })) }));
+      };
+      if (!groupIdxs.length) { respond(CLAUDE_TIER_MODELS); return; }
+      Promise.all(groupIdxs.map((i) => ensureUpstreamCapability(i).catch(() => null))).then(() => {
+        const claudeIds = [];
+        const seen = new Set();
+        for (const i of groupIdxs) {
+          const cap = getCachedCapability(i);
+          if (cap && cap.claudeModels) {
+            for (const id of cap.claudeModels) {
+              if (!seen.has(id)) { seen.add(id); claudeIds.push(id); }
+            }
+          }
+        }
+        respond(claudeIds.length ? claudeIds : CLAUDE_TIER_MODELS);
+      });
+      return;
+    }
+  }
+
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
@@ -13945,6 +14228,9 @@ function initServers() {
   }
   return Promise.allSettled(promises).then(() => {
     broadcastStatus();
+    for (let i = 0; i < accounts.length; i++) {
+      probeUpstreamModels(i).catch(() => {});
+    }
   });
 }
 

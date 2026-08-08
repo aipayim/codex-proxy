@@ -6,6 +6,8 @@
 
 **三向协议转换**：本代理自动在 OpenAI Responses API、Anthropic Messages API、OpenAI Chat Completions API 三者之间双向转换。下游任意客户端（Codex CLI、Claude Code CLI、Chat 应用）可连接任意上游模型（OpenAI、Anthropic、DeepSeek、Kimi、Qwen、Gemini、Grok 等），零配置自动检测。
 
+**模型智能适配**：协议层之外，代理运行时探测各上游实际可用的模型列表并缓存（10 分钟 TTL），自动翻译下游模型名与上游可识别模型名之间的差异。Claude Code 发 `claude-*`、上游是 gpt 中转 → 自动就近映射到上游可用的 gpt 模型；Codex/其他终端发 `gpt-*`、上游是 claude 中转 → 自动映射到 claude 模型。优先级：Key 配置的 `model` 覆盖字段 > 上游能力适配 > 原样透传。上游探测失败时保守透传不硬猜，不影响其他客户端。
+
 **超越 cc-switch 之处**：
 - **运行时代理**，非配置管理工具——cc-switch 是本地配置切换器，本代理是网络层透明代理，无需修改客户端配置即可工作
 - **三向全协议转换**：cc-switch 仅支持 Anthropic→OpenAI 单向；本代理支持 Responses↔Chat↔Messages 三向互转 + 混合账号 2 阶段 fallback
@@ -302,9 +304,14 @@ codex
 | `model`（覆盖模型） | 转发替换：强制上游使用此模型 | 发送请求时 |
 
 **行为**：
-- `model` 填充后 → 无论 CLI 发什么模型，代理在转发前将 `body.model` 强制替换为该值
-- `model` 为空 → 透传 CLI 的原始模型（与旧版一致）
-- 若该 Key 的 API Key 不支持 `model` 指定的模型，上游返回错误，Key 进入冷却
+- `model` 填充后 → 无论 CLI 发什么模型，代理在转发前将 `body.model` 强制替换为该值（最高优先级）
+- `model` 为空 → 走**模型智能适配**：代理探测该上游的模型列表（按上游 URL 去重缓存，成功 TTL 10 分钟，失败 30 秒快速重试，失败期间降级 `unknown`），按需就近映射——
+  - Claude Code 发 `claude-opus-4-5` 等 claude 模型名、上游是 gpt 中转 → 自动映射到上游可用且最强的 gpt 模型
+  - Claude Code 发 `claude-haiku-4-5`（小档位）→ 映射到上游最小的 gpt 模型
+  - Codex CLI 发 `gpt-5.6`、上游是 claude 中转 → 自动映射到 claude 模型
+  - 上游能力为 claude/mixed、或模型名非 claude/gpt 家族 → 原样透传（与旧版一致）
+  - 上游探测失败（`unknown`）→ 保守透传不硬猜，不影响其他客户端
+- 若该 Key 的 API Key 不支持最终使用的模型，上游返回错误，Key 进入冷却（可用 `model` 覆盖字段修正）
 - 不影响 `models` 路由过滤：两者可组合使用
 
 **典型场景**：
@@ -315,6 +322,8 @@ codex
 #
 # CLI 发 model=gpt-5.5 → pickKey 匹配 → 转发时替换为 gpt-5.6-sol
 ```
+
+**Claude Code 接入 gpt 中转（零配置）**：把 gpt 中转的 Key 放入任意分组（如 A 组 3456），Claude Code 直接指向该端口即可。代理对 `GET /v1/models` 自动返回 claude-* 档位列表（`claude-opus-4-5` / `claude-sonnet-4-5` / `claude-haiku-4-5`，组内存在 claude 能力上游时则透传其真实 claude 列表），转发时按上述规则就近映射到 gpt 模型。若映射结果不合口味，给该 Key 设置 `model` 字段即可强制覆盖。
 
 ### 错峰时段
 
