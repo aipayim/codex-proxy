@@ -4,13 +4,13 @@
 
 ## 核心能力
 
-**三向协议转换**：本代理自动在 OpenAI Responses API、Anthropic Messages API、OpenAI Chat Completions API 三者之间双向转换。下游任意客户端（Codex CLI、Claude Code CLI、Chat 应用）可连接任意上游模型（OpenAI、Anthropic、DeepSeek、Kimi、Qwen、Gemini、Grok 等），零配置自动检测。
+**三向协议转换**：本代理自动在 OpenAI Responses API、Anthropic Messages API、OpenAI Chat Completions API 三者之间双向转换，形成 3×3 全协议适配矩阵。下游任意客户端（Codex CLI、Claude Code CLI、Chat 应用）可连接任意上游（OpenAI、Anthropic、DeepSeek、Kimi、Qwen、Gemini、Grok 及任意 Chat 兼容中继），零配置自动检测上游协议，同协议透传、跨协议转换。
 
 **模型智能适配**：协议层之外，代理运行时探测各上游实际可用的模型列表并缓存（10 分钟 TTL），自动翻译下游模型名与上游可识别模型名之间的差异。Claude Code 发 `claude-*`、上游是 gpt 中转 → 自动就近映射到上游可用的 gpt 模型；Codex/其他终端发 `gpt-*`、上游是 claude 中转 → 自动映射到 claude 模型。优先级：Key 配置的 `model` 覆盖字段 > 上游能力适配 > 原样透传。上游探测失败时保守透传不硬猜，不影响其他客户端。
 
 **超越 cc-switch 之处**：
 - **运行时代理**，非配置管理工具——cc-switch 是本地配置切换器，本代理是网络层透明代理，无需修改客户端配置即可工作
-- **三向全协议转换**：cc-switch 仅支持 Anthropic→OpenAI 单向；本代理支持 Responses↔Chat↔Messages 三向互转 + 混合账号 2 阶段 fallback
+- **三向全协议转换**：cc-switch 仅支持 Anthropic→OpenAI 单向；本代理支持 Responses↔Chat↔Messages 三向互转 + 任意协议混合账号多池回退
 - **多 Key 智能调度**：基于健康评分、冷却状态、滑动成功率、延迟百分位的自动路由，非简单的轮询或手动选择
 - **系统级容灾**：自动锁死、自动恢复、废弃检测、队列缓冲、并发管控——无需人工干预
 - **完整监控面板**：实时仪表盘、按 Key 统计、流量趋势、请求日志（含 sparkline/错误聚类/模型分布）、Prometheus 指标、Webhook/桌面通知
@@ -42,6 +42,7 @@ codex-proxy/
 ├── proxy-log-rotator.js  # WSL watchdog 控制台日志分段轮转器
 ├── test-release-provenance.js # 发布来源判定回归测试
 ├── test-stream-lifecycle.js # Responses / Messages 流终态回归测试
+├── test-protocol-matrix.js # 3×3 协议适配矩阵（转换器 + 流转换 + 协议探测 + buildForwardPlan）回归测试
 ├── test-restart-lifecycle.js # 重启排空、取消与强制重启回归测试
 ├── test-auto-resume-lifecycle.js # Key 心跳闲置恢复与 watchdog 重载回归测试
 ├── test-resume-runner-lifecycle.js # 闲置恢复 runner 租约、退出与信号回归测试
@@ -71,6 +72,7 @@ GitHub 源码仓库保留构建器和全部回归测试，供发布维护者在�
 | `build-release.js` | 发布资产生成工具 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-release-provenance.js` | 发布来源回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-stream-lifecycle.js` | Responses / Messages 流终态回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
+| `test-protocol-matrix.js` | 3×3 协议适配矩阵（转换器 / 流转换 / 非流式 / 协议探测 / buildForwardPlan）回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-restart-lifecycle.js` | 重启生命周期回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-auto-resume-lifecycle.js` | Key 心跳闲置恢复与 watchdog 重载回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
 | `test-resume-runner-lifecycle.js` | 闲置恢复 runner 租约、退出与信号回归测试 | 发布维护者需要；与 `proxy.js` 同级 |
@@ -595,9 +597,9 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 | `/__pathstats` | GET | 按路径/模型的请求分布 |
 | `/metrics` | GET | Prometheus 格式指标 |
 | `/responses` | POST | 原生 Responses 透传；`stream:true` 时保留上游字节并检查 `response.completed`，若上游提前结束则补发一次 `response.failed` |
-| `/v1/responses` | POST | **协议转换**：接收 Codex CLI 的 Responses API 请求，自动转换为 Chat Completions 格式转发给上游（非 OpenAI / ofox），并将响应流式转换回 Responses 格式 |
-| `/v1/messages` | POST | **协议转换**：接收 Claude Code CLI 的 Messages API 请求，自动转换为 Chat Completions 格式转发给上游（非 Anthropic），并将响应流式转换回 Messages 格式；仅在上游明确 `[DONE]` 后发送 `message_stop` |
-| `/v1/chat/completions` | POST | **协议转换**：接收 Chat Completions 请求，如上游为 Anthropic 则自动转换为 Messages 格式转发，并将响应流式转换回 Chat 格式；非 Anthropic 上游直接透传 |
+| `/v1/responses` | POST | **全协议适配**：接收 Responses API 请求，上游为原生 Responses 则直通，否则自动转换为 Chat / Messages 格式转发，并将响应流式（或非流式）转换回 Responses 格式 |
+| `/v1/messages` | POST | **全协议适配**：接收 Messages API 请求，上游为原生 Messages 则直通，否则自动转换为 Chat / Responses 格式转发，并将响应转换回 Messages 格式；仅在上游明确完成终态后发送 `message_stop` |
+| `/v1/chat/completions` | POST | **全协议适配**：接收 Chat Completions 请求，上游为原生 Chat 则直通，否则自动转换为 Messages / Responses 格式转发，并将响应转换回 Chat 格式 |
 | `ws://localhost:3456/?token=<token>` | WS | WebSocket 实时推送（设置了管理 Token 时需在 URL 中携带 token 参数） |
 | `/__discussions` | GET | GitHub 会话流：最新 `maxItems` 条 Discussions 列表（只读，匿名即可）；`?number=n` 附带该会话回复。服务端 60s 缓存 + 落盘快照回退；失败返回 `lastError` 与缓存/快照数据，不影响代理主流程 |
 | `/__discussions/categories` | GET | 会话分类（GraphQL，需已配置 Token；未配置返回空） |
@@ -609,19 +611,21 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 ### 协议转换说明
 
-协议转换层使任意下游客户端可连接任意上游模型：
+协议转换层使任意下游客户端可连接任意上游模型，形成 3×3 全协议适配矩阵：
 
 | 下游客户端 | 请求路径 | 转换方向 | 支持的上游 |
 |---|---|---|---|
 | Codex CLI | `/responses` | 原生 Responses 直通 + 终态保护 | 原生 Responses 上游 |
-| Codex CLI | `/v1/responses` | Responses → Chat → Responses | 任意 OpenAI 兼容 API |
-| Claude Code CLI | `/v1/messages` | Messages → Chat → Messages | 任意 OpenAI 兼容 API |
-| Chat 客户端 | `/v1/chat/completions` | Chat → Messages → Chat | Anthropic |
+| Codex CLI | `/v1/responses` | Responses → Chat / Messages → Responses | 任意 Chat / Messages / Responses 上游 |
+| Claude Code CLI | `/v1/messages` | Messages → Chat / Responses → Messages | 任意 Chat / Messages / Responses 上游 |
+| Chat 客户端 | `/v1/chat/completions` | Chat → Messages / Responses → Chat | 任意 Chat / Messages / Responses 上游 |
 
-- 转换基于路径（`/v1/responses`, `/v1/messages`, `/v1/chat/completions`）自动触发；`/responses` 保持原生协议字节直通，并只增加终态保护
-- 上游检测基于 `keys.json` 中的 `url` 字段：`api.openai.com`/`api.ofox.ai` = Responses 原生，`api.anthropic.com` = Messages 原生，其余 = Chat 通用
-- 所有上游模型（含 OpenAI、Kimi、DeepSeek、Grok、Qwen、Gemini 等）均支持三种下游客户端
-- 当前仅支持流式（`stream: true`）请求；非流式请求将按流式处理返回 SSE
+- 上游协议自动检测：`keys.json` 中的 `url` 静态判定（`api.openai.com`/`api.ofox.ai` = Responses 原生，`api.anthropic.com` = Messages 原生，其余 = Chat 通用），并对未知中继做动态探测（`/v1/models` 可用即 Chat，否则依次探测 `/v1/messages`、`/v1/responses` 端点）。动态结果写入独立协议缓存（24 小时 TTL），与模型列表缓存（成功 10 分钟 / 失败 30 秒）解耦：即使中继的 `/v1/models` 探测失败，已识别出的 Messages / Responses 协议也不会被错误降级回 Chat。后台每 10 分钟按 URL 去重重探各上游（同池多 Key 仅触发一次探测），新增/改配 Key 无需重启即可生效
+- `/v1/chat/completions` 路由的多协议池判定同样使用动态协议：组内任一账号（静态白名单或动态探测）被识别为 Messages / Responses 上游，即自动启用 Chat→Messages / Chat→Responses 转换回退，无需在 `url` 上显式标记
+- 同协议上游优先透传（字节直通 / 终态保护），跨协议才做转换，避免无谓重写；协议池顺序：下游 Chat → `chat, messages, responses`；下游 Messages → `messages, chat, responses`；下游 Responses → `responses, chat, messages`
+- 任一 Key 失败自动切换到池内下一协议的下游 Key 重试，`#N` 强制指定 Key、boost/轮询、冷却与容量重排队照常生效
+- 转换同时支持**流式与非流式**：跨协议时流式 body 强制 `stream:true`，响应经 SSE 转换器回写；非流式请求走一次性 JSON 响应转换器
+- 转换字段覆盖：文本、system/instructions、工具定义与调用链（`tool_use`↔`function_call`）、思考内容（`thinking`↔`reasoning`↔`reasoning_content`）、图片、usage 统计
 
 #### Responses / Messages 流终态与编码 CLI 断开排查
 
@@ -643,12 +647,9 @@ Webhook URL、价格参数、桌面通知/声音开关、🔄 自动恢复冷却
 
 #### 混合账号 fallback（Chat 客户端 → Anthropic）
 
-`/v1/chat/completions` 路由在存在 Anthropic 账号时自动启用两阶段 fallback：
+`/v1/chat/completions` 路由在组内存在 Messages / Responses 账号（静态白名单或动态探测结果均可，后者见「上游协议自动检测」）时自动启用多协议池回退：先尝试同协议 Chat 上游（字节直通），Chat 池全部失败后自动转换为 Messages 格式尝试 Anthropic 上游，再转换为 Responses 格式尝试 Responses 原生上游；任一协议池内的所有 Key 均失败才会切到下一协议池。
 
-1. **Phase 1**：优先尝试所有 Anthropic 账号，body 自动转换为 Messages 格式，响应流式转换回 Chat 格式
-2. **Phase 2**：若所有 Anthropic 账号均失败（冷却/限流/超时），自动使用原始 Chat 格式重试非 Anthropic 账号
-
-Anthropic 账号和非 Anthropic 账号可共存，无需额外配置。
+不同协议（Chat / Messages / Responses）上游可任意共存，无需额外配置。
 
 #### Responses→Chat 支持字段
 
@@ -1517,6 +1518,8 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 | [@anupamme](https://github.com/anupamme) | 提出管理 Token 不应保存于浏览器会话存储的安全改进思路（PR [#1](https://github.com/aipayim/codex-proxy/pull/1)）。当前版本在最新代码上完成了内存态适配，并补齐 WebSocket 认证路径。 |
 
 ## 更新日志
+
+- **2026-08-09 动态协议识别持久化与 Chat 路由判定修复**：动态探测出的上游协议此前只存放在模型能力缓存里，模型探测失败（30 秒 TTL）后会短暂丢失，导致已正确识别为 Messages / Responses 的未知中继在请求时被错误降级回 Chat 直通。现动态协议写入独立缓存（24 小时 TTL），与模型列表缓存解耦，探测失败不再丢失协议分类；`/v1/chat/completions` 的多协议池判定从静态 URL 白名单改为使用动态协议结果，识别为中继 Messages / Responses 的中继自动启用 Chat→Messages / Chat→Responses 转换回退。新增后台每 10 分钟按 URL 去重的上游重探，同池多 Key 共享一次探测，新配/改配 Key 无需重启生效。新增协议缓存持久性与 Chat 路由判定回归测试。
 
 - **2026-08-04 WebSocket 状态推送节流与发送背压（OOM 治理）**：Dashboard 状态广播此前在每次请求完成/状态变更时全量序列化全部 Key 状态并实时群发，无节流、无发送队列上限；后台或慢速标签页使 `ws.send` 缓冲无限增长，多次触发 `JavaScript heap out of memory`（堆 4GB）。现改为节流合并：任意窗口内状态推送最多每秒 1 次，多次变更合并为一次全量快照（全量非增量，不丢信息），另有 10 秒心跳兜底保证最终一致；每个 WebSocket 连接发送缓冲超过 4MiB 时主动断开，前端自动重连（断开期间以 5 秒 HTTP 轮询维持展示），重连后立即收到全量状态。容量退避/恢复、请求队列等业务路径不受影响。另细化 429/配额处理：分类正则加固（去除可能误判的裸 `limit exceeded` 匹配，改为限定 `usage limit`/具体限额消息）、`failReason` 持久化到状态文件，并让自动恢复跳过配额耗尽的 Key（每日探针不会把配额已尽的 Key 误恢复后再次 429）。
 - **2026-08-03 编码流挂起根因修复（8h41m 长卡）**：Codex CLI 在一次上游周配额耗尽风暴中永久等待（本次实际约 8h41m）。根因修复：① `responsesIdleTimeout` 单位 bug——默认值误写成 `90*60*60*1000`（90 小时），实际被钳制为 24 小时，与文档声称的 90 分钟不符；已改为 `90*60*1000`，默认生效 90 分钟。② 配额/用量超限 429（`WEEKLY_LIMIT_EXCEEDED`、`MONTHLY_LIMIT_EXCEEDED`、`usage limit exceeded` 等）此前被当作瞬时容量反复退避+重排队，刷遍全部 Key 形成 429 风暴；现归因为 `insufficient_quota` 走 `markFailure` 当前周期冷却并快速失败，只有未归因为配额问题的 429 与 `model_at_capacity` 才走 `capUntil` 瞬时退避。③ 队列死锁——`enqueueRequest` 不触发 `processQueue`，且周期清理会静默丢弃等待中的请求（socket 不关、CLI 永久挂起）；现入队即 `setImmediate` 排空、新增 5 秒周期排空，让 `capacityMaxWaitSeconds` 超时的请求真正收到 503，并移除静默丢弃逻辑。④ 新增编码协议流**无进展看门狗** `responsesNoProgressTimeout`（默认 15 分钟）：长流上游停止发送字节但不断开时强制写失败终态并销毁上游连接，兜底「已接受但永不返回」的挂死连接；空闲超时只从请求发起时起算，无法覆盖这种中途停滞。⑤ `autoResume` 从 `resume --last`（多实例并发时会互踢/恢复错会话）改为 `fixed_session` + 确定 `sessionId`（固定到具体编码会话，消除重复会话竞争）。新增队列排空与配额分类回归测试。

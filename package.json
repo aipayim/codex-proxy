@@ -4,7 +4,7 @@
   "description": "## 目录结构",
   "main": "proxy.js",
   "scripts": {
-    "test": "node test-release-provenance.js && node test-stream-lifecycle.js && node test-restart-lifecycle.js && node test-auto-resume-lifecycle.js && node test-resume-runner-lifecycle.js && node test-log-operations-lifecycle.js && node test-runtime-storage-lifecycle.js && node test-config-persistence-lifecycle.js && node test-model-pricing.js && node test-codex-log-maintenance.js && node test-capacity-backoff-lifecycle.js && node test-task-insight.js && node test-discussions-lifecycle.js && node test-model-adaptation.js",
+    "test": "node test-release-provenance.js && node test-stream-lifecycle.js && node test-restart-lifecycle.js && node test-auto-resume-lifecycle.js && node test-resume-runner-lifecycle.js && node test-log-operations-lifecycle.js && node test-runtime-storage-lifecycle.js && node test-config-persistence-lifecycle.js && node test-model-pricing.js && node test-codex-log-maintenance.js && node test-capacity-backoff-lifecycle.js && node test-task-insight.js && node test-discussions-lifecycle.js && node test-model-adaptation.js && node test-protocol-matrix.js",
     "build:release": "node build-release.js"
   },
   "keywords": [],

@@ -223,6 +223,31 @@ function isResponsesNative(url) {
 function isMessagesNative(url) {
   try { return MESSAGES_NATIVE_HOSTS.includes(new URL(url).hostname); } catch(e) { return false; }
 }
+// The wire protocol an upstream speaks. Known native hosts are decided by the
+// static whitelist; unknown hosts fall back to the protocol discovered by
+// doProbeUpstream() (which probes /v1/messages + /v1/responses only when the
+// /v1/models probe fails), then to "chat" (the de-facto OpenAI-compatible
+// default every relay family exposes).
+function upstreamProtocolForUrl(url) {
+  if (!url) return "chat";
+  if (isMessagesNative(url)) return "messages";
+  if (isResponsesNative(url)) return "responses";
+  return "chat";
+}
+function upstreamProtocolFor(idx) {
+  const acct = accounts[idx];
+  if (!acct || !acct.url) return "chat";
+  if (isMessagesNative(acct.url)) return "messages";
+  if (isResponsesNative(acct.url)) return "responses";
+  // Persistent dynamic-detection result wins over the transient failed-probe
+  // capability (which expires after 30s): a Messages/Responses relay discovered
+  // once stays classified correctly for UPSTREAM_PROTOCOL_TTL_MS.
+  const proto = upstreamProtocolCache.get(upstreamCacheKeyFor(idx));
+  if (proto) return proto;
+  const cap = getCachedCapability(idx);
+  if (cap && (cap.protocol === "messages" || cap.protocol === "responses")) return cap.protocol;
+  return "chat";
+}
 const CACHE_CONTROL_COMPATIBLE_HOSTS = [
   "dashscope.aliyuncs.com",
   "dashscope-intl.aliyuncs.com",
@@ -1347,6 +1372,7 @@ setInterval(() => {
   if (pruneLogRollups()) scheduleLogSummaryPersist();
   if (compactState()) scheduleStateSave();
   scheduleLogIncidentEvaluation();
+  refreshUpstreamCapabilities();
 }, 600000); // every 10 minutes
 
 // Periodic queue drain. Capacity/cooldown waits are served by re-queueing, but
@@ -5703,7 +5729,7 @@ function pickKey(model, group) {
 }
 
 // --- Request Queue ---
-function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, failureContext, capacity) {
+function enqueueRequest(method, headers, body, clientRes, pathname, group, extraTransform, failureContext, capacity, proto) {
   if (restartState.phase !== "ready") {
     if (!clientRes.destroyed && !clientRes.headersSent) {
       clientRes.writeHead(503, { "content-type": "application/json", "retry-after": "5" });
@@ -5712,7 +5738,7 @@ function enqueueRequest(method, headers, body, clientRes, pathname, group, extra
     return;
   }
   group = group || "A";
-  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform, failureContext: failureContext || null, capacity: capacity === true });
+  requestQueue.push({ method, headers, body, clientRes, pathname, group, time: Date.now(), extraTransform, failureContext: failureContext || null, capacity: capacity === true, proto: proto || null });
   console.log(`[proxy] Queue depth: ${requestQueue.length}`);
   // Drain promptly so queued requests reach the 503 max-wait path instead of
   // lingering until the next backoff timer or an hourly sweep.
@@ -5764,6 +5790,12 @@ function processQueue() {
         r.clientRes.writeHead(503, { "content-type": "application/json" });
         r.clientRes.end(JSON.stringify({ error: "request timeout in queue" }));
       }
+      continue;
+    }
+    if (r.proto) {
+      // Protocol-aware request: re-run the full adapter (converted body + plan
+      // are rebuilt deterministically from the downstream body + protocol).
+      forwardProtocolAware(r.proto, r.method, r.headers, r.body, r.clientRes, r.pathname, r.group, { capacity: r.capacity });
       continue;
     }
     let rmodel = null;
@@ -5977,21 +6009,29 @@ const upstreamModelsCache = new Map(); // upstream URL -> capability entry
 const upstreamProbeInFlight = new Map(); // upstream URL -> in-flight Promise
 const upstreamProbeQueue = [];
 let upstreamProbeActive = 0;
+// The wire protocol discovered for a non-whitelisted upstream is persisted
+// separately from the (10-min) model list: a /v1/models-absent Messages or
+// Responses relay stays correctly classified between the short 30s failed
+// model probes, so requests are never misrouted back to "chat".
+const upstreamProtocolCache = new Map(); // upstream URL -> "chat" | "messages" | "responses"
+const UPSTREAM_PROTOCOL_TTL_MS = 24 * 60 * 60 * 1000;
 const CLAUDE_TIER_MODELS = ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
 
 function classifyUpstreamCapability(ids) {
   const claudeModels = [];
   const gptModels = [];
+  const otherModels = [];
   for (const id of ids || []) {
     const s = String(id);
     if (/^claude/i.test(s)) claudeModels.push(s);
     else if (/^(gpt|o[0-9]|o1|o3|o4|davinci|text-)/i.test(s)) gptModels.push(s);
+    else if (s) otherModels.push(s);
   }
   let capability = "unknown";
   if (claudeModels.length && gptModels.length) capability = "mixed";
   else if (claudeModels.length) capability = "claude";
   else if (gptModels.length) capability = "gpt";
-  return { models: (ids || []).slice(), claudeModels, gptModels, capability };
+  return { models: (ids || []).slice(), claudeModels, gptModels, otherModels, capability, protocol: "chat" };
 }
 
 function parseUpstreamModels(data) {
@@ -6009,9 +6049,13 @@ function parseUpstreamModels(data) {
 function upstreamCacheKeyFor(idx) {
   const acct = accounts[idx];
   if (!acct) return null;
-  let key = acct.url;
+  return upstreamCacheKeyFromUrl(acct.url);
+}
+
+function upstreamCacheKeyFromUrl(url) {
+  let key = url;
   try {
-    const u = new URL(acct.url);
+    const u = new URL(url);
     key = u.origin + u.pathname.replace(/\/+$/, "");
   } catch (e) {}
   return key;
@@ -6037,10 +6081,63 @@ function pumpUpstreamProbes() {
   }
 }
 
+// Periodic (10 min) refresh of upstream model lists and, for non-whitelisted
+// relays, their detected wire protocol. Lets newly added / reconfigured keys
+// be classified without a restart and re-arms the protocol cache before its
+// 24h TTL lapses. Uses the URL-deduped probe pipeline, so a pool of many keys
+// behind one relay triggers a single probe.
+function refreshUpstreamCapabilities() {
+  const seen = new Set();
+  for (let i = 0; i < accounts.length; i++) {
+    const acct = accounts[i];
+    if (!acct || acct.status !== "active") continue;
+    const key = upstreamCacheKeyFor(i);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    try { probeUpstreamModels(i).catch(() => {}); } catch (e) {}
+  }
+}
+
+function detectUpstreamProtocol(acct, targetUrl, mod) {
+  return new Promise((resolve) => {
+    let finished = false;
+    const probe = (path, body, done) => {
+      const opts = {
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || (targetUrl.protocol === "http:" ? 80 : 443),
+        path,
+        method: "POST",
+        headers: { authorization: "Bearer " + acct.key, "content-type": "application/json", "user-agent": "codex-proxy/3" },
+        timeout: 6000,
+      };
+      let doneOnce = false;
+      const req = mod.request(opts, (apiRes) => {
+        if (doneOnce) return;
+        doneOnce = true;
+        if (typeof apiRes.resume === "function") apiRes.resume();
+        apiRes.on("end", () => done(apiRes.statusCode));
+      });
+      req.on("error", () => { if (!doneOnce) { doneOnce = true; done(null); } });
+      req.on("timeout", () => { req.destroy(); if (!doneOnce) { doneOnce = true; done(null); } });
+      req.end(JSON.stringify(body));
+    };
+    // An endpoint "exists" when the host answers anything other than a
+    // no-such-route code (404/405). Invalid but recognized bodies (400) still
+    // prove the protocol is supported without billing a real completion.
+    probe("/v1/messages", { model: "claude-sonnet-4-5", messages: [], max_tokens: 1, stream: false }, (messagesStatus) => {
+      if (messagesStatus != null && messagesStatus !== 404 && messagesStatus !== 405) { resolve("messages"); return; }
+      probe("/v1/responses", { model: "gpt-4o", input: [], stream: false }, (responsesStatus) => {
+        if (responsesStatus != null && responsesStatus !== 404 && responsesStatus !== 405) { resolve("responses"); return; }
+        resolve("chat");
+      });
+    });
+  });
+}
+
 function doProbeUpstream(acct) {
   return new Promise((resolve) => {
     let targetUrl;
-    try { targetUrl = new URL(acct.url); } catch (e) { resolve({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true, fetchedAt: Date.now() }); return; }
+    try { targetUrl = new URL(acct.url); } catch (e) { resolve({ models: [], claudeModels: [], gptModels: [], otherModels: [], capability: "unknown", protocol: "chat", failed: true, fetchedAt: Date.now() }); return; }
     const mod = HTTP_MOD[targetUrl.protocol] || https;
     const opts = {
       hostname: targetUrl.hostname,
@@ -6056,16 +6153,28 @@ function doProbeUpstream(acct) {
       done = true;
       resolve({ ...result, fetchedAt: Date.now() });
     };
+    const failWithProtocol = () => {
+      detectUpstreamProtocol(acct, targetUrl, mod).then(protocol => {
+        const resolvedProtocol = protocol || "chat";
+        upstreamProtocolCache.set(upstreamCacheKeyFromUrl(acct.url), resolvedProtocol);
+        finish({ models: [], claudeModels: [], gptModels: [], otherModels: [], capability: "unknown", protocol: resolvedProtocol, failed: true });
+      });
+    };
     const req = mod.request(opts, (apiRes) => {
       let data = "";
       apiRes.on("data", (c) => (data += c));
       apiRes.on("end", () => {
-        if (apiRes.statusCode === 200) finish(classifyUpstreamCapability(parseUpstreamModels(data)));
-        else finish({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true });
+        if (apiRes.statusCode === 200) {
+          // A reachable /v1/models implies OpenAI-compatible Chat (the
+          // de-facto default); pin it so later model-probe failures don't fall
+          // back to a wrong dynamic classification.
+          upstreamProtocolCache.set(upstreamCacheKeyFromUrl(acct.url), "chat");
+          finish(classifyUpstreamCapability(parseUpstreamModels(data)));
+        } else failWithProtocol();
       });
     });
-    req.on("error", () => finish({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true }));
-    req.on("timeout", () => { req.destroy(); finish({ models: [], claudeModels: [], gptModels: [], capability: "unknown", failed: true }); });
+    req.on("error", () => failWithProtocol());
+    req.on("timeout", () => { req.destroy(); failWithProtocol(); });
     req.end();
   });
 }
@@ -6108,10 +6217,21 @@ function ensureUpstreamCapability(idx) {
 
 function modelStrengthRank(id) {
   const s = String(id).toLowerCase();
+  const familyBase = {
+    gpt: 1000, o: 1000, claude: 900, deepseek: 800, qwen: 800, glm: 800,
+    moonshot: 800, kimi: 800, mistral: 750, mixtral: 750, gemini: 850,
+    llama: 780, grok: 820, gemma: 780, phi: 700, internlm: 780, yi: 760, "glm-4": 800,
+  };
+  const m = s.match(/(gpt|claude|deepseek|qwen|glm|kimi|moonshot|mistral|mixtral|gemini|llama|grok|gemma|phi|internlm|yi)[- ]?(\d+(?:\.\d+)*)?/i);
   let rank = 0;
-  const ver = s.match(/(?:gpt|o)[- ]?(\d+(?:\.\d+)?)/i);
-  if (ver) rank = parseFloat(ver[1]) * 100;
-  if (/pro|max|ultra|opus|sol/.test(s)) rank += 30;
+  if (m) {
+    const base = familyBase[m[1].toLowerCase()] || 500;
+    rank = base + (m[2] ? parseFloat(m[2]) * 10 : 0);
+  } else {
+    const oVer = s.match(/(?:^|[^a-z])o\d+(?:\.\d+)?/);
+    if (oVer) rank = 1000 + (parseFloat(oVer[0].replace(/[^0-9.]/g, "")) * 10);
+  }
+  if (/pro|max|ultra|opus|sol|reasoner|turbo|plus|premium/.test(s)) rank += 30;
   else if (/sonnet/.test(s)) rank += 20;
   else if (/mini|small|nano|haiku|light|lite|fast/.test(s)) rank -= 20;
   return rank;
@@ -6134,19 +6254,22 @@ function resolveUpstreamModel(acct, capability, requestedModel) {
   const req = String(requestedModel);
   const isClaudeReq = /^claude/i.test(req);
   const isGptReq = /^(gpt|o[0-9]|o1|o3|o4|davinci|text-)/i.test(req);
+  // A claude request needs claude-compatible candidates: on a gpt-only or
+  // unknown upstream, fall back to the strongest model it actually exposes.
+  // Same rule applies in reverse for gpt requests. "mixed" keeps passthrough.
+  const candidatesForClaude = (capability.capability === "claude" || capability.capability === "mixed")
+    ? null
+    : (capability.gptModels.length ? capability.gptModels : capability.models);
+  const candidatesForGpt = (capability.capability === "gpt" || capability.capability === "mixed")
+    ? null
+    : (capability.claudeModels.length ? capability.claudeModels : capability.models);
   if (isClaudeReq) {
-    if (capability.capability === "claude" || capability.capability === "mixed") return requestedModel;
-    if (capability.capability === "gpt" && capability.gptModels.length) {
-      return pickNearestModel(capability.gptModels, req) || requestedModel;
-    }
-    return requestedModel;
+    if (!candidatesForClaude) return requestedModel;
+    return pickNearestModel(candidatesForClaude, req) || requestedModel;
   }
   if (isGptReq) {
-    if (capability.capability === "gpt" || capability.capability === "mixed") return requestedModel;
-    if (capability.capability === "claude" && capability.claudeModels.length) {
-      return pickNearestModel(capability.claudeModels, req) || requestedModel;
-    }
-    return requestedModel;
+    if (!candidatesForGpt) return requestedModel;
+    return pickNearestModel(candidatesForGpt, req) || requestedModel;
   }
   return requestedModel;
 }
@@ -11825,6 +11948,194 @@ function createNativeResponsesTerminalProbe(model) {
   return probe;
 }
 
+// Observes a native Anthropic Messages SSE stream without rewriting normal
+// upstream bytes (passthrough for Messages-native upstreams). The only synthetic
+// output is a terminal `event: error` when the upstream ends without the
+// message_stop event Claude Code requires.
+function createNativeMessagesTerminalProbe(model) {
+  const decoder = new StringDecoder("utf8");
+  let lineBuffer = "";
+  let eventName = "";
+  let dataLines = [];
+
+  const lifecycle = {
+    protocol: "messages",
+    responseId: "msg_" + crypto.randomUUID(),
+    created: Math.floor(Date.now() / 1000),
+    model: String(model || "").slice(0, 160),
+    fullContent: "",
+    inputTokens: 0,
+    outputTokens: 0,
+    terminalKind: null,
+    terminalReason: null,
+    terminalSource: "native_messages_sse",
+    sawDone: false,
+    upstreamErrorMessage: "",
+    _transform: null,
+    _metricsCallback: null,
+    _onTerminal: null,
+    _terminalNotified: false,
+    _syntheticTerminal: false,
+    _pushEvent(event, payload) {
+      if (!this._transform || this._transform.destroyed || this._transform.readableEnded) return false;
+      this._transform.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      return true;
+    },
+    _endReadable() {
+      if (this._transform && !this._transform.destroyed && !this._transform.readableEnded) {
+        this._transform.push(null);
+      }
+    },
+    _recordMetrics(success) {
+      if (typeof this._metricsCallback === "function") this._metricsCallback(success);
+    },
+    _notifyTerminal() {
+      if (this._terminalNotified) return;
+      this._terminalNotified = true;
+      if (typeof this._onTerminal === "function") this._onTerminal(this);
+    },
+    _captureMessage(message) {
+      if (!message || typeof message !== "object") return;
+      if (typeof message.id === "string" && message.id.trim()) this.responseId = message.id.trim().slice(0, 200);
+      if (typeof message.model === "string" && message.model.trim()) this.model = message.model.trim().slice(0, 160);
+      const usage = message.usage && typeof message.usage === "object" ? message.usage : null;
+      if (!usage) return;
+      const input = Number(usage.input_tokens);
+      const output = Number(usage.output_tokens);
+      if (Number.isFinite(input) && input >= 0) this.inputTokens = input;
+      if (Number.isFinite(output) && output >= 0) this.outputTokens = output;
+    },
+    _setTerminal(kind, reason, message, source) {
+      if (this.terminalKind) return false;
+      this.terminalKind = kind;
+      this.terminalReason = normalizeStreamTerminalReason(reason, kind === "completed" ? "upstream_done" : "upstream_api_error");
+      this.terminalSource = source || "native_messages_sse";
+      if (message) this.upstreamErrorMessage = sanitizeUpstreamErrorMessage(message);
+      this._recordMetrics(kind === "completed");
+      this._notifyTerminal();
+      return true;
+    },
+    markCompleted() {
+      return this._setTerminal("completed", "upstream_done", "", "native_messages_sse");
+    },
+    markFailed(reason, message) {
+      return this._setTerminal("failed", reason, message, "native_messages_sse");
+    },
+    emitFailed(reason, message) {
+      if (this.terminalKind) return false;
+      const fallbackMessages = {
+        upstream_eof_without_stop: "Upstream Messages stream ended before message_stop",
+        upstream_close: "Upstream Messages stream closed before message_stop",
+        upstream_aborted: "Upstream Messages stream was aborted before message_stop",
+        upstream_error: "Upstream Messages stream failed before message_stop",
+        upstream_idle_timeout: "Upstream Messages stream was idle before message_stop",
+        stream_lifetime_timeout: "Upstream Messages stream exceeded its configured maximum duration",
+        no_progress_timeout: "Upstream Messages stream made no progress before timing out",
+      };
+      const safeMessage = sanitizeUpstreamErrorMessage(message || fallbackMessages[reason] || "Upstream Messages stream failed before message_stop");
+      if (!this._setTerminal("failed", reason, safeMessage, "native_messages_terminal_guard")) return false;
+      this._syntheticTerminal = true;
+      this._pushEvent("error", {
+        type: "error",
+        error: { type: "api_error", message: safeMessage },
+      });
+      this._endReadable();
+      return true;
+    },
+    noteClientCancelled(reason) {
+      if (this.terminalKind) return false;
+      this.terminalKind = "cancelled";
+      this.terminalReason = normalizeStreamTerminalReason(reason, "client_disconnect");
+      this.terminalSource = "downstream_client";
+      this._notifyTerminal();
+      return true;
+    },
+  };
+
+  const resetEvent = () => {
+    eventName = "";
+    dataLines = [];
+  };
+
+  const processEvent = () => {
+    if (!eventName && !dataLines.length) return;
+    const data = dataLines.join("\n");
+    const declaredEvent = eventName.trim();
+    resetEvent();
+    let payload = null;
+    if (data) {
+      try { payload = JSON.parse(data); } catch (e) { return; }
+    }
+    const payloadType = payload && typeof payload.type === "string" ? payload.type : "";
+    const type = declaredEvent || payloadType;
+    if (payload && payload.message) lifecycle._captureMessage(payload.message);
+    if (type === "message_delta" && payload && payload.usage && typeof payload.usage === "object") {
+      const output = Number(payload.usage.output_tokens);
+      if (Number.isFinite(output) && output >= 0) lifecycle.outputTokens = output;
+    }
+    if (type === "message_stop") {
+      lifecycle.markCompleted();
+      return;
+    }
+    if (type === "error" || (payload && (payload.error || payload.object === "error"))) {
+      const message = extractUpstreamErrorMessage(payload) || "Upstream Messages SSE error";
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(message), message);
+    }
+  };
+
+  const processLine = rawLine => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line) {
+      processEvent();
+      return;
+    }
+    if (line.startsWith(":")) return;
+    const colon = line.indexOf(":");
+    const field = colon >= 0 ? line.slice(0, colon) : line;
+    let value = colon >= 0 ? line.slice(colon + 1) : "";
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    else if (field === "data") dataLines.push(value);
+  };
+
+  const processText = text => {
+    if (!text) return;
+    lineBuffer += text;
+    let newline;
+    while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+      const line = lineBuffer.slice(0, newline);
+      lineBuffer = lineBuffer.slice(newline + 1);
+      processLine(line);
+    }
+  };
+
+  const probe = new Transform({
+    transform(chunk, encoding, cb) {
+      if (lifecycle._syntheticTerminal) { cb(); return; }
+      const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+      this.push(raw);
+      processText(decoder.write(raw));
+      cb();
+    },
+    flush(cb) {
+      if (!lifecycle._syntheticTerminal) {
+        processText(decoder.end());
+        if (lineBuffer) {
+          processLine(lineBuffer);
+          lineBuffer = "";
+        }
+        processEvent();
+        if (!lifecycle.terminalKind) lifecycle.emitFailed("upstream_eof_without_stop");
+      }
+      cb();
+    },
+  });
+  lifecycle._transform = probe;
+  probe._lifecycle = lifecycle;
+  probe._nativeResponsesProbe = true;
+  return probe;
+}
+
 function createMessagesLifecycle(model) {
   return {
     protocol: "messages",
@@ -12607,6 +12918,1004 @@ function messagesToChatResponse(upstreamUrl, msgsBody) {
     }],
     usage: { prompt_tokens: usage.input_tokens || 0, completion_tokens: usage.output_tokens || 0, total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0) }
   };
+}
+function safeParseJson(value) {
+  if (value == null) return {};
+  if (typeof value === "object") return value;
+  try { return JSON.parse(value); } catch (e) { return {}; }
+}
+
+// Buffers a non-streaming upstream JSON response body and emits the converted
+// protocol payload. Used when the downstream did NOT request stream:true, so no
+// SSE terminal guard or long-stream watchdog applies.
+function createNonStreamingBodyConverter(convert) {
+  const converterDecoder = new StringDecoder("utf8");
+  let rawBuf = "";
+  return new Transform({
+    readableObjectMode: false,
+    writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      rawBuf += converterDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+      cb();
+    },
+    flush(cb) {
+      rawBuf += converterDecoder.end();
+      let out = rawBuf;
+      try {
+        const parsed = JSON.parse(rawBuf || "{}");
+        out = JSON.stringify(convert(parsed));
+      } catch (e) { /* passthrough raw on malformed upstream JSON */ }
+      if (out) this.push(out);
+      rawBuf = "";
+      cb();
+    },
+  });
+}
+
+// Direction D: Chat → Responses (Chat clients → Responses-native upstreams)
+function chatToResponsesRequest(upstreamUrl, body) {
+  const resp = { model: body.model, input: [], stream: body.stream };
+  if (body.max_tokens) resp.max_output_tokens = body.max_tokens;
+  const systemParts = [];
+  const items = [];
+  if (Array.isArray(body.messages)) {
+    for (const m of body.messages) {
+      const role = m.role || "user";
+      if (role === "system") {
+        systemParts.push(typeof m.content === "string" ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || "").join("\n") : String(m.content || "")));
+        continue;
+      }
+      if (role === "tool") {
+        items.push({ type: "function_call_output", call_id: m.tool_call_id, output: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") });
+        continue;
+      }
+      let content = m.content;
+      if (Array.isArray(m.content)) {
+        content = m.content.map(c => {
+          if (c.type === "image_url" || c.type === "image") {
+            return { type: "input_image", image_url: c.image_url?.url || c.source?.data || "" };
+          }
+          return { type: "input_text", text: c.text || "" };
+        });
+      } else {
+        content = String(m.content || "");
+      }
+      if (role === "assistant" && Array.isArray(m.tool_calls)) {
+        items.push({ type: "message", role: "assistant", content });
+        for (const tc of m.tool_calls) {
+          items.push({ type: "function_call", call_id: tc.id, name: tc.function?.name || "", arguments: tc.function?.arguments || "" });
+        }
+        continue;
+      }
+      items.push({ type: "message", role, content });
+    }
+  } else if (typeof body.input === "string") {
+    resp.input = body.input;
+  } else if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      items.push({ type: "message", role: item.role || "user", content: item.content });
+    }
+  }
+  if (systemParts.length) resp.instructions = systemParts.join("\n");
+  resp.input = items;
+  if (body.tools) {
+    resp.tools = body.tools.map(t => {
+      if (t.type === "function") return { type: "function", name: t.function?.name || t.name || "", description: t.function?.description || "", parameters: t.function?.parameters || t.parameters || {} };
+      return t;
+    });
+  }
+  if (body.tool_choice) resp.tool_choice = typeof body.tool_choice === "string" ? { type: body.tool_choice } : body.tool_choice;
+  if (body.temperature !== undefined) resp.temperature = body.temperature;
+  if (body.top_p !== undefined) resp.top_p = body.top_p;
+  if (body.stop) resp.stop = body.stop;
+  return resp;
+}
+
+// Direction E: Messages → Responses (Claude Code upstreams → Responses-native upstreams)
+function messagesToResponsesRequest(upstreamUrl, body) {
+  const resp = { model: body.model, input: [], stream: body.stream };
+  if (body.max_tokens) resp.max_output_tokens = body.max_tokens;
+  if (body.system) {
+    if (typeof body.system === "string") resp.instructions = body.system;
+    else if (Array.isArray(body.system)) resp.instructions = body.system.map(s => (typeof s === "string" ? s : s.text || "")).join("\n");
+  }
+  if (Array.isArray(body.messages)) {
+    const items = [];
+    for (const m of body.messages) {
+      if (m.role === "assistant") {
+        let content = [];
+        let toolUse = null;
+        if (typeof m.content === "string") content = [{ type: "input_text", text: m.content }];
+        else if (Array.isArray(m.content)) {
+          content = m.content.map(c => {
+            if (c.type === "tool_use") { toolUse = { call_id: c.id, name: c.name, arguments: typeof c.input === "object" ? JSON.stringify(c.input || {}) : String(c.input || "") }; return null; }
+            if (c.type === "thinking") return { type: "reasoning", text: c.thinking || "" };
+            if (c.type === "image") return { type: "input_image", image_url: c.source?.data || "" };
+            return { type: "input_text", text: c.text || "" };
+          }).filter(Boolean);
+        }
+        items.push({ type: "message", role: "assistant", content });
+        if (toolUse) items.push({ type: "function_call", ...toolUse });
+      } else if (m.role === "user" && Array.isArray(m.content)) {
+        for (const c of m.content) {
+          if (c.type === "tool_result") {
+            items.push({ type: "function_call_output", call_id: c.tool_use_id, output: typeof c.content === "string" ? c.content : JSON.stringify(c.content || "") });
+          } else if (c.type === "image") {
+            items.push({ type: "message", role: "user", content: [{ type: "input_image", image_url: c.source?.data || "" }] });
+          } else {
+            items.push({ type: "message", role: "user", content: [{ type: "input_text", text: c.text || "" }] });
+          }
+        }
+      } else {
+        items.push({ type: "message", role: m.role || "user", content: [{ type: "input_text", text: typeof m.content === "string" ? m.content : String(m.content || "") }] });
+      }
+    }
+    resp.input = items;
+  }
+  if (body.tools) {
+    resp.tools = body.tools.map(t => ({ type: "function", name: t.name, description: t.description || "", parameters: t.input_schema || {} }));
+  }
+  if (body.tool_choice) resp.tool_choice = body.tool_choice;
+  if (body.temperature !== undefined) resp.temperature = body.temperature;
+  if (body.top_p !== undefined) resp.top_p = body.top_p;
+  if (body.stop_sequences) resp.stop = body.stop_sequences;
+  return resp;
+}
+
+// Direction F: Responses → Messages (Responses upstreams → Claude Code)
+function responsesToMessagesRequest(upstreamUrl, body) {
+  const msgs = { model: body.model, messages: [], max_tokens: body.max_output_tokens || 4096, stream: body.stream };
+  if (body.instructions) msgs.system = typeof body.instructions === "string" ? body.instructions : JSON.stringify(body.instructions);
+  if (typeof body.input === "string") {
+    msgs.messages.push({ role: "user", content: body.input });
+  } else if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      if (item.type === "message") {
+        const role = item.role === "developer" ? "user" : item.role || "user";
+        let content = item.content;
+        if (Array.isArray(content)) {
+          const blocks = [];
+          for (const c of content) {
+            if (c.type === "input_text") blocks.push({ type: "text", text: c.text || "" });
+            else if (c.type === "input_image") blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: c.image_url || c.data || "" } });
+            else if (c.type === "reasoning") blocks.push({ type: "thinking", thinking: c.text || "" });
+          }
+          if (blocks.length === 1) content = blocks[0].text;
+          else if (blocks.length > 1) content = blocks;
+          else content = "";
+        }
+        msgs.messages.push({ role, content });
+      } else if (item.type === "function_call") {
+        msgs.messages.push({ role: "assistant", content: [{ type: "tool_use", id: item.call_id || item.id, name: item.name || "", input: safeParseJson(item.arguments) }] });
+      } else if (item.type === "function_call_output") {
+        msgs.messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: item.call_id, content: typeof item.output === "string" ? item.output : JSON.stringify(item.output || "") }] });
+      } else if (item.type === "reasoning") {
+        msgs.messages.push({ role: "assistant", content: [{ type: "thinking", thinking: item.summary || item.content || "" }] });
+      } else {
+        msgs.messages.push({ role: "user", content: JSON.stringify(item).slice(0, 4000) });
+      }
+    }
+  }
+  if (body.tools) {
+    msgs.tools = body.tools.map(t => t.type === "function" ? { name: t.name, description: t.description || "", input_schema: t.parameters || {} } : t);
+  }
+  if (body.tool_choice) msgs.tool_choice = typeof body.tool_choice === "string" ? { type: body.tool_choice } : body.tool_choice;
+  if (body.temperature !== undefined) msgs.temperature = body.temperature;
+  if (body.top_p !== undefined) msgs.top_p = body.top_p;
+  if (body.stop) msgs.stop_sequences = Array.isArray(body.stop) ? body.stop : [body.stop];
+  return msgs;
+}
+
+// Responses SSE → Chat SSE (Responses-native upstream → Chat downstream)
+function createResponsesToChatStream(lifecycle) {
+  const Transform = require("stream").Transform;
+  lifecycle = lifecycle || createChatLifecycle("");
+  const streamDecoder = new StringDecoder("utf8");
+  let lineBuffer = "";
+  let eventName = "";
+  let dataLines = [];
+  const toolState = new Map();
+  let nextToolIndex = 0;
+  let started = false;
+
+  const resetEvent = () => { eventName = ""; dataLines = []; };
+  const emitChatChunk = (output, choice, usage) => {
+    output.push(`data: ${JSON.stringify({ choices: [choice], ...(usage ? { usage } : {}), object: "chat.completion.chunk", model: lifecycle.model })}\n\n`);
+  };
+  const emitCompleted = output => {
+    if (lifecycle.terminalKind) return false;
+    lifecycle.sawDone = true;
+    output.push("data: [DONE]\n\n");
+    lifecycle.emitCompleted();
+    return true;
+  };
+
+  const processEvent = output => {
+    if (!eventName && !dataLines.length) return false;
+    const data = dataLines.join("\n");
+    const declared = eventName.trim();
+    resetEvent();
+    if (data === "[DONE]") return emitCompleted(output);
+    let payload = null;
+    try { payload = JSON.parse(data); } catch (e) { return false; }
+    if (payload && (payload.error || payload.object === "error" || payload.type === "error")) {
+      const message = extractUpstreamErrorMessage(payload) || "Upstream Responses SSE error";
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(message), message);
+      return true;
+    }
+    const type = declared || (payload && typeof payload.type === "string" ? payload.type : "");
+    if (payload && payload.response && typeof payload.response.model === "string") lifecycle.model = payload.response.model;
+    if (type === "response.created" || type === "response.in_progress") {
+      started = true;
+      return false;
+    }
+    if (type === "response.output_text.delta") {
+      const delta = payload && typeof payload.delta === "string" ? payload.delta : "";
+      lifecycle.fullContent += delta;
+      emitChatChunk(output, { index: 0, delta: { role: "assistant", content: delta }, finish_reason: null });
+      return false;
+    }
+    if (type === "response.output_item.added" && payload && payload.item && payload.item.type === "function_call") {
+      const item = payload.item;
+      const key = item.id || `item_${nextToolIndex}`;
+      const index = nextToolIndex++;
+      toolState.set(key, { index, id: key, name: item.name || "unknown_tool", args: "" });
+      emitChatChunk(output, {
+        index: 0,
+        delta: { role: "assistant", content: null, tool_calls: [{ index, id: key, type: "function", function: { name: item.name || "unknown_tool", arguments: "" } }] },
+        finish_reason: null,
+      });
+      return false;
+    }
+    if (type === "response.function_call_arguments.delta") {
+      const st = toolState.get(payload && payload.item_id);
+      const delta = payload && typeof payload.arguments === "string" ? payload.arguments : (payload && typeof payload.delta === "string" ? payload.delta : "");
+      if (st && delta) {
+        st.args += delta;
+        emitChatChunk(output, { index: 0, delta: { tool_calls: [{ index: st.index, function: { arguments: delta } }] }, finish_reason: null });
+      }
+      return false;
+    }
+    if (type === "response.completed") {
+      const response = payload && payload.response;
+      if (response && response.usage) {
+        lifecycle.inputTokens = response.usage.input_tokens || 0;
+        lifecycle.outputTokens = response.usage.output_tokens || 0;
+      }
+      emitChatChunk(output, { index: 0, delta: {}, finish_reason: toolState.size ? "tool_calls" : "stop" }, {
+        prompt_tokens: lifecycle.inputTokens,
+        completion_tokens: lifecycle.outputTokens,
+        total_tokens: lifecycle.inputTokens + lifecycle.outputTokens,
+      });
+      return emitCompleted(output);
+    }
+    return false;
+  };
+
+  const processLine = (rawLine, output) => {
+    if (lifecycle.terminalKind || lifecycle.sawDone) return true;
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line) return processEvent(output);
+    if (line.startsWith(":")) return false;
+    const colon = line.indexOf(":");
+    const field = colon >= 0 ? line.slice(0, colon) : line;
+    let value = colon >= 0 ? line.slice(colon + 1) : "";
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    else if (field === "data") dataLines.push(value);
+    return false;
+  };
+
+  const transform = new Transform({
+    readableObjectMode: false,
+    writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      if (lifecycle.terminalKind || lifecycle.sawDone) { cb(); return; }
+      lineBuffer += streamDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+      let newline;
+      while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+        const line = lineBuffer.slice(0, newline);
+        lineBuffer = lineBuffer.slice(newline + 1);
+        if (processLine(line, this)) { lineBuffer = ""; break; }
+      }
+      cb();
+    },
+    flush(cb) {
+      if (!lifecycle.terminalKind) {
+        lineBuffer += streamDecoder.end();
+        if (lineBuffer) processLine(lineBuffer, this);
+        lineBuffer = "";
+      }
+      if (!lifecycle.terminalKind) lifecycle.emitFailed("upstream_eof_without_done");
+      cb();
+    },
+  });
+  lifecycle._transform = transform;
+  transform._lifecycle = lifecycle;
+  return transform;
+}
+
+// Messages SSE → Responses SSE (Messages upstream → Responses downstream)
+function createMessagesToResponsesStream(lifecycle) {
+  const Transform = require("stream").Transform;
+  lifecycle = lifecycle || createResponsesLifecycle("");
+  const streamDecoder = new StringDecoder("utf8");
+  let lineBuffer = "";
+  let eventName = "";
+  let dataLines = [];
+  const toolBlocks = new Map();
+
+  const resetEvent = () => { eventName = ""; dataLines = []; };
+  const pushEvent = (output, event, payload) => {
+    output.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const processEvent = output => {
+    if (!eventName && !dataLines.length) return false;
+    const data = dataLines.join("\n");
+    const declared = eventName.trim();
+    resetEvent();
+    let payload = null;
+    try { payload = JSON.parse(data); } catch (e) { return false; }
+    const type = declared || (payload && typeof payload.type === "string" ? payload.type : "");
+    if (payload && (payload.error || payload.object === "error" || type === "error")) {
+      const message = extractUpstreamErrorMessage(payload) || "Upstream Messages SSE error";
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(message), message);
+      return true;
+    }
+    if (type === "message_start") {
+      const msg = payload && payload.message;
+      if (msg) {
+        if (typeof msg.model === "string") lifecycle.model = msg.model;
+        if (msg.usage) lifecycle.inputTokens = msg.usage.input_tokens || lifecycle.inputTokens;
+      }
+      lifecycle.emitStart();
+      return false;
+    }
+    if (type === "content_block_start" && payload && payload.content_block && payload.content_block.type === "tool_use") {
+      const cb = payload.content_block;
+      const itemId = cb.id || `toolu_${toolBlocks.size}`;
+      toolBlocks.set(Number.isInteger(payload.index) ? payload.index : toolBlocks.size, { itemId });
+      pushEvent(output, "response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: toolBlocks.size - 1,
+        item: { type: "function_call", id: itemId, name: cb.name || "", arguments: "", status: "in_progress" },
+      });
+      return false;
+    }
+    if (type === "content_block_delta" && payload && payload.delta) {
+      const delta = payload.delta;
+      if (delta.type === "text_delta" && delta.text) {
+        lifecycle.fullContent += delta.text;
+        pushEvent(output, "response.output_text.delta", { type: "response.output_text.delta", delta: delta.text });
+      } else if (delta.type === "thinking_delta" && delta.thinking) {
+        lifecycle.fullContent += delta.thinking;
+        pushEvent(output, "response.output_text.delta", { type: "response.output_text.delta", delta: delta.thinking });
+      } else if (delta.type === "input_json_delta" && delta.partial_json) {
+        const entry = toolBlocks.get(Number.isInteger(payload.index) ? payload.index : 0);
+        pushEvent(output, "response.function_call_arguments.delta", {
+          type: "response.function_call_arguments.delta",
+          delta: delta.partial_json,
+          item_id: entry ? entry.itemId : "unknown",
+          output_index: Number.isInteger(payload.index) ? payload.index : 0,
+        });
+      }
+      return false;
+    }
+    if (type === "message_delta") {
+      const usage = payload && payload.usage;
+      if (usage && usage.output_tokens) lifecycle.outputTokens = usage.output_tokens;
+      return false;
+    }
+    if (type === "message_stop") {
+      lifecycle.emitCompleted("upstream_done");
+      return true;
+    }
+    return false;
+  };
+
+  const processLine = (rawLine, output) => {
+    if (lifecycle.terminalKind || lifecycle.sawDone) return true;
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line) return processEvent(output);
+    if (line.startsWith(":")) return false;
+    const colon = line.indexOf(":");
+    const field = colon >= 0 ? line.slice(0, colon) : line;
+    let value = colon >= 0 ? line.slice(colon + 1) : "";
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    else if (field === "data") dataLines.push(value);
+    return false;
+  };
+
+  const transform = new Transform({
+    readableObjectMode: false,
+    writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      if (lifecycle.terminalKind || lifecycle.sawDone) { cb(); return; }
+      lineBuffer += streamDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+      let newline;
+      while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+        const line = lineBuffer.slice(0, newline);
+        lineBuffer = lineBuffer.slice(newline + 1);
+        if (processLine(line, this)) { lineBuffer = ""; break; }
+      }
+      cb();
+    },
+    flush(cb) {
+      if (!lifecycle.terminalKind) {
+        lineBuffer += streamDecoder.end();
+        if (lineBuffer) processLine(lineBuffer, this);
+        lineBuffer = "";
+      }
+      if (!lifecycle.terminalKind) lifecycle.emitFailed("upstream_eof_without_done");
+      cb();
+    },
+  });
+  lifecycle._transform = transform;
+  transform._lifecycle = lifecycle;
+  return transform;
+}
+
+// Responses SSE → Messages SSE (Responses upstream → Claude Code downstream)
+function createResponsesToMessagesStream(lifecycle) {
+  const Transform = require("stream").Transform;
+  lifecycle = lifecycle || createMessagesLifecycle("");
+  const streamDecoder = new StringDecoder("utf8");
+  let lineBuffer = "";
+  let eventName = "";
+  let dataLines = [];
+  let messageStarted = false;
+  let nextBlockIndex = 0;
+  const openedBlocks = [];
+  let textBlock = null;
+  let activeContentBlock = null;
+  const toolBlocks = new Map();
+  let sawToolUse = false;
+
+  const pushEvent = (output, event, payload) => {
+    output.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const ensureMessageStarted = output => {
+    if (messageStarted) return;
+    messageStarted = true;
+    pushEvent(output, "message_start", {
+      type: "message_start",
+      message: {
+        id: lifecycle.responseId,
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: lifecycle.model,
+        stop_reason: null,
+        usage: { input_tokens: lifecycle.inputTokens, output_tokens: lifecycle.outputTokens },
+      },
+    });
+  };
+
+  const startBlock = (output, kind, contentBlock) => {
+    ensureMessageStarted(output);
+    const block = { kind, index: nextBlockIndex++, stopped: false };
+    openedBlocks.push(block);
+    pushEvent(output, "content_block_start", { type: "content_block_start", index: block.index, content_block: contentBlock });
+    return block;
+  };
+
+  const stopBlock = (output, block) => {
+    if (!block || block.stopped) return;
+    block.stopped = true;
+    if (activeContentBlock === block) activeContentBlock = null;
+    pushEvent(output, "content_block_stop", { type: "content_block_stop", index: block.index });
+  };
+
+  const ensureTextStarted = output => {
+    if (!textBlock || textBlock.stopped) {
+      stopBlock(output, activeContentBlock);
+      textBlock = startBlock(output, "text", { type: "text", text: "" });
+    }
+    activeContentBlock = textBlock;
+    return textBlock;
+  };
+
+  const ensureToolStarted = (output, itemId, name, argumentsJson) => {
+    if (!itemId) return null;
+    let block = toolBlocks.get(itemId);
+    if (block && !block.stopped) return block;
+    stopBlock(output, activeContentBlock);
+    block = startBlock(output, "tool", { type: "tool_use", id: itemId, name: name || "unknown_tool", input: {} });
+    toolBlocks.set(itemId, block);
+    sawToolUse = true;
+    return block;
+  };
+
+  const closeOpenedBlocks = output => {
+    for (const block of openedBlocks) stopBlock(output, block);
+  };
+
+  const emitCompleted = output => {
+    if (lifecycle.terminalKind) return false;
+    lifecycle.sawDone = true;
+    ensureMessageStarted(output);
+    closeOpenedBlocks(output);
+    pushEvent(output, "message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: sawToolUse ? "tool_use" : "end_turn", stop_sequence: null },
+      usage: { output_tokens: lifecycle.outputTokens },
+    });
+    pushEvent(output, "message_stop", { type: "message_stop" });
+    lifecycle.emitCompleted();
+    return true;
+  };
+
+  const processEvent = output => {
+    if (!eventName && !dataLines.length) return false;
+    const data = dataLines.join("\n");
+    const declared = eventName.trim();
+    resetEventState();
+    if (data === "[DONE]") return emitCompleted(output);
+    let payload = null;
+    try { payload = JSON.parse(data); } catch (e) { return false; }
+    const type = declared || (payload && typeof payload.type === "string" ? payload.type : "");
+    if (payload && (payload.error || payload.object === "error" || type === "error")) {
+      const message = extractUpstreamErrorMessage(payload) || "Upstream Responses SSE error";
+      lifecycle.emitFailed(classifyUpstreamErrorMessage(message), message);
+      return true;
+    }
+    if (type === "response.created" || type === "response.in_progress") {
+      if (payload && payload.response && typeof payload.response.model === "string") lifecycle.model = payload.response.model;
+      return false;
+    }
+    if (type === "response.output_text.delta") {
+      const delta = payload && typeof payload.delta === "string" ? payload.delta : "";
+      if (delta) {
+        const block = ensureTextStarted(output);
+        lifecycle.fullContent += delta;
+        pushEvent(output, "content_block_delta", { type: "content_block_delta", index: block.index, delta: { type: "text_delta", text: delta } });
+      }
+      return false;
+    }
+    if (type === "response.output_item.added" && payload && payload.item && payload.item.type === "function_call") {
+      const item = payload.item;
+      const block = ensureToolStarted(output, item.id || item.call_id, item.name, item.arguments || "");
+      if (block) {
+        const argumentsJson = item.arguments || "";
+        if (argumentsJson) {
+          pushEvent(output, "content_block_delta", { type: "content_block_delta", index: block.index, delta: { type: "input_json_delta", partial_json: argumentsJson } });
+        }
+      }
+      return false;
+    }
+    if (type === "response.function_call_arguments.delta") {
+      const itemId = payload && payload.item_id;
+      const delta = payload && typeof payload.arguments === "string" ? payload.arguments : (payload && typeof payload.delta === "string" ? payload.delta : "");
+      if (itemId && delta) {
+        const block = toolBlocks.get(itemId);
+        if (block) {
+          pushEvent(output, "content_block_delta", { type: "content_block_delta", index: block.index, delta: { type: "input_json_delta", partial_json: delta } });
+        }
+      }
+      return false;
+    }
+    if (type === "response.completed") {
+      const response = payload && payload.response;
+      if (response && response.usage) {
+        lifecycle.inputTokens = response.usage.input_tokens || 0;
+        lifecycle.outputTokens = response.usage.output_tokens || 0;
+      }
+      return emitCompleted(output);
+    }
+    return false;
+  };
+
+  const resetEventState = () => { eventName = ""; dataLines = []; };
+
+  const processLine = (rawLine, output) => {
+    if (lifecycle.terminalKind || lifecycle.sawDone) return true;
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line) return processEvent(output);
+    if (line.startsWith(":")) return false;
+    const colon = line.indexOf(":");
+    const field = colon >= 0 ? line.slice(0, colon) : line;
+    let value = colon >= 0 ? line.slice(colon + 1) : "";
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    else if (field === "data") dataLines.push(value);
+    return false;
+  };
+
+  const transform = new Transform({
+    readableObjectMode: false,
+    writableObjectMode: false,
+    transform(chunk, encoding, cb) {
+      if (lifecycle.terminalKind || lifecycle.sawDone) { cb(); return; }
+      lineBuffer += streamDecoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+      let newline;
+      while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+        const line = lineBuffer.slice(0, newline);
+        lineBuffer = lineBuffer.slice(newline + 1);
+        if (processLine(line, this)) { lineBuffer = ""; break; }
+      }
+      cb();
+    },
+    flush(cb) {
+      if (!lifecycle.terminalKind) {
+        lineBuffer += streamDecoder.end();
+        if (lineBuffer) processLine(lineBuffer, this);
+        lineBuffer = "";
+      }
+      if (!lifecycle.terminalKind) lifecycle.emitFailed("upstream_eof_without_done");
+      cb();
+    },
+  });
+  lifecycle._transform = transform;
+  transform._lifecycle = lifecycle;
+  return transform;
+}
+
+// Non-streaming Responses JSON ← Messages JSON (Claude Code upstream body)
+function messagesToResponsesResponse(upstreamUrl, msgsBody) {
+  const content = msgsBody.content || [];
+  const text = content.filter(c => c.type === "text").map(t => t.text || "").join("");
+  const thinking = content.filter(c => c.type === "thinking").map(t => t.thinking || "").join("");
+  const toolUses = content.filter(c => c.type === "tool_use").map(c => ({ type: "function_call", call_id: c.id, id: c.id, name: c.name || "", arguments: typeof c.input === "object" ? JSON.stringify(c.input || {}) : String(c.input || ""), status: "completed" }));
+  const usage = msgsBody.usage || {};
+  const output = [];
+  if (thinking) output.push({ type: "reasoning", id: "rs_" + Date.now(), summary: thinking, content: thinking });
+  output.push({ type: "message", id: "msg_" + Date.now(), role: "assistant", content: [{ type: "output_text", text }], status: "completed" });
+  for (const t of toolUses) output.push(t);
+  return {
+    id: "resp_" + Date.now(),
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    model: msgsBody.model || "",
+    status: "completed",
+    output,
+    usage: {
+      input_tokens: usage.input_tokens || 0,
+      output_tokens: usage.output_tokens || 0,
+      total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+    },
+  };
+}
+
+// Non-streaming Messages JSON ← Responses JSON (Responses upstream body)
+function responsesToMessagesResponse(upstreamUrl, respBody) {
+  const content = [];
+  const items = respBody.output || [];
+  for (const item of items) {
+    if (item.type === "message") {
+      const parts = Array.isArray(item.content) ? item.content : [];
+      for (const c of parts) {
+        if (c.type === "output_text") content.push({ type: "text", text: c.text || "" });
+        else if (c.type === "refusal") content.push({ type: "text", text: c.refusal || "" });
+      }
+    } else if (item.type === "function_call") {
+      content.push({ type: "tool_use", id: item.id || item.call_id || ("toolu_" + Date.now()), name: item.name || "", input: safeParseJson(item.arguments) });
+    } else if (item.type === "reasoning") {
+      content.push({ type: "thinking", thinking: item.summary || item.content || "" });
+    }
+  }
+  const usage = respBody.usage || {};
+  return {
+    id: "msg_" + Date.now(),
+    type: "message",
+    role: "assistant",
+    content,
+    model: respBody.model || "",
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: usage.input_tokens || 0, output_tokens: usage.output_tokens || 0 },
+  };
+}
+
+// Non-streaming Chat JSON ← Responses JSON (Responses upstream body)
+function responsesToChatResponse(upstreamUrl, respBody) {
+  const items = respBody.output || [];
+  let content = "";
+  const toolCalls = [];
+  for (const item of items) {
+    if (item.type === "message") {
+      const parts = Array.isArray(item.content) ? item.content : [];
+      for (const c of parts) {
+        if (c.type === "output_text") content += (c.text || "");
+        else if (c.type === "refusal") content += (c.refusal || "");
+      }
+    } else if (item.type === "function_call") {
+      toolCalls.push({ id: item.id || item.call_id || ("call_" + Date.now()), type: "function", function: { name: item.name || "", arguments: item.arguments || "" } });
+    } else if (item.type === "reasoning") {
+      content += ((item.summary || item.content || "") + "\n\n");
+    }
+  }
+  const usage = respBody.usage || {};
+  const message = { role: "assistant", content: content || null };
+  if (toolCalls.length) message.tool_calls = toolCalls;
+  return {
+    id: "chatcmpl-" + Date.now(),
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: respBody.model || "",
+    choices: [{ index: 0, message, finish_reason: toolCalls.length ? "tool_calls" : "stop" }],
+    usage: {
+      prompt_tokens: usage.input_tokens || 0,
+      completion_tokens: usage.output_tokens || 0,
+      total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+    },
+  };
+}
+
+// --- Unified protocol-aware forwarding ---
+// Pools are tried in this order per downstream protocol (same-protocol
+// passthrough first, then cross-protocol conversions).
+const PROTO_POOL_ORDER = {
+  chat: ["chat", "messages", "responses"],
+  messages: ["messages", "chat", "responses"],
+  responses: ["responses", "chat", "messages"],
+};
+const PROTO_PATHS = { chat: "/v1/chat/completions", messages: "/v1/messages", responses: "/v1/responses" };
+
+// Prepares everything forwardRequest needs for one upstream protocol attempt:
+// converted body, headers, upstream path and the response transform (stream
+// conversion, native terminal guard, or a buffered non-streaming converter).
+function buildForwardPlan(downstreamProto, upProto, method, headers, body, parsedBody, streaming) {
+  const req = parsedBody || {};
+  const hdr = { ...headers };
+  delete hdr["anthropic-version"];
+  delete hdr["x-api-key"];
+  const msgsHeaders = { ...hdr, "anthropic-version": "2023-06-01" };
+  const model = req.model || "";
+  const attach = (transform, lifecycle) => {
+    if (lifecycle && transform) { lifecycle._transform = transform; transform._lifecycle = lifecycle; }
+    return transform;
+  };
+
+  if (downstreamProto === "chat") {
+    if (upProto === "chat") {
+      return { headers: hdr, body, path: PROTO_PATHS.chat, transform: null, lifecycle: null, converted: false };
+    }
+    if (upProto === "messages") {
+      if (streaming) {
+        const cb = chatToMessagesRequest("", { ...req, stream: true });
+        const lifecycle = createChatLifecycle(model || cb.model || "");
+        return { headers: msgsHeaders, body: Buffer.from(JSON.stringify(cb)), path: PROTO_PATHS.messages, transform: attach(createMessagesToChatStream(lifecycle), lifecycle), lifecycle, converted: true };
+      }
+      return { headers: msgsHeaders, body: Buffer.from(JSON.stringify(chatToMessagesRequest("", req))), path: PROTO_PATHS.messages, transform: createNonStreamingBodyConverter(u => chatToMessagesResponse("", u)), lifecycle: null, converted: true };
+    }
+    if (streaming) {
+      const cb = chatToResponsesRequest("", { ...req, stream: true });
+      const lifecycle = createChatLifecycle(model || cb.model || "");
+      return { headers: hdr, body: Buffer.from(JSON.stringify(cb)), path: PROTO_PATHS.responses, transform: attach(createResponsesToChatStream(lifecycle), lifecycle), lifecycle, converted: true };
+    }
+    return { headers: hdr, body: Buffer.from(JSON.stringify(chatToResponsesRequest("", req))), path: PROTO_PATHS.responses, transform: createNonStreamingBodyConverter(u => chatToResponsesResponse("", u)), lifecycle: null, converted: true };
+  }
+
+  if (downstreamProto === "messages") {
+    if (upProto === "messages") {
+      if (streaming) {
+        const probe = createNativeMessagesTerminalProbe(model || "");
+        return { headers: msgsHeaders, body, path: PROTO_PATHS.messages, transform: probe, lifecycle: probe._lifecycle, converted: false };
+      }
+      return { headers: msgsHeaders, body, path: PROTO_PATHS.messages, transform: null, lifecycle: null, converted: false };
+    }
+    if (upProto === "chat") {
+      if (streaming) {
+        const cb = messagesToChatRequest("", { ...req, stream: true });
+        const lifecycle = createMessagesLifecycle(model || cb.model || "");
+        return { headers: hdr, body: Buffer.from(JSON.stringify(cb)), path: PROTO_PATHS.chat, transform: attach(createChatToMessagesStream(lifecycle), lifecycle), lifecycle, converted: true };
+      }
+      return { headers: hdr, body: Buffer.from(JSON.stringify(messagesToChatRequest("", req))), path: PROTO_PATHS.chat, transform: createNonStreamingBodyConverter(u => messagesToChatResponse("", u)), lifecycle: null, converted: true };
+    }
+    if (streaming) {
+      const cb = messagesToResponsesRequest("", { ...req, stream: true });
+      const lifecycle = createMessagesLifecycle(model || cb.model || "");
+      return { headers: hdr, body: Buffer.from(JSON.stringify(cb)), path: PROTO_PATHS.responses, transform: attach(createResponsesToMessagesStream(lifecycle), lifecycle), lifecycle, converted: true };
+    }
+    return { headers: hdr, body: Buffer.from(JSON.stringify(messagesToResponsesRequest("", req))), path: PROTO_PATHS.responses, transform: createNonStreamingBodyConverter(u => messagesToResponsesResponse("", u)), lifecycle: null, converted: true };
+  }
+
+  // downstreamProto === "responses"
+  if (upProto === "responses") {
+    if (streaming) {
+      const probe = createNativeResponsesTerminalProbe(model || "");
+      return { headers: hdr, body, path: PROTO_PATHS.responses, transform: probe, lifecycle: probe._lifecycle, converted: false };
+    }
+    return { headers: hdr, body, path: PROTO_PATHS.responses, transform: null, lifecycle: null, converted: false };
+  }
+  if (upProto === "chat") {
+    if (streaming) {
+      const cb = responsesToChatRequest("", { ...req, stream: true });
+      const lifecycle = createResponsesLifecycle(model || cb.model || "");
+      return { headers: hdr, body: Buffer.from(JSON.stringify(cb)), path: PROTO_PATHS.chat, transform: attach(createChatToResponsesStream(lifecycle), lifecycle), lifecycle, converted: true };
+    }
+    return { headers: hdr, body: Buffer.from(JSON.stringify(responsesToChatRequest("", req))), path: PROTO_PATHS.chat, transform: createNonStreamingBodyConverter(u => responsesToChatResponse("", u)), lifecycle: null, converted: true };
+  }
+  // upProto === "messages"
+  if (streaming) {
+    const cb = responsesToMessagesRequest("", { ...req, stream: true });
+    const lifecycle = createResponsesLifecycle(model || cb.model || "");
+    return { headers: msgsHeaders, body: Buffer.from(JSON.stringify(cb)), path: PROTO_PATHS.messages, transform: attach(createMessagesToResponsesStream(lifecycle), lifecycle), lifecycle, converted: true };
+  }
+  return { headers: msgsHeaders, body: Buffer.from(JSON.stringify(responsesToMessagesRequest("", req))), path: PROTO_PATHS.messages, transform: createNonStreamingBodyConverter(u => responsesToMessagesResponse("", u)), lifecycle: null, converted: true };
+}
+
+// Forwards one downstream request to any upstream protocol the group exposes,
+// converting body + response stream as needed (streaming and non-streaming).
+// Honours #N forced keys, boost/round-robin via pickKey, cooldown, capacity
+// requeue, URL-level fast-fail and the task-insight metrics pipeline.
+function forwardProtocolAware(downstreamProto, method, headers, body, clientRes, pathname, group, opts) {
+  group = group || "A";
+  opts = opts || {};
+  let responded = false;
+  const usedKeys = new Set();
+  const failedUrls = new Set();
+  let parsedBody = null;
+  try { parsedBody = JSON.parse(body.toString()); } catch (e) {}
+  let model = parsedBody && parsedBody.model ? String(parsedBody.model) : null;
+  let forceIdx = -1;
+  if (model) {
+    const hm = model.match(/#(\d+)$/);
+    if (hm) { forceIdx = parseInt(hm[1], 10) - 1; model = model.slice(0, -hm[0].length) || null; }
+  }
+  const streaming = parsedBody && parsedBody.stream === true;
+  const activeCount = accounts.filter(a => a.status === "active" && (a.group || "A") === group).length;
+  let retries = 0;
+  const MAX_RETRIES = Math.max(activeCount * 2, 10);
+  let lastFailure = null;
+
+  const planCache = {};
+  const getPlan = upProto => {
+    if (!planCache[upProto]) planCache[upProto] = buildForwardPlan(downstreamProto, upProto, method, headers, body, parsedBody, streaming);
+    return planCache[upProto];
+  };
+
+  const pools = { chat: [], messages: [], responses: [] };
+  for (let i = 0; i < accounts.length; i++) {
+    const a = accounts[i];
+    if (!a || a.status !== "active" || (a.group || "A") !== group) continue;
+    const ks = getKeyState(i);
+    if (ks.status === "discarded" || ks.status === "locked") continue;
+    if (!isInTimeWindow(a)) continue;
+    const proto = upstreamProtocolFor(i);
+    (pools[proto] || pools.chat).push(i);
+  }
+
+  let insightSession = null;
+  let insightSink = null;
+  if (parsedBody && !opts.internalDistill && typeof taskInsightActive === "function" && taskInsightActive()) {
+    try {
+      const client = classifyClientApp(headers["user-agent"]);
+      const hint = taskInsightProjectHint();
+      insightSession = taskInsightJoin(Date.now(), client, group, hint);
+      const sig = opts.preExtract ? opts.preExtract : taskInsightExtractRequest(parsedBody);
+      if (sig.instructions.length) for (const i of sig.instructions) pushUnique(insightSession.instructions, i, 4);
+      if (sig.tools.length) for (const t of sig.tools) pushUnique(insightSession.tools, t, TASK_INSIGHT_TOOLS_MAX);
+      if (sig.files.length) for (const f of sig.files) pushUnique(insightSession.files, f, TASK_INSIGHT_FILES_MAX);
+      insightSink = (metrics) => {
+        try { taskInsightAddRequestMetrics(insightSession, metrics); } catch (e) { console.error(`[proxy] task insight metrics error: ${e.message}`); }
+      };
+    } catch (e) {
+      console.error(`[proxy] task insight join error: ${e.message}`);
+      insightSession = null;
+      insightSink = null;
+    }
+  }
+
+  const reportFinalFailure = (failure, fallbackMessage) => {
+    const canRespond = !clientRes.destroyed && !clientRes.writableEnded;
+    if (canRespond && failure && Number.isInteger(failure.idx)) {
+      addDownstreamTerminalLog(failure.idx, {
+        reason: failure.reason || "upstream_api_error",
+        errorMessage: failure.errorMessage || "",
+        status: failure.modelLevel ? 400 : 502,
+        group,
+        method,
+        path: pathname,
+        reqModel: model,
+        source: failure.source || "upstream_failure",
+      });
+    }
+    if (canRespond && !clientRes.headersSent) {
+      if (failure && failure.modelLevel) {
+        const msg = failure.errorMessage || "Requested model is not supported by the upstream";
+        clientRes.writeHead(400, { "content-type": "application/json" });
+        clientRes.end(JSON.stringify({ error: { message: msg, type: "invalid_request_error", code: "model_not_found" } }));
+      } else {
+        clientRes.writeHead(502, { "content-type": "application/json" });
+        clientRes.end(JSON.stringify({ error: fallbackMessage || "All keys exhausted" }));
+      }
+    }
+    responded = true;
+  };
+
+  const pickNextKey = () => {
+    // Boost / round-robin compliant first: pickKey already filters cooldown,
+    // time-window, discarded/locked and rate limits.
+    let idx = pickKey(model, group);
+    if (idx >= 0 && !failedUrls.has(accounts[idx].url) && !usedKeys.has(idx)) return idx;
+    const order = PROTO_POOL_ORDER[downstreamProto] || ["chat", "messages", "responses"];
+    const candidates = [];
+    for (const proto of order) {
+      for (const i of pools[proto]) {
+        if (usedKeys.has(i)) continue;
+        if (failedUrls.has(accounts[i].url)) continue;
+        if (inCooldown(i) || getKeyState(i).status === "discarded" || getKeyState(i).status === "locked") continue;
+        if (!rateLimitAllow(i)) continue;
+        candidates.push({ i, proto });
+      }
+    }
+    if (!candidates.length) return -1;
+    candidates.sort((a, b) => (order.indexOf(a.proto) - order.indexOf(b.proto)) || ((accounts[b.i].priority || 0) - (accounts[a.i].priority || 0)) || (a.i - b.i));
+    return candidates[0].i;
+  };
+
+  const attempt = () => {
+    if (responded) return;
+    if (forceIdx >= 0) {
+      if (forceIdx >= accounts.length) {
+        console.error(`[proxy] #N routing: #${forceIdx+1} does not exist (max ${accounts.length})`);
+        if (!clientRes.destroyed && !clientRes.headersSent) {
+          clientRes.writeHead(400, { "content-type": "application/json" });
+          clientRes.end(JSON.stringify({ error: `Key #${forceIdx+1} does not exist, max key count is ${accounts.length}` }));
+        }
+        responded = true;
+        return;
+      }
+      const a = accounts[forceIdx];
+      const upProto = upstreamProtocolFor(forceIdx);
+      const plan = getPlan(upProto);
+      const tag = a.remark ? ` (${a.remark})` : "";
+      console.log(`[proxy] → #${forceIdx+1}${tag} (direct via #N) ${a.url} [${upProto}]`);
+      forwardRequest(forceIdx, method, plan.headers, plan.body, clientRes, plan.path, (r) => {
+        if (r.switched) reportFinalFailure(r, `Key #${forceIdx+1} failed: ${r.code || r.error?.message || "error"}`);
+        else responded = true;
+      }, plan.transform, model, insightSink);
+      return;
+    }
+    if (retries >= MAX_RETRIES) {
+      console.error(`[proxy] Max retries (${MAX_RETRIES}) reached, queueing`);
+      enqueueRequest(method, headers, body, clientRes, pathname, group, null, lastFailure, false, downstreamProto);
+      responded = true;
+      return;
+    }
+    retries++;
+    const idx = pickNextKey();
+    if (idx < 0) {
+      if (failedUrls.size) {
+        console.error(`[proxy] All upstream URLs failed for this request, failing fast`);
+        reportFinalFailure(lastFailure, lastFailure && lastFailure.modelLevel ? "Requested model is not supported by any upstream in this group" : "All upstreams failed for this request");
+        return;
+      }
+      console.log(`[proxy] No available keys, queueing request`);
+      enqueueRequest(method, headers, body, clientRes, pathname, group, null, lastFailure, false, downstreamProto);
+      responded = true;
+      return;
+    }
+    if (usedKeys.has(idx) && inCooldown(idx)) {
+      console.error(`[proxy] All accounts exhausted`);
+      reportFinalFailure(lastFailure, "All keys exhausted");
+      return;
+    }
+    usedKeys.add(idx);
+    const a = accounts[idx];
+    const upProto = upstreamProtocolFor(idx);
+    const plan = getPlan(upProto);
+    const tag = a.remark ? ` (${a.remark})` : "";
+    console.log(`[proxy] → #${idx + 1}${tag} ${a.url} [${upProto}]`);
+    forwardRequest(idx, method, plan.headers, plan.body, clientRes, plan.path, (r) => {
+      if (r.switched) lastFailure = r;
+      if (r.urlLevel) failedUrls.add(a.url);
+      if (r.capacityRetry) {
+        console.log(`[proxy] #${idx+1} → 429/capacity, queueing for retry`);
+        enqueueRequest(method, headers, body, clientRes, pathname, group, null, r, true, downstreamProto);
+        responded = true;
+        return;
+      }
+      if (r.switched && usedKeys.size < activeCount) { console.log(`[proxy] #${idx+1} → ${r.code||"err"}, switching...`); return attempt(); }
+      if (r.switched) reportFinalFailure(r, "All keys exhausted");
+      else responded = true;
+    }, plan.transform, model, insightSink);
+  };
+  attempt();
 }
 // --- End protocol converter functions ---
 
@@ -14037,14 +15346,8 @@ function createGroupServer(groupName, port) {
         const body = Buffer.concat(chunks);
         let reqBody;
         try { reqBody = JSON.parse(body); } catch (e) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "invalid JSON" })); return; }
-        const chatBody = responsesToChatRequest("", reqBody);
-        chatBody.stream = true;
-        addEventLog("conversion", 0, `Responses→Chat 转换: ${reqBody.model || "?"} → ${chatBody.model}`, "");
-        const lifecycle = createResponsesLifecycle(chatBody.model || "");
-        const transform = createChatToResponsesStream(lifecycle);
-        lifecycle._transform = transform;
-        transform._lifecycle = lifecycle;
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", transform, groupName, { preExtract: taskInsightPreExtract(reqBody) });
+        addEventLog("conversion", 0, `Responses→上游 适配: ${reqBody.model || "?"}`, "");
+        forwardProtocolAware("responses", req.method, req.headers, body, res, pathname, groupName, { preExtract: taskInsightPreExtract(reqBody) });
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -14059,12 +15362,8 @@ function createGroupServer(groupName, port) {
         const body = Buffer.concat(chunks);
         let reqBody;
         try { reqBody = JSON.parse(body); } catch (e) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "invalid JSON" })); return; }
-        const chatBody = messagesToChatRequest("", reqBody);
-        chatBody.stream = true;
-        addEventLog("conversion", 0, `Messages→Chat 转换: ${reqBody.model || "?"}`, "");
-        const lifecycle = createMessagesLifecycle(reqBody.model || chatBody.model || "");
-        const transform = createChatToMessagesStream(lifecycle);
-        forwardWithPriority(req.method, req.headers, Buffer.from(JSON.stringify(chatBody)), res, "/v1/chat/completions", transform, groupName, { preExtract: taskInsightPreExtract(reqBody) });
+        addEventLog("conversion", 0, `Messages→上游 适配: ${reqBody.model || "?"}`, "");
+        forwardProtocolAware("messages", req.method, req.headers, body, res, pathname, groupName, { preExtract: taskInsightPreExtract(reqBody) });
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
     });
     req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -14072,7 +15371,6 @@ function createGroupServer(groupName, port) {
   }
 
   if (pathname === "/v1/chat/completions" && req.method === "POST") {
-    const hasAnthropic = accounts.some(a => (a.group || "A") === groupName && isMessagesNative(a.url));
     if (req.headers["x-task-insight-distill"] === "1" && config.taskInsight && config.taskInsight.distill && config.taskInsight.distill.engine === "proxy" && groupName === "A") {
       const chunks = [];
       req.on("data", c => chunks.push(c));
@@ -14085,8 +15383,15 @@ function createGroupServer(groupName, port) {
       req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
       return;
     }
-    if (!hasAnthropic) {
-      // No Anthropic upstreams — fall through to default handler
+    let groupHasNative = false;
+    for (let i = 0; i < accounts.length; i++) {
+      const a = accounts[i];
+      if (!a || a.status !== "active" || (a.group || "A") !== groupName) continue;
+      if (upstreamProtocolFor(i) !== "chat") { groupHasNative = true; break; }
+    }
+    if (!groupHasNative) {
+      // No Responses/Messages-native upstreams in this group — fall through to
+      // the default handler (plain Chat passthrough, the current deployment).
     } else {
       const chunks = [];
       req.on("data", c => chunks.push(c));
@@ -14095,12 +15400,8 @@ function createGroupServer(groupName, port) {
           const body = Buffer.concat(chunks);
           let reqBody;
           try { reqBody = JSON.parse(body); } catch (e) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "invalid JSON" })); return; }
-          const origBody = Buffer.from(JSON.stringify({ ...reqBody, stream: true }));
-          const msgsBody = chatToMessagesRequest("", reqBody);
-          msgsBody.stream = true;
-          const msgsHeaders = { ...req.headers, "anthropic-version": "2023-06-01" };
-          addEventLog("conversion", 0, `Chat→Messages 转换: ${reqBody.model || "?"}`, "");
-          forwardChatCompletions(req.method, req.headers, origBody, msgsHeaders, Buffer.from(JSON.stringify(msgsBody)), res, groupName);
+          addEventLog("conversion", 0, `Chat→上游 适配: ${reqBody.model || "?"}`, "");
+          forwardProtocolAware("chat", req.method, req.headers, body, res, pathname, groupName, { preExtract: taskInsightPreExtract(reqBody) });
         } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
       });
       req.on("error", e => { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); });
@@ -14112,34 +15413,39 @@ function createGroupServer(groupName, port) {
   if (pathname === "/v1/models" && req.method === "GET") {
     const ua = String(req.headers["user-agent"] || "");
     const isClaudeClient = /claude/i.test(ua);
-    if (isClaudeClient) {
-      // Claude Code 只识别 claude-* 模型名。若组内有 claude 能力上游则返回其列表，
-      // 否则返回合成的 claude 档位列表，实际请求由 resolveUpstreamModel 按上游能力就近映射。
-      const groupIdxs = [];
-      for (let i = 0; i < accounts.length; i++) {
-        const a = accounts[i];
-        if (a.status === "active" && (a.group || "A") === groupName) groupIdxs.push(i);
-      }
-      const respond = (list) => {
-        res.writeHead(200, { ...cors, "access-control-allow-origin": "*", "cache-control": "no-store" });
-        res.end(JSON.stringify({ object: "list", data: list.map((id) => ({ id })) }));
-      };
-      if (!groupIdxs.length) { respond(CLAUDE_TIER_MODELS); return; }
-      Promise.all(groupIdxs.map((i) => ensureUpstreamCapability(i).catch(() => null))).then(() => {
-        const claudeIds = [];
-        const seen = new Set();
-        for (const i of groupIdxs) {
-          const cap = getCachedCapability(i);
-          if (cap && cap.claudeModels) {
-            for (const id of cap.claudeModels) {
-              if (!seen.has(id)) { seen.add(id); claudeIds.push(id); }
-            }
-          }
-        }
-        respond(claudeIds.length ? claudeIds : CLAUDE_TIER_MODELS);
-      });
-      return;
+    // Every client type gets an aggregated model list for the group:
+    // Claude Code only recognises claude-* names, so it gets the claude list
+    // (or a synthesized tier list); any other client (Codex CLI, chat apps)
+    // gets every model every upstream in the group actually exposes, so model
+    // auto-adaptation can pick a reachable model instead of failing.
+    const groupIdxs = [];
+    for (let i = 0; i < accounts.length; i++) {
+      const a = accounts[i];
+      if (a.status === "active" && (a.group || "A") === groupName) groupIdxs.push(i);
     }
+    const respond = (list) => {
+      res.writeHead(200, { ...cors, "access-control-allow-origin": "*", "cache-control": "no-store" });
+      res.end(JSON.stringify({ object: "list", data: list.map((id) => ({ id })) }));
+    };
+    if (!groupIdxs.length) { respond(isClaudeClient ? CLAUDE_TIER_MODELS : []); return; }
+    Promise.all(groupIdxs.map((i) => ensureUpstreamCapability(i).catch(() => null))).then(() => {
+      const all = [];
+      const seen = new Set();
+      for (const i of groupIdxs) {
+        const cap = getCachedCapability(i);
+        if (!cap || !Array.isArray(cap.models)) continue;
+        for (const id of cap.models) {
+          if (!seen.has(id)) { seen.add(id); all.push(id); }
+        }
+      }
+      if (isClaudeClient) {
+        const claudeIds = all.filter(id => /^claude/i.test(id));
+        respond(claudeIds.length ? claudeIds : CLAUDE_TIER_MODELS);
+      } else {
+        respond(all);
+      }
+    });
+    return;
   }
 
   const chunks = [];

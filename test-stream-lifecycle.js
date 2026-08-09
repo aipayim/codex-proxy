@@ -457,8 +457,11 @@ function testNativeResponsesRouteContract(proxyDir) {
   assert.match(source, /if \(extraTransform\) reqHeaders\["accept-encoding"\] = "identity";/);
   assert.match(source, /delete safeHeaders\["content-length"\];/);
   assert.match(source, /apiRes\.unpipe\(transform\);\n\s*apiRes\.destroy\(\);/);
-  assert.match(source, /const lifecycle = createMessagesLifecycle\(reqBody\.model \|\| chatBody\.model \|\| ""\);/);
-  assert.match(source, /const transform = createChatToMessagesStream\(lifecycle\);/);
+  // The Messages route now goes through the unified protocol-aware forwarder,
+  // which still builds the Messages lifecycle + Chat→Messages stream converter.
+  assert.match(source, /forwardProtocolAware\("messages", req\.method, req\.headers, body, res, pathname, groupName/);
+  assert.match(source, /const lifecycle = createMessagesLifecycle\(model \|\| cb\.model \|\| ""\);/);
+  assert.match(source, /createChatToMessagesStream\(lifecycle\)/);
 }
 
 async function testToolCallCompletion(harness) {

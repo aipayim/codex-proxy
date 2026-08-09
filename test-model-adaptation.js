@@ -169,9 +169,17 @@ function main() {
   // claude req → mixed upstream: passthrough
   assert.strictEqual(t.resolveUpstreamModel(acctNoModel, capMixed, "claude-sonnet-4-5"), "claude-sonnet-4-5");
 
-  // claude req → unknown capability: passthrough
-  assert.strictEqual(t.resolveUpstreamModel(acctNoModel, capUnknown, "claude-sonnet-4-5"), "claude-sonnet-4-5");
+  // claude req → unknown capability: any-model fallback maps to a reachable model
+  assert.strictEqual(t.resolveUpstreamModel(acctNoModel, capUnknown, "claude-sonnet-4-5"), "deepseek-chat");
   assert.strictEqual(t.resolveUpstreamModel(acctNoModel, null, "claude-sonnet-4-5"), "claude-sonnet-4-5");
+
+  // gpt req → unknown capability: any-model fallback
+  assert.strictEqual(t.resolveUpstreamModel(acctNoModel, capUnknown, "gpt-5.6"), "deepseek-chat");
+
+  // unknown models pick the strongest reachable model on a non-claude/gpt upstream
+  const capDeepseek = t.classifyUpstreamCapability(["deepseek-chat", "deepseek-reasoner"]);
+  assert.strictEqual(t.resolveUpstreamModel(acctNoModel, capDeepseek, "claude-opus-4-5"), "deepseek-reasoner");
+  assert.strictEqual(t.resolveUpstreamModel(acctNoModel, capDeepseek, "claude-haiku-4-5"), "deepseek-chat");
 
   // gpt req → claude-only upstream: map to a claude model
   assert.strictEqual(t.resolveUpstreamModel(acctNoModel, capClaude, "gpt-5.6"), "claude-opus-4-5");
