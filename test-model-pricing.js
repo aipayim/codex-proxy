@@ -131,7 +131,8 @@ function testForwardRequestFreezesPricing() {
   assert.ok(start >= 0 && end > start, "forwardRequest must be present");
   const body = source.slice(start, end);
   assert.match(body, /const resolvedModel = acct\.model \|\| cleanModel \|\| reqModel \|\| null;/, "key-level upstream model override must remain the pricing-model priority");
-  assert.match(body, /const requestPricing = \{ \.\.\.resolveModelPricing\(resolvedModel\) \};/);
+  assert.match(body, /const effectiveModel = adaptedModel \|\| resolvedModel;/, "pricing must use the adapted (real) model with requested-model fallback");
+  assert.match(body, /const requestPricing = \{ \.\.\.resolveModelPricing\(effectiveModel\) \};/);
   assert.ok((body.match(/recordRequest\([^;]*requestPricing\)/g) || []).length >= 5, "every forwardRequest accounting path must use its request-start pricing snapshot");
 }
 

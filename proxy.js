@@ -3309,7 +3309,7 @@ function logUpstreamHost(url) {
 
 function logDimensionValue(entry, type) {
   if (type === "upstream") return logUpstreamHost(entry.url);
-  if (type === "model") return String(entry.overrideModel || entry.reqModel || "(unknown)").slice(0, 120);
+  if (type === "model") return String(modelDisplayLabel(entry.reqModel, entry.overrideModel) || "(unknown)").slice(0, 120);
   if (type === "path") return String(entry.path || "(unknown)").slice(0, 120);
   if (type === "group") return String(entry.group || "A").toUpperCase().slice(0, 32);
   if (type === "key") return entry.idx ? `#${entry.idx}` : "(unknown)";
@@ -6275,6 +6275,13 @@ function resolveUpstreamModel(acct, capability, requestedModel) {
 }
 // --- End upstream model adaptation ---
 
+function modelDisplayLabel(reqModel, effectiveModel) {
+  const req = String(reqModel || "").trim();
+  const eff = String(effectiveModel || "").trim();
+  if (eff && req && eff !== req) return `${req} (${eff})`;
+  return eff || req || "";
+}
+
 function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone, extraTransform, cleanModel, taskInsightSink) {
   const lifecycle = extraTransform?._lifecycle || null;
   // Keep the legacy Responses-named settings, but use the long-running coding
@@ -6286,14 +6293,22 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   let clientCancelled = false;
   let terminateAttachedStream = null;
   if (!Array.isArray(activeRequests[idx])) activeRequests[idx] = [];
-  let reqModel = null;
-  try { reqModel = JSON.parse(body.toString()).model || null; } catch(e) {}
   const acct = accounts[idx];
+  let reqModel = null;
+  let adaptedModel = null;
+  if (body) {
+    try {
+      const parsed = JSON.parse(body.toString());
+      reqModel = cleanModel || parsed.model || null;
+      adaptedModel = acct.model || resolveUpstreamModel(acct, getUpstreamCapability(idx), reqModel);
+    } catch(e) {}
+  }
   const resolvedModel = acct.model || cleanModel || reqModel || null;
+  const effectiveModel = adaptedModel || resolvedModel;
   // Freeze the selected price rule at request start. A config save while a
   // long stream is in flight must apply only to later requests.
-  const requestPricing = { ...resolveModelPricing(resolvedModel) };
-  activeRequests[idx].push({ start: Date.now(), model: resolvedModel || "?" });
+  const requestPricing = { ...resolveModelPricing(effectiveModel) };
+  activeRequests[idx].push({ start: Date.now(), model: modelDisplayLabel(resolvedModel, adaptedModel) || "?" });
   const reqStart = Date.now();
   let ttfb = null;
   const client = classifyClientApp(headers["user-agent"]);
@@ -6368,7 +6383,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         } else {
           markFailure(idx, statusCode, reason);
         }
-        recordRequest(idx, false, 0, 0, dur, null, resolvedModel, statusCode, client, requestPricing);
+        recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(resolvedModel, adaptedModel), statusCode, client, requestPricing);
         recordPath(pathname, method, 0, 0, dur);
         Object.assign(logEntry, {
           status: statusCode,
@@ -6396,7 +6411,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       apiRes.destroy();
       activeDecr(idx);
       markFailure(idx, 0);
-      recordRequest(idx, false, 0, 0, dur, ttfb, resolvedModel, 0, client, requestPricing);
+      recordRequest(idx, false, 0, 0, dur, ttfb, modelDisplayLabel(resolvedModel, adaptedModel), 0, client, requestPricing);
       recordPath(pathname, method, 0, 0, dur);
       Object.assign(logEntry, {
         status: 0,
@@ -6470,7 +6485,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         }
       }
       if (!lifecycle) {
-        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, resolvedModel, apiRes.statusCode, client, requestPricing);
+        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, modelDisplayLabel(resolvedModel, adaptedModel), apiRes.statusCode, client, requestPricing);
       }
       if (lifecycle && lifecycle.terminalReason) {
         recordStreamOutcome(idx, lifecycle.terminalReason, true);
@@ -6482,7 +6497,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       lifecycle._metricsCallback = (success) => {
         const dur = Date.now() - reqStart;
         const accBytes = transform.accBytes || 0;
-        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, resolvedModel, success ? (apiRes.statusCode || 200) : 0, client, requestPricing);
+        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, modelDisplayLabel(resolvedModel, adaptedModel), success ? (apiRes.statusCode || 200) : 0, client, requestPricing);
         if (!success) markStreamTerminalFailure(idx, lifecycle, clientCancelled);
       };
       lifecycle._onTerminal = completedLifecycle => {
@@ -6602,7 +6617,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     console.error(`[proxy] #${idx + 1} Error: ${err.message}`);
     const errorMessage = sanitizeUpstreamErrorMessage(err && err.message);
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client, requestPricing);
+    recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(resolvedModel, adaptedModel), 0, client, requestPricing);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null, upstreamErrorReason: "upstream_error", streamErrorMsg: errorMessage, terminalSource: "upstream_transport_error" });
     addLog(logEntry);
     const _ks3=getKeyState(idx);_ks3.lastStatus=0;_ks3.lastTime=Date.now();_ks3.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
@@ -6626,7 +6641,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     proxyReq.destroy();
     markFailure(idx, 0);
     if (!lifecycle) {
-      recordRequest(idx, false, 0, 0, dur, null, resolvedModel, 0, client, requestPricing);
+      recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(resolvedModel, adaptedModel), 0, client, requestPricing);
     }
     recordPath(pathname, method, 0, 0, dur);
     const errorMessage = "Upstream request timed out";
@@ -6640,13 +6655,10 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     let bodyToWrite = body;
     try {
       const parsed = JSON.parse(body.toString());
-      const reqModel = cleanModel || parsed.model;
-      const capability = getUpstreamCapability(idx);
-      const effective = acct.model || resolveUpstreamModel(acct, capability, reqModel);
-      if (effective && effective !== parsed.model) {
-        parsed.model = effective;
+      if (adaptedModel && adaptedModel !== parsed.model) {
+        parsed.model = adaptedModel;
         bodyToWrite = Buffer.from(JSON.stringify(parsed));
-        if (!acct.model && !logEntry.overrideModel) logEntry.overrideModel = effective;
+        if (!acct.model && !logEntry.overrideModel) logEntry.overrideModel = adaptedModel;
       }
     } catch(e) {}
     if (!supportsCacheControl(acct.url)) {
@@ -9919,7 +9931,7 @@ async function openLogKeyPopup(idx, event){
   const p95 = durs.length ? durs[Math.floor(durs.length*0.95)]||durs[durs.length-1] : 0;
   // Models used
   const models = {};
-  reqs.forEach(e => { const m=e.overrideModel||e.reqModel||"(未知)"; models[m]=(models[m]||0)+1; });
+  reqs.forEach(e => { const m=(e.overrideModel && e.overrideModel !== e.reqModel)?((e.reqModel||"")+" ("+e.overrideModel+")"):(e.overrideModel||e.reqModel||"(未知)"); models[m]=(models[m]||0)+1; });
   const modelStr = Object.keys(models).sort((a,b)=>models[b]-models[a]).map(m => esc(m)+"("+models[m]+")").join(", ");
   const eventsStr = events.map(e => new Date(e.time).toTimeString().slice(0,5)+" "+e.eventType+": "+(e.message||"")).join("\\n");
   document.getElementById("logKeyPopupTitle").textContent = "Key #"+idx+" 统计";
@@ -10808,7 +10820,7 @@ function makeLogRow(e, seq){
   const now=new Date();
   const isToday=tm.getFullYear()===now.getFullYear()&&tm.getMonth()===now.getMonth()&&tm.getDate()===now.getDate();
   const ts=(isToday?"":String(tm.getMonth()+1).padStart(2,"0")+"-"+String(tm.getDate()).padStart(2,"0")+" ")+String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
-  const mdl=e.overrideModel||e.reqModel||"";
+  const mdl=(e.overrideModel && e.overrideModel !== e.reqModel)?((e.reqModel||"")+" ("+e.overrideModel+")"):(e.overrideModel||e.reqModel||"");
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
   let icon = "";
   if (e.conversion) icon = ' <span title="协议转换" style="color:#a78bfa">🔄</span>';

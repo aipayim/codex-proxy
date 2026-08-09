@@ -100,6 +100,7 @@ function loadHarness(proxyDir) {
       classifyUpstreamCapability, resolveUpstreamModel, pickNearestModel,
       probeUpstreamModels, ensureUpstreamCapability, getCachedCapability,
       refreshUpstreamCapabilities,
+      modelDisplayLabel, logDimensionValue,
       buildForwardPlan,
       messagesToChatRequest, chatToMessagesRequest, chatToResponsesRequest,
       responsesToChatRequest, messagesToResponsesRequest, responsesToMessagesRequest,
@@ -616,12 +617,25 @@ function testChatRouteGateUsesDynamicProtocol() {
   console.log("matrix: chat /v1/chat/completions gate uses dynamic protocol: PASS");
 }
 
+function testModelDisplayLabel(t) {
+  assert.strictEqual(t.modelDisplayLabel("claude-fable-5", "gpt-5.6-sol"), "claude-fable-5 (gpt-5.6-sol)");
+  assert.strictEqual(t.modelDisplayLabel("claude-sonnet-4-5", "claude-sonnet-4-5"), "claude-sonnet-4-5");
+  assert.strictEqual(t.modelDisplayLabel(null, "gpt-5.6-sol"), "gpt-5.6-sol");
+  assert.strictEqual(t.modelDisplayLabel("claude-fable-5", null), "claude-fable-5");
+  assert.strictEqual(t.modelDisplayLabel(null, null), "");
+  assert.strictEqual(t.modelDisplayLabel("", "  gpt-5.6-sol  "), "gpt-5.6-sol");
+  const viaDimension = t.logDimensionValue({ reqModel: "claude-fable-5", overrideModel: "gpt-5.6-sol" }, "model");
+  assert.strictEqual(viaDimension, "claude-fable-5 (gpt-5.6-sol)");
+  console.log("matrix: model display label / log dimension: PASS");
+}
+
 async function main() {
   const t = loadHarness(__dirname);
   testProtocolIdentification(t);
   await testDynamicProtocolDetection(t);
   await testPersistentProtocolCache(t);
   testChatRouteGateUsesDynamicProtocol(t);
+  testModelDisplayLabel(t);
   testRequestConverters(t);
   testNonStreamingResponseConverters(t);
   await testStreamingConverters(t);
