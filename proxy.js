@@ -2896,6 +2896,7 @@ function addStreamTerminalLog(idx, lifecycle) {
     streamId: lifecycle.responseId || "",
     streamOutcome: outcome,
     streamReason: reason,
+    stopReason: lifecycle.stopReason || null,
     streamSawDone: sawDone,
     url: (accounts[idx] && accounts[idx].url) || "",
     upstreamErrorReason: outcome === "failed" ? reason : "",
@@ -3106,7 +3107,7 @@ function serializeBoundedLogEntry(entry) {
   let line = JSON.stringify(entry) + "\n";
   if (Buffer.byteLength(line, "utf8") <= LOG_ENTRY_MAX_BYTES) return line;
   const compact = { logTruncated: true };
-  for (const field of ["time", "type", "eventType", "idx", "status", "path", "group", "client", "reqModel", "overrideModel", "streamOutcome", "streamReason", "upstreamErrorReason", "terminalSource", "streamId", "message", "streamErrorMsg", "url"]) {
+  for (const field of ["time", "type", "eventType", "idx", "status", "path", "group", "client", "reqModel", "overrideModel", "streamOutcome", "streamReason", "stopReason", "upstreamErrorReason", "terminalSource", "streamId", "message", "streamErrorMsg", "url"]) {
     const value = entry && entry[field];
     if (value === undefined || value === null) continue;
     compact[field] = typeof value === "string" ? value.slice(0, 512) : value;
@@ -3649,7 +3650,7 @@ function logEntryMatchesQuery(entry, query) {
   if (query.path && !String(entry.path || "").toLowerCase().includes(query.path.toLowerCase())) return false;
   if (query.group && String(entry.group || "A").toUpperCase() !== query.group) return false;
   if (query.q) {
-    const haystack = [entry.message, entry.url, entry.client, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource].map(value => String(value || "").toLowerCase()).join("\n");
+    const haystack = [entry.message, entry.url, entry.client, entry.reqModel, entry.overrideModel, entry.method, entry.path, entry.eventType, entry.streamId, entry.streamOutcome, entry.streamReason, entry.stopReason, entry.streamErrorMsg, entry.upstreamErrorReason, entry.terminalSource].map(value => String(value || "").toLowerCase()).join("\n");
     if (!haystack.includes(query.q.toLowerCase())) return false;
   }
   return true;
@@ -3715,7 +3716,7 @@ function escapeLogCsvCell(value) {
 }
 
 function formatLogCsv(entries) {
-  const header = ["time", "idx", "group", "client", "method", "path", "status", "inputBytes", "outputBytes", "duration", "ttfb", "reqModel", "overrideModel", "url", "type", "eventType", "message", "streamId", "streamOutcome", "streamReason", "streamSawDone", "upstreamErrorReason", "streamErrorMsg", "terminalSource"];
+  const header = ["time", "idx", "group", "client", "method", "path", "status", "inputBytes", "outputBytes", "duration", "ttfb", "reqModel", "overrideModel", "url", "type", "eventType", "message", "streamId", "streamOutcome", "streamReason", "stopReason", "streamSawDone", "upstreamErrorReason", "streamErrorMsg", "terminalSource"];
   const rows = entries.map(entry => [
     entry.time,
     entry.idx,
@@ -3737,6 +3738,7 @@ function formatLogCsv(entries) {
     entry.streamId,
     entry.streamOutcome,
     entry.streamReason,
+    entry.stopReason || "",
     entry.streamSawDone === true ? "true" : "false",
     entry.upstreamErrorReason || "",
     entry.streamErrorMsg || "",
@@ -6308,7 +6310,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
   // Freeze the selected price rule at request start. A config save while a
   // long stream is in flight must apply only to later requests.
   const requestPricing = { ...resolveModelPricing(effectiveModel) };
-  activeRequests[idx].push({ start: Date.now(), model: modelDisplayLabel(resolvedModel, adaptedModel) || "?" });
+  activeRequests[idx].push({ start: Date.now(), model: modelDisplayLabel(reqModel || resolvedModel, effectiveModel) || "?" });
   const reqStart = Date.now();
   let ttfb = null;
   const client = classifyClientApp(headers["user-agent"]);
@@ -6383,7 +6385,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         } else {
           markFailure(idx, statusCode, reason);
         }
-        recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(resolvedModel, adaptedModel), statusCode, client, requestPricing);
+        recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(reqModel || resolvedModel, effectiveModel), statusCode, client, requestPricing);
         recordPath(pathname, method, 0, 0, dur);
         Object.assign(logEntry, {
           status: statusCode,
@@ -6411,7 +6413,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       apiRes.destroy();
       activeDecr(idx);
       markFailure(idx, 0);
-      recordRequest(idx, false, 0, 0, dur, ttfb, modelDisplayLabel(resolvedModel, adaptedModel), 0, client, requestPricing);
+      recordRequest(idx, false, 0, 0, dur, ttfb, modelDisplayLabel(reqModel || resolvedModel, effectiveModel), 0, client, requestPricing);
       recordPath(pathname, method, 0, 0, dur);
       Object.assign(logEntry, {
         status: 0,
@@ -6467,6 +6469,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
           streamId: lifecycle.responseId,
           streamOutcome: lifecycle.terminalKind || "unknown",
           streamReason: lifecycle.terminalReason || "unknown",
+          stopReason: lifecycle.stopReason || "",
           streamSawDone: lifecycle.sawDone === true,
           upstreamErrorReason: lifecycle.terminalKind === "failed" ? (lifecycle.terminalReason || "upstream_api_error") : "",
           streamErrorMsg: lifecycle.upstreamErrorMessage || "",
@@ -6485,7 +6488,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
         }
       }
       if (!lifecycle) {
-        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, modelDisplayLabel(resolvedModel, adaptedModel), apiRes.statusCode, client, requestPricing);
+        recordRequest(idx, endedNormally, inputBytes, accBytes, dur, ttfb, modelDisplayLabel(reqModel || resolvedModel, effectiveModel), apiRes.statusCode, client, requestPricing);
       }
       if (lifecycle && lifecycle.terminalReason) {
         recordStreamOutcome(idx, lifecycle.terminalReason, true);
@@ -6497,7 +6500,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
       lifecycle._metricsCallback = (success) => {
         const dur = Date.now() - reqStart;
         const accBytes = transform.accBytes || 0;
-        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, modelDisplayLabel(resolvedModel, adaptedModel), success ? (apiRes.statusCode || 200) : 0, client, requestPricing);
+        recordRequest(idx, success, inputBytes, accBytes, dur, ttfb, modelDisplayLabel(reqModel || resolvedModel, effectiveModel), success ? (apiRes.statusCode || 200) : 0, client, requestPricing);
         if (!success) markStreamTerminalFailure(idx, lifecycle, clientCancelled);
       };
       lifecycle._onTerminal = completedLifecycle => {
@@ -6617,7 +6620,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     console.error(`[proxy] #${idx + 1} Error: ${err.message}`);
     const errorMessage = sanitizeUpstreamErrorMessage(err && err.message);
     markFailure(idx, 0);
-    recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(resolvedModel, adaptedModel), 0, client, requestPricing);
+    recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(reqModel || resolvedModel, effectiveModel), 0, client, requestPricing);
     Object.assign(logEntry, { status: 0, inputBytes: body ? body.length : 0, outputBytes: 0, duration: dur, ttfb: null, upstreamErrorReason: "upstream_error", streamErrorMsg: errorMessage, terminalSource: "upstream_transport_error" });
     addLog(logEntry);
     const _ks3=getKeyState(idx);_ks3.lastStatus=0;_ks3.lastTime=Date.now();_ks3.lastModel=logEntry.overrideModel||logEntry.reqModel||null;
@@ -6641,7 +6644,7 @@ function forwardRequest(idx, method, headers, body, clientRes, pathname, onDone,
     proxyReq.destroy();
     markFailure(idx, 0);
     if (!lifecycle) {
-      recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(resolvedModel, adaptedModel), 0, client, requestPricing);
+      recordRequest(idx, false, 0, 0, dur, null, modelDisplayLabel(reqModel || resolvedModel, effectiveModel), 0, client, requestPricing);
     }
     recordPath(pathname, method, 0, 0, dur);
     const errorMessage = "Upstream request timed out";
@@ -8731,6 +8734,9 @@ function renderTrend(){
   }else if(trendMode==="latency"){
     vals=keys.map(k=>{const h=hMap[k];return h.req>0?Math.round(h.totalDuration/h.req):0;});
     max=Math.max(...vals,1);
+  }else if(trendMode==="cost"){
+    vals=keys.map(k=>Number(hMap[k].totalCost)||0);
+    max=Math.max(...vals)||1;
   }else{
     vals=keys.map(k=>hMap[k][trendMode]);
     max=Math.max(...vals,1);
@@ -10627,11 +10633,11 @@ function logSortBy(field){
 function logDetailText(entry){
   if(entry.type==="event"){
     const lines=["事件: "+(entry.eventType||""),"消息: "+(entry.message||""),"URL: "+(entry.url||"")];
-    if(entry.eventType==="stream_terminal"||entry.eventType==="downstream_terminal")lines.push("流 ID: "+(entry.streamId||""),"结果: "+(entry.streamOutcome||""),"原因: "+(entry.streamReason||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否"),"错误信息: "+(entry.streamErrorMsg||"无"),"来源: "+(entry.terminalSource||""));
+    if(entry.eventType==="stream_terminal"||entry.eventType==="downstream_terminal")lines.push("流 ID: "+(entry.streamId||""),"结果: "+(entry.streamOutcome||""),"原因: "+(entry.streamReason||""),"终止原因: "+(entry.stopReason||"-"),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否"),"错误信息: "+(entry.streamErrorMsg||"无"),"来源: "+(entry.terminalSource||""));
     return lines.join("\\n");
   }
   return [
-    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"客户端: "+(entry.client||""),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"上游错误分类: "+(entry.upstreamErrorReason||""),"错误信息: "+(entry.streamErrorMsg||"无"),"错误来源: "+(entry.terminalSource||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
+    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"客户端: "+(entry.client||""),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"终止原因: "+(entry.stopReason||"-"),"上游错误分类: "+(entry.upstreamErrorReason||""),"错误信息: "+(entry.streamErrorMsg||"无"),"错误来源: "+(entry.terminalSource||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
   ].join("\\n");
 }
 
@@ -10822,6 +10828,7 @@ function makeLogRow(e, seq){
   const ts=(isToday?"":String(tm.getMonth()+1).padStart(2,"0")+"-"+String(tm.getDate()).padStart(2,"0")+" ")+String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
   const mdl=(e.overrideModel && e.overrideModel !== e.reqModel)?((e.reqModel||"")+" ("+e.overrideModel+")"):(e.overrideModel||e.reqModel||"");
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
+  const truncBadge = (e.stopReason === "max_tokens") ? '<span title="响应被模型输出上限截断（stop_reason=max_tokens），Claude Code 会提示输入继续" style="color:#f59e0b;background:#3b2a16;border:1px solid #b45309;border-radius:4px;padding:0 4px;font-size:10px;margin-right:4px">截断</span>' : "";
   let icon = "";
   if (e.conversion) icon = ' <span title="协议转换" style="color:#a78bfa">🔄</span>';
   else if (streamFailed) icon = ' <span title="流式终态失败: '+esc(e.streamReason||"")+'" style="color:#ef4444">✕</span>';
@@ -10830,7 +10837,7 @@ function makeLogRow(e, seq){
   return '<td class="log-seq" style="text-align:center;color:#64748b;font-size:10px">'+(seq != null ? seq : "")+'</td><td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
     +'<td style="max-width:100px;overflow:hidden;text-overflow:ellipsis;color:#64748b;font-size:10px" title="'+esc(e.url||"")+'">'+esc(urlShort)+'</td>'
     +'<td>'+e.method+'</td>'
-    +'<td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(mdl)+'">'+esc(mdl)+icon+'</td>'
+    +'<td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(e.stopReason === "max_tokens" ? mdl + " — 输出被截断(max_tokens)" : mdl)+'">'+truncBadge+esc(mdl)+icon+'</td>'
     +'<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td>'
     +'<td class="log-status '+sc+'">'+s+'</td>'
     +'<td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td>'
@@ -11672,6 +11679,7 @@ function createResponsesLifecycle(model) {
     fullContent: "",
     inputTokens: 0,
     outputTokens: 0,
+    stopReason: null,
     terminalKind: null,
     terminalReason: null,
     sawDone: false,
@@ -12157,6 +12165,7 @@ function createMessagesLifecycle(model) {
     fullContent: "",
     inputTokens: 0,
     outputTokens: 0,
+    stopReason: null,
     terminalKind: null,
     terminalReason: null,
     terminalSource: "chat_to_messages_sse",
@@ -12602,6 +12611,7 @@ function createChatToMessagesStream(lifecycle) {
   const emitCompleted = output => {
     if (lifecycle.terminalKind) return false;
     lifecycle.sawDone = true;
+    lifecycle.stopReason = stopReason || null;
     ensureMessageStarted(output);
     closeOpenedBlocks(output);
     pushEvent(output, "message_delta", {
@@ -13384,6 +13394,7 @@ function createResponsesToMessagesStream(lifecycle) {
   let activeContentBlock = null;
   const toolBlocks = new Map();
   let sawToolUse = false;
+  let truncationReason = null;
 
   const pushEvent = (output, event, payload) => {
     output.push(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
@@ -13448,11 +13459,13 @@ function createResponsesToMessagesStream(lifecycle) {
   const emitCompleted = output => {
     if (lifecycle.terminalKind) return false;
     lifecycle.sawDone = true;
+    const stop = truncationReason || (sawToolUse ? "tool_use" : "end_turn");
+    lifecycle.stopReason = stop;
     ensureMessageStarted(output);
     closeOpenedBlocks(output);
     pushEvent(output, "message_delta", {
       type: "message_delta",
-      delta: { stop_reason: sawToolUse ? "tool_use" : "end_turn", stop_sequence: null },
+      delta: { stop_reason: stop, stop_sequence: null },
       usage: { output_tokens: lifecycle.outputTokens },
     });
     pushEvent(output, "message_stop", { type: "message_stop" });
@@ -13514,6 +13527,10 @@ function createResponsesToMessagesStream(lifecycle) {
       if (response && response.usage) {
         lifecycle.inputTokens = response.usage.input_tokens || 0;
         lifecycle.outputTokens = response.usage.output_tokens || 0;
+      }
+      if (response && response.status === "incomplete") {
+        const ir = response.incomplete_details && response.incomplete_details.reason;
+        truncationReason = ir === "max_output_tokens" ? "max_tokens" : (ir || "incomplete");
       }
       return emitCompleted(output);
     }
