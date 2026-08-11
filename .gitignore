@@ -26,3 +26,7 @@ release-manifest.json
 .env
 .env.*
 !.env.example
+
+# Local audit and planning notes. Never publish.
+puss-tag.txt
+docs/

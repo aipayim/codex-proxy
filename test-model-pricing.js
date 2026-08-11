@@ -159,7 +159,11 @@ function testDashboardPricingConfigSurface() {
   const start = source.indexOf("function getDashboardHTML()");
   const end = source.indexOf("\n// --- HTTP Server ---", start);
   assert.ok(start >= 0 && end > start, "embedded dashboard function must be present");
-  const getDashboardHTML = new Function(`${source.slice(start, end)}; return getDashboardHTML;`)();
+  const i18nStart = source.indexOf("const I18N_LANGS = {");
+  const i18nEnd = source.indexOf("\n};", i18nStart) + 3;
+  assert.ok(i18nStart >= 0 && i18nEnd > i18nStart, "I18N_LANGS block must be present");
+  const preamble = i18nStart >= 0 && i18nStart < start ? `${source.slice(i18nStart, i18nEnd)};` : "";
+  const getDashboardHTML = new Function(`${preamble}\n${source.slice(start, end)}; return getDashboardHTML;`)();
   const embeddedHtml = getDashboardHTML();
   const standaloneHtml = fs.readFileSync(path.join(ROOT, "dashboard.html"), "utf8");
   for (const html of [embeddedHtml, standaloneHtml]) {

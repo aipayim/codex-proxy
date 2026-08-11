@@ -650,7 +650,7 @@ function testDownstreamTrendByClientApp(proxyDir) {
   assert.match(source, /const sortedClients=Object\.keys\(allClients\)\.sort\(\(a,b\)=>allClients\[b\]-allClients\[a\]\);/);
   assert.match(source, /clientColorMap\[c\]=modelColors\[i%modelColors\.length\];/);
   assert.match(source, /const topClients=sortedClients\.slice\(0,8\);/);
-  assert.match(source, /lines\.push\("  "\+c\+": "\+cv\+"次"\);/);
+  assert.match(source, /lines\.push\("  "\+t\("trend\.clientReq",\{c,n:cv\}\)\);/);
   assert.match(source, /for\(const c of sortedClients\)\{if\(!topClients\.includes\(c\)\)otherTotal\+=allClients\[c\]\|\|0;\}/);
   assert.doesNotMatch(source, /const kdata=data\.find\(item=>String\(item&&item\.idx\)===String\(ki\)\);/);
   assert.doesNotMatch(source, /const dOrder=\[/);

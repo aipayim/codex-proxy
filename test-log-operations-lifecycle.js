@@ -184,11 +184,11 @@ function testSourceContracts() {
   assert.match(source, /id="logIncidentRefreshBtn"/);
   assert.match(source, /id="logIncidentRefreshStatus"/);
   assert.match(source, /refreshLogOperations\(\{interactive:true\}\)/);
-  assert.match(source, /logIncidentRefreshStatus="已刷新 "/);
+  assert.match(source, /logIncidentRefreshStatus="Refreshed "/);
   assert.doesNotMatch(source, /_logCache/);
   assert.doesNotMatch(source, /countAllEntries/);
   assert.doesNotMatch(source, /logWrittenCount/);
-  assert.match(source, /data-mode="health" onclick="setTrendMode\('health'\)">💚 健康<\/span><span class="trend-tab" data-mode="upstream" onclick="setTrendMode\('upstream'\)">🔺 上游<\/span><span class="trend-tab" data-mode="downstream"/);
+  assert.match(source, /data-mode="health" onclick="setTrendMode\('health'\)"[^>]*>💚 健康<\/span><span class="trend-tab" data-mode="upstream" onclick="setTrendMode\('upstream'\)"[^>]*>🔺 上游<\/span><span class="trend-tab" data-mode="downstream"/);
   assert.match(source, /urls:\{\},urlsKeys:\{\},clients:\{\}\};\n  \}\n  const allModels=\{\};\n  const allUrls=\{\};\n  const allClients=\{\};/);
   assert.match(source, /try\{ uKey=new URL\(a\.url\)\.hostname; \}catch\(e\)\{ uKey=a\.url; \}/);
   assert.match(source, /h\.urls\[uKey\]=\s*\(h\.urls\[uKey\]\|\|0\)/);
@@ -196,9 +196,9 @@ function testSourceContracts() {
   assert.match(source, /}else if\(trendMode==="upstream"\)\{\n    vals=keys\.map\(k=>\{const u=hMap\[k\]\.urls\|\|\{\};return Object\.values\(u\)\.reduce\(\(s,n\)=>s\+n,0\);\}\);/);
   assert.match(source, /}else if\(trendMode==="upstream"\)\{\n    const sortedUrls=Object\.keys\(allUrls\)\.sort\(\(a,b\)=>allUrls\[b\]-allUrls\[a\]\);/);
   assert.match(source, /const topUrls=sortedUrls\.slice\(0,8\);/);
-  assert.match(source, /urlColorMap\["\(其他\)"\]="#6b7280";/);
-  assert.match(source, /lines\.push\("  "\+u\+" \(#"\+uk\.join\(",#"\)\+"\): "\+uv\+"次"\);/);
-  assert.match(source, /allUrls\["\(其他\)"\]=otherTotal;/);
+  assert.match(source, /urlColorMap\["\(other\)"\]="#6b7280";/);
+  assert.match(source, /lines\.push\("  "\+t\("trend\.urlReq",\{u,id:uk\.join\(",#"\),n:uv\}\)\);/);
+  assert.match(source, /allUrls\["\(other\)"\]=otherTotal;/);
   assert.match(source, /trendLegend/);
   assert.match(source, /function classifyClientApp\(ua\)/);
   const fwdStart = source.indexOf("function forwardRequest(");
@@ -216,13 +216,13 @@ function testSourceContracts() {
   assert.match(source, /}else if\(trendMode==="downstream"\)\{\n    vals=keys\.map\(k=>\{const c=hMap\[k\]\.clients\|\|\{\};return Object\.values\(c\)\.reduce\(\(s,n\)=>s\+n,0\);\}\);/);
   assert.match(source, /}else if\(trendMode==="downstream"\)\{\n    const sortedClients=Object\.keys\(allClients\)\.sort\(\(a,b\)=>allClients\[b\]-allClients\[a\]\);/);
   assert.match(source, /const topClients=sortedClients\.slice\(0,8\);/);
-  assert.match(source, /clientColorMap\["\(其他\)"\]="#6b7280";/);
-  assert.match(source, /allClients\["\(其他\)"\]=otherTotal;/);
-  assert.match(source, /lines\.push\("  "\+c\+": "\+cv\+"次"\);/);
+  assert.match(source, /clientColorMap\["\(other\)"\]="#6b7280";/);
+  assert.match(source, /allClients\["\(other\)"\]=otherTotal;/);
+  assert.match(source, /lines\.push\("  "\+t\("trend\.clientReq",\{c,n:cv\}\)\);/);
   assert.match(source, /legendClients\.map\(c=>'<span class="trend-legend-item"/);
   assert.match(source, /"group", "client", "method", "path", "status"/);
   assert.match(source, /entry\.url, entry\.client, entry\.reqModel/);
-  assert.match(source, /"客户端: "\+\(entry\.client\|\|""\)/);
+  assert.match(source, /"Client: "\+\(entry\.client\|\|""\)/);
   assert.doesNotMatch(source, /if\(!h\.streams\[soKey\]\)/);
   assert.doesNotMatch(source, /const dColors=\{upstream_done/);
 }

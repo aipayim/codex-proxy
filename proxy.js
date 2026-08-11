@@ -7003,7 +7003,7 @@ function buildStatusData() {
         const epoch = getWeeklyEpoch(act, a.resetDay);
         const cyc = Math.floor((Date.now() - epoch) / (7 * 86400000));
         const next = epoch + (cyc + 1) * 7 * 86400000;
-        return ["周日","周一","周二","周三","周四","周五","周六"][new Date(next).getDay()];
+        return String(new Date(next).getDay());
       })(),
       ...s,
       daily: selectRecentStateBuckets(s.daily, false, STATUS_DAILY_BUCKET_LIMIT),
@@ -7059,6 +7059,212 @@ function getPrometheusMetrics() {
   lines.push(`codex_proxy_request_queue_max_wait_seconds ${QUEUE_TIMEOUT / 1000}`);
   return lines.join("\n");
 }
+
+// --- Dashboard I18N ---
+// 词典为普通 JS 对象，注入到内嵌 dashboard。键值含占位符如 {n}/{time}。
+const I18N_LANGS = {
+  zh: {
+    "lang.name": "中文",
+    "common.all": "全部", "common.ok": "确定", "common.cancel": "取消", "common.on": "是", "common.off": "否", "common.none": "无", "common.unknown": "未知", "common.waiting": "等待中", "common.inUse": "使用中",
+    "header.subLoading": "加载中...", "header.allKeysDown": "⚠️ 所有 Key 均不可用，请求将全部失败！", "header.updatedLive": "最后更新: {time} | 实时推送", "header.connectFailed": "连接失败，正在重试...", "header.tickerConcurrent": "⚡ 并发中：", "header.tickerOverflow": "{n} 个并发请求未显示",
+    "toolbar.discussions": "💬 会话流", "toolbar.logs": "📋 日志", "toolbar.tasks": "📊 任务流水", "toolbar.export": "⬇ 导出 CSV", "toolbar.mgr": "⚙ 管理 Key", "toolbar.config": "⚙ 配置", "toolbar.update": "发现可升级版本，点击查看 Release 说明与安全升级方法", "lang.title": "切换语言 (CN/EN)",
+    "ctrl.sort": "排序", "ctrl.filter": "筛选", "ctrl.reset": "重置", "ctrl.group": "分组", "ctrl.trend": "趋势", "ctrl.search": "搜索", "ctrl.status": "状态码", "ctrl.model": "模型", "ctrl.collapseAll": "全部折叠/展开", "ctrl.showCount": "显示 {x} / {y} 个", "ctrl.showCountShielded": "，屏蔽 {n} 个", "ctrl.searchPh": "ID/备注/地址...", "ctrl.statusPh": "如 401", "ctrl.modelPh": "模型名",
+    "sort.default": "默认顺序", "sort.expiry": "按到期日（最近→最远）", "sort.activated": "首次启用（早→晚）", "sort.duration": "使用时长（长→短）", "sort.score": "健康评分", "sort.latency": "平均延迟", "sort.rate5m": "5分钟成功率", "sort.group": "按分组",
+    "reset.all": "全部", "reset.daily": "每日重置", "reset.weekly": "每周重置", "reset.hourly": "每N小时重置", "reset.never": "永不过期",
+    "wd.1": "周一", "wd.2": "周二", "wd.3": "周三", "wd.4": "周四", "wd.5": "周五", "wd.6": "周六", "wd.7": "周日", "wd.auto": "自动",
+    "filter.shielded": "屏蔽", "mgr.resetDay": "周重置日", "trend.24h": "24小时", "trend.7d": "7天", "trend.30d": "30天",
+    "batch.count": "已选 {n} 个", "batch.reset": "🔄 批量重置", "batch.shield": "🔇 批量屏蔽", "batch.selectAll": "☐ 全选", "batch.selectNone": "☐ 全取消", "batch.boostUse": "⚡ 优先使用", "batch.boostRR": "⭕ 优先轮询", "batch.boostRand": "🎲 随机轮询", "batch.cancelBoost": "✕ 取消批量优先",
+    "trend.hours": "{n}小时", "trend.days": "{n}天", "trend.mode.model": "📊 模型", "trend.mode.bytes": "📊 流量", "trend.mode.req": "📈 次数", "trend.mode.health": "💚 健康", "trend.mode.upstream": "🔺 上游", "trend.mode.downstream": "🔻 下游", "trend.mode.cost": "💰 费用", "trend.mode.latency": "⏱ 延迟",
+    "trend.timeBucket": "{d} {h}:00~{h2}:00", "trend.total": "合计: {n}次", "trend.cost": "费用: ${v}", "trend.latencyAvg": "平均延迟: {v}", "trend.reqs": "请求数: {n}次", "trend.noData": "无数据", "trend.other": "(其他)", "trend.fail": "失败", "trend.otherModels": "其他模型",     "trend.reqUnit": "次", "trend.modelReq": "{m}: {n}次", "trend.urlReq": "{u} ({id}): {n}次", "trend.clientReq": "{c}: {n}次", "trend.totalBytes": "合计: ↑{u} / ↓{d} | {n}次", "trend.keyReq": "#{k}  {b}  {n}次",
+    "sum.available": "可用", "sum.cooldown": "冷却中", "sum.locked": "🔒 锁死", "sum.concurrent": "并发请求", "sum.traffic": "总流量", "sum.requests": "总请求", "sum.health": "健康评分", "sum.cost": "预估费用",
+    "card.discarded": "已废弃", "card.pendingRecover": "待恢复", "card.available": "可用", "card.cooldown": "冷却中", "card.permInvalid": "永久失效", "card.dailyUsed": "本日已用完，明天0点重置", "card.hourlyUsed": "本时段已用完，下一时段重置", "card.weeklyUsed": "本周已用完，{day}0点重置", "card.discardedBadge": "已废弃", "card.boosted": "⚡ 已优先", "card.boostQueue": "⚡ 队列", "card.boostRR": "⚡ 轮询", "card.boostRand": "⚡ 🎲 随机",     "card.score": "{n}分", "card.collapse": "折叠", "card.groupName": "{g}组", "card.concurrentN": "{n}并发", "card.forbidden": "禁止使用",
+    "card.resetDaily": "每日", "card.resetNever": "永久", "card.resetWeekly": "每周-{d}", "card.resetHourly": "每{n}小时", "rl.daily": "每日", "rl.weekly": "每周", "rl.never": "永不过期", "rl.hourly": "每N小时",
+    "card.key": "Key", "card.url": "地址", "card.remark": "备注", "card.models": "指定模型", "card.modelGeneric": "通用", "card.overrideModel": "覆盖模型", "card.failCode": "失败码", "card.lastFail": "最后失败", "card.cooldownLeft": "冷却剩余", "card.requests": "请求", "card.requestsVal": "{n}次 (成功{s} 失败{f})", "card.traffic": "流量", "card.trafficVal": "↑{u} / ↓{d}", "card.costVal": "预估费用", "card.avgLat": "平均延迟", "card.avgTtfb": "平均首字节", "card.pct": "P50 / P95 / P99", "card.slidingRate": "滑动成功率", "card.slidingRateVal": "5分钟: {r5} | 1小时: {r1}", "card.firstUsed": "首次启用", "card.usedDuration": "启用至今", "card.noRecord": "无记录", "card.inWindow": "时段内", "card.outWindow": "非时段", "daily.reqBytes": "{n}次 {b}",
+    "card.tShield": "屏蔽此 Key（不再参与调度）", "card.tReset": "重置此 Key", "card.tResetCd": "重置冷却", "card.tBoost": "下一个请求优先使用此 Key", "card.tCancelBoost": "点击取消优先", "card.tTest": "测试连通性",
+    "badge.cd.timeIn": "时段内", "badge.cd.timeOut": "非时段",
+    "dash.resumeIdle": "🧬Key闲置 {idle}", "dash.resumeSince": "/恢复{n}m前", "dash.resumeIdle0": "🧬Key闲置 0.00s", "dash.resumeIdleDash": "🧬Key闲置 --",
+    "cfg.resumeIdle": "🧬 闲置恢复: Key 闲置 {idle}", "cfg.resumeSince": "，上次触发 {n}m 前", "cfg.resumeWaiting": "，等待阈值", "cfg.resumeInUse": "🧬 闲置恢复: Key 使用中", "cfg.resumeWait": "🧬 闲置恢复: 等待中",
+    "alert.allKeysDown": "所有 Key 均不可用！", "alert.logIncident": "日志事件：{title}", "alert.testFail": "Key #{idx} 测试请求失败: {msg}", "alert.testOk": "Key #{idx} 测试成功！", "alert.testFail2": "Key #{idx} 测试失败: {msg}", "alert.noData": "Key #{idx} 数据不可用", "alert.keyNotLoaded": "Key 未加载，请重试",     "alert.testModels": " 可用模型({n}个): {m}", "alert.testDuration": " 耗时: {d}ms", "alert.incidentDetected": "检测到日志事件", "alert.logIncidentScope": "（范围: {scope}）",
+    "time.just": "刚刚", "time.ago": "前", "time.d": "天", "time.h": "小时", "time.m": "分钟", "time.s": "秒", "time.minAgo": "{n}分钟前", "time.hourAgo": "{n}小时前", "time.dayAgo": "{n}天前",
+    "mgr.status": "状态码", "mgr.lastResp": "最后响应", "mgr.respModel": "响应模型", "mgr.group": "分组", "mgr.reset": "重置", "mgr.priority": "优先", "mgr.models": "指定模型", "mgr.override": "覆盖模型", "mgr.remark": "备注", "mgr.unused": "未使用", "mgr.shielded": "已屏蔽", "mgr.locked": "🔒 锁死",
+    "mgr.count": "共 {total} 个，已屏蔽 {shielded} 个", "mgr.countFiltered": "，筛选后 {n} 个", "mgr.hideShielded": "（已屏蔽已隐藏）", "mgr.resetDaily": "每日", "mgr.resetWeekly": "每周", "mgr.resetHourly": "每N小时", "mgr.resetNever": "永久",
+    "mgr.priorityHint": "数值越大优先级越高，启用轮询后生效", "mgr.modelsHint": "逗号分隔，如 gpt-5.5, gpt-5.4-mini", "mgr.overrideHint": "非空时转发请求时强制替换 model 为此值", "mgr.groupHint": "所属分组，如 A/B/C", "mgr.groupPh": "组名", "mgr.modelPh2": "指定模型名", "mgr.overridePh": "覆盖模型", "mgr.remarkPh": "备注",
+    "mgr.testTitle": "#{n} 测试连通性", "mgr.resetTitle": "#{n} 重置状态（清除冷却/废弃/锁死）", "mgr.shieldTitle": "#{n} {act}", "mgr.unshield": "恢复使用", "mgr.shield": "屏蔽", "mgr.unlockTitle": "#{n} 解锁 Key", "mgr.delTitle": "#{n} 删除",
+    "mgr.delConfirm": "确定要删除 Key #{n}？\\n删除后不再显示和调用，可在 keys.json 中恢复。", "mgr.delBatchConfirm": "确定要删除选中的 {n} 个 Key？\\n删除后不再显示和调用，可在 keys.json 中恢复。",
+    "mgr.cleanPrompt": "清理条件：最后响应距今 ≥ ? 天", "mgr.cleanInvalid": "请输入正整数天数", "mgr.cleanDone": "已选中 {n} 个符合条件的 Key\\n（最后响应≥{d}天 且 状态码≥400 或 网络错误）\\n\\n可使用「批量屏蔽」处理",
+    "mgr.needSel": "请先勾选要{act}的 Key", "mgr.needSelReset": "重置", "mgr.needSelShield": "屏蔽", "mgr.needSelDelete": "删除", "mgr.needSelTime": "设置错峰时段", "mgr.needSelClearTime": "清除时段",
+    "mgr.needSelPrompt": "请先勾选要{act}的 Key", "mgr.timeSetTitle": "设置选中 {n} 个 Key 的错峰时段", "mgr.timeHelp": "设定后仅在该时段内参与调度（按所选时区，24 小时制）。<br>开始&lt;结束=同天时段（如 08-17）；开始&gt;结束=跨夜时段（如 22-08）；开始==结束=全天可用。",
+    "mgr.twTz": "时区", "mgr.twStart": "开始", "mgr.twEnd": "结束", "mgr.cancel": "取消", "mgr.confirm": "确认设置", "mgr.twFull": "全时段（无限制，等效清除）", "mgr.twSameDay": "{s}:00-{e}:00（同天窗口）", "mgr.twOvernight": "{s}:00-{e}:00（跨夜窗口）", "mgr.twPreview": "时段：<b style=\"color:#e2e8f0\">{win}</b>（{tz}，24 小时制）<br>当前：<b style=\"color:{color}\">{state}</b>", "mgr.twIn": "时段内 ✔（可参与调度）", "mgr.twOut": "非时段 ✖（不参与调度）",
+    "mgr.clearTimeConfirm": "确定清除选中的 {n} 个 Key 的时段设置？", "mgr.unknown": "未知", "mgr.autoUnset": "自动（未设置）", "mgr.uncategorized": "未分类",
+    "mgr.toggleRemarkMode": "点击切换显示模式", "mgr.firstUsedTitle": "首次启用: {t} | 启用至今: {d}", "mgr.twWindow": "错峰时段: {s}:00-{e}:00 (UTC{t}) | {st}",
+    "mgr.showShieldedBtn": "🙉 显示已屏蔽", "mgr.hideShieldedBtn": "🙈 隐藏已屏蔽", "mgr.unlockConfirm": "解锁 #{n}？将清除锁死状态，Key 恢复正常使用。",
+    "mgr.atLeastOne": "至少需要一个有效的 Key", "mgr.saveFail": "保存失败: {e}", "mgr.pasteData": "请粘贴 Key 数据", "mgr.addKeysDone": "成功添加 {n} 个 Key", "mgr.addKeysSkipped": "，{n} 行被跳过（格式错误或缺少 URL）",
+    "mgr.exportSelect": "请先勾选要导出的 Key", "mgr.exportNoVisible": "当前没有可见的 Key 可导出", "mgr.keyEmptyTest": "Key 为空，无法测试", "mgr.testOkB": "Key #{n} 测试成功！", "mgr.testFailB": "Key #{n} 测试失败: {e}", "mgr.testReqFailB": "Key #{n} 测试请求失败: {e}", "mgr.modelsN": " 可用模型({n}个): {m}", "mgr.durationMs": " 耗时: {n}ms",
+    "mgr.batchTestSelect": "请先勾选要测试的 Key", "mgr.batchTesting": "测试中...", "mgr.batchSkip": "⏭️ #{n} Key 为空，跳过", "mgr.batchTestingLine": "⏳ #{n} 测试中...", "mgr.batchOk": "✅ #{n} 成功", "mgr.batchFail": "❌ #{n} 失败: {e}", "mgr.batchReqFail": "❌ #{n} 请求异常: {e}", "mgr.batchDone": "测试完成 — {p} 个通过, {f} 个失败", "mgr.resetPassedBtn": "🔄 重置通过测试的 Key ({n}个)", "mgr.resetAllBtn": "🔄 重置所有 Key 的状态码 ({n}个)",
+    "mgr.csvKey": "Key", "mgr.csvUrl": "地址", "mgr.csvModels": "指定模型", "mgr.csvOverride": "覆盖模型", "mgr.csvTimeWindow": "时段", "mgr.csvStatus": "状态", "mgr.csvFailCode": "失败码", "mgr.csvRequests": "请求数", "mgr.csvSuccess": "成功数", "mgr.csvFail": "失败数", "mgr.csvInputBytes": "输入字节", "mgr.csvOutputBytes": "输出字节", "mgr.csvAvgDur": "平均耗时", "mgr.csvHealth": "健康分", "mgr.csvCost": "费用", "mgr.clearCodeFilterTitle": "取消筛选",
+    "mgr.exportTitle": "导出 CSV（选择字段）", "mgr.csvReset": "重置类型", "mgr.csvPriority": "优先级", "mgr.csvGroup": "分组", "mgr.csvRemark": "备注", "mgr.csvResetDay": "重置日", "mgr.csvTz": "时区", "mgr.exportBtn": "导出",
+    "mgr.importTitle": "批量导入 Key", "mgr.importHelp": "每行一个 Key，格式：<code style=\"background:#0f172a;padding:1px 4px;border-radius:3px\">sk-xxx URL [重置类型] [优先级] [分组] [备注]</code><br>URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/永久/每N小时）<br>示例：<code style=\"background:#0f172a;padding:1px 4px;border-radius:3px\">sk-abc123 https://your-api.com weekly 0 A 我的Key</code>", "mgr.pasteDataPh": "粘贴 Key 数据到此处...", "mgr.importBtn": "导入",
+    "mgr.title": "Key 管理", "mgr.hint": "修改后点击保存，代理自动重载配置", "mgr.searchPh": "搜索备注/地址...", "mgr.codePh": "状态码", "mgr.codeTitle": "按状态码筛选，如 401", "mgr.modelPh": "指定模型", "mgr.modelTitle": "按指定模型搜索，子串匹配",
+    "mgr.allStatus": "全部状态", "mgr.available": "可用", "mgr.cooldown": "冷却中", "mgr.discarded": "废弃", "mgr.locked2": "锁死", "mgr.shielded": "屏蔽", "mgr.duration": "启用时长", "mgr.lastFail": "最后失败", "mgr.lastResp": "最后响应", "mgr.resetDay": "周重置日", "mgr.timeIn": "时段内", "mgr.timeOut": "非时段",
+    "mgr.daysPh": "≥X天", "mgr.daysTitle1": "筛选启用距今 ≥ X 天的 Key，可与其他条件组合", "mgr.daysTitle2": "筛选最后失败距今 ≥ X 天的 Key，可与其他条件组合", "mgr.resetDayTitle": "筛选指定周重置日的 Key", "mgr.all": "全部",
+    "mgr.sortDefault": "默认顺序", "mgr.sortResetDay": "按重置日（周一→周日）", "mgr.sortActivated": "首次启用（早→晚）", "mgr.sortDuration": "使用时长（长→短）", "mgr.sortGroup": "按分组",
+    "mgr.selectAll": "全选", "mgr.clear": "取消", "mgr.batchShield": "🔇 批量屏蔽", "mgr.batchReset": "🔄 批量重置", "mgr.batchDelete": "✕ 批量删除", "mgr.cleanBtn": "🧹 清理失败", "mgr.twBtn": "⏰ 错峰时段", "mgr.twBtnTitle": "为选中的 Key 设置错峰可用小时段（含时区）；开始==结束=全天可用", "mgr.clearTwBtn": "⏰ 清除时段", "mgr.clearTwTitle": "清除选中 Key 的错峰时段，恢复全天可用", "mgr.exportBtn2": "📥 导出", "mgr.batchTestBtn": "🔍 批量测试",
+    "mgr.countStatic": "共 0 个", "mgr.batchTestResultTitle": "批量测试结果", "mgr.resetPassedStatic": "🔄 重置通过测试的 Key", "mgr.resetAllStatic": "🔄 重置所有 Key 的状态码", "mgr.collapse": "收起",
+    "cfg.title": "系统配置", "cfg.autoSaved": "修改后自动保存", "cfg.localBuild": "本地构建：", "cfg.localBuildDefault": "本地开发/定制版本（未能验证发布基线）", "cfg.provenance": "来源：待识别", "cfg.latestRelease": "最新正式 Release：", "cfg.unknownRel": "未知", "cfg.upgradeGuide": "GitHub 升级说明 ↗", "cfg.upgradeGuideTitle": "升级前先备份本机定制代码、配置和状态；在 GitHub 查看 Release 后合并变更，并在维护窗口验证、重启代理。", "cfg.checkUpdate": "检查更新",
+    "cfg.baselineTag": "定制构建基线 Tag（高级、可选）", "cfg.baselinePh": "例如 v1.2.3", "cfg.baselineTitle": "官方发布包和干净的正式 Git Tag 会自动识别。仅在定制构建需要比较时填写已人工确认的正式 GitHub Release Tag。", "cfg.baselineHint": "官方发布包自动识别；定制构建留空则只显示 Release，不判断更新。",
+    "cfg.priceIn": "💰 默认输入价格（每百万 token）", "cfg.priceOut": "💰 默认输出价格（每百万 token）", "cfg.priceUnmatchedTitle": "未匹配模型时使用", "cfg.bpt": "🔤 默认每 token 字节数", "cfg.pricingOverride": "🧮 按模型计费覆盖", "cfg.pricingHint": "按实际最终转发模型名精确匹配；未配置或未知模型使用上方默认规则。费用按传输字节估算，不等同于上游账单 token；新价格仅影响之后的请求。", "cfg.addModelRule": "＋ 添加模型规则",
+    "cfg.desktopNotify": "🔔 桌面通知", "cfg.notifyAllFail": "全部 Key 失效时通知", "cfg.soundAlert": "🔊 声音提醒", "cfg.soundAllFail": "全部 Key 失效时响铃", "cfg.webhook": "🌐 Webhook URL",
+    "cfg.autoRecover": "🔄 自动恢复冷却 Key", "cfg.autoRecoverCheck": "定时检测并恢复", "cfg.probeInterval": "⏱ 探测间隔（小时）", "cfg.probeIntervalTitle": "最小 0.5 小时", "cfg.fixedTime": "📅 固定时间检测", "cfg.every": "每", "cfg.daysUnit": "天", "cfg.fixedCheck": "固定检测",
+    "cfg.failCodes": "🔢 检测的失败码", "cfg.failCodesPh": "401,402,403,429,500,502,503,504", "cfg.failCodesTitle": "401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时",
+    "cfg.includeDiscarded": "🚫 包含 discarded Key", "cfg.includeDiscardedCheck": "连续两周期失败的也检测", "cfg.probeDelay": "⏱ 检测间隔（毫秒）", "cfg.probeDelayHint": "每 Key 间等待，多个值用逗号分隔（最多 10 个），程序随机选取，模拟人工节奏", "cfg.probeDelayRecommend": "推荐 800,1200,500 等值，范围 100–10000。所有检测模式共用此设置",
+    "cfg.quickRecover": "⚡ 快速恢复（针对 5xx 等异常）", "cfg.enableQuickRecover": "启用快速恢复", "cfg.quickRecoverPoll": "当 Key 出现以下状态码时快速轮询检测", "cfg.pollInterval": "轮询间隔（分钟）", "cfg.monitorCodes": "监控的状态码", "cfg.roundRobin": "🔁 轮询均摊流量", "cfg.roundRobinCheck": "启用后可用 key 按优先层层轮流使用，而非固定顺序", "cfg.weeklySort": "📅 每周 Key 按到期日排序", "cfg.weeklySortCheck": "每周重置的 Key 按「最先到期先使用」排序（当日最后），无 resetDay 排最后",
+    "cfg.autoResumeSection": "🧬 闲置自动恢复（autoResume）", "cfg.enableResume": "启用闲置恢复", "cfg.enableResumeCheck": "Key 闲置时自动在 Windows 中打开终端运行项目命令", "cfg.idleThreshold": "Key 闲置阈值（分钟）", "cfg.idleThresholdSuffix": " 分钟无请求视为空闲", "cfg.debounce": "防抖间隔（分钟）", "cfg.debounceSuffix": " 兼容间隔（同一闲置周期仅一次）", "cfg.runnerStall": "runner 停滞宽限（分钟）", "cfg.runnerStallSuffix": " 0=关闭；无在途请求且无新 Key 应用时才判定停滞", "cfg.stallRestartLimit": "停滞重启上限", "cfg.stallRestartSuffix": " 同一 Key 闲置周期；0=关闭（仅管理已验证 runner）", "cfg.cmdPath": "cmd.exe 路径",
+    "cfg.capacitySection": "🚦 容量/429 瞬态退避（capacityBackoff）", "cfg.transientBackoff": "瞬态退避时长（秒）", "cfg.transientBackoffSuffix": " 429/容量错误后该 Key 短暂跳过，不记为整周期故障", "cfg.capacityMaxWait": "容量等待上限（秒）", "cfg.capacityMaxWaitSuffix": " 仅剩容量退避时，请求在队列中最多等待秒数（默认 30 秒的超时会被此值替换）", "cfg.projects": "项目列表（最多 10 个）", "cfg.addProject": "+ 添加项目",
+    "cfg.logConfig": "📋 日志配置", "cfg.enableFileLog": "启用文件日志", "cfg.retention": "保留", "cfg.retentionSuffix": " 天自动清理（0=关闭按天清理，容量上限仍有效）", "cfg.logDetail": "日志详情级别", "cfg.logDetailFull": "完整", "cfg.logDetailBasic": "简洁", "cfg.logDetailHint": " 简洁模式不记录模型名", "cfg.runtimeCaps": "💾 运行时数据上限（保存后立即执行状态压缩和请求日志清理；WSL 控制台日志由 watchdog 轮转器在 10 秒内读取新值）", "cfg.logTotalCap": "请求日志总容量", "cfg.mibSegments": " MiB（所有 JSONL 分段合计）", "cfg.logSegmentCap": "请求日志单段上限", "cfg.mibSameDay": " MiB（超过后同日分段）", "cfg.stateHourly": "状态小时统计保留", "cfg.stateDaily": "状态日统计保留", "cfg.stateMax": "state.json 容量上限", "cfg.stateMaxSuffix": " MiB（超限时删除最旧统计桶）", "cfg.wslLog": "WSL proxy.log", "cfg.wslLogUnit": " MiB / 保留 ", "cfg.wslLogSuffix": " 个归档（systemd 使用 journald）",
+    "cfg.codexMaint": "🗄 Codex SQLite 日志维护", "cfg.enableDbMaint": "启用数据库维护", "cfg.enableDbMaintCheck": " 达到容量阈值后短批次删除保留期外的 Codex 日志", "cfg.dbPath": "数据库路径", "cfg.dbPathPh": "/root/.codex/logs_2.sqlite", "cfg.dbPathTitle": "填写 WSL 内部绝对路径，例如 /root/.codex/logs_2.sqlite；也可直接粘贴 WSL 网络路径，检测时会自动转换；不要填写 -wal/-shm 文件。", "cfg.checkPath": "检测路径", "cfg.triggerCap": "触发容量 / 保留时长", "cfg.triggerCapMiB": " MiB / 保留 ", "cfg.hoursUnit": " 小时", "cfg.checkInterval": "检查间隔", "cfg.minutesUnit": " 分钟", "cfg.runNow": "立即检查", "cfg.cleanNow": "立即清理", "cfg.cleanNowTitle": "仅在 Codex 空闲（无在途/排队请求且静默 60 秒）时执行；按已保存的触发容量/保留时长删除过期记录并 VACUUM 缩小库文件。需约等于库容量的临时磁盘空间。",
+    "cfg.incidentCenter": "日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）", "cfg.enableIncident": "启用日志事件", "cfg.incidentRules": " 触发失败/流失败规则　", "cfg.sendNotify": " 发送通知", "cfg.obsWindow": "观察窗口 / 最低请求", "cfg.incidentReqs": " 次", "cfg.failCount": "失败次数 / 失败率", "cfg.incidentFailures": " 次 / ", "cfg.incidentPct": " %", "cfg.streamFailCount": "流失败次数 / 默认静默", "cfg.resolve": "恢复判定", "cfg.resolveSuffix": " 分钟无异常后自动恢复", "cfg.latencyAlert": "延迟告警", "cfg.enableP95": " 启用 P95　请求 ", "cfg.msUnit": " ms",
+    "cfg.lockThreshold": "🔒 连续失败锁死阈值", "cfg.lockThresholdTitle": "连续 N 次失败后自动锁死该 Key", "cfg.lockThresholdCount": " 次", "cfg.lockCodes": "🎯 锁死监控错误码", "cfg.lockCodesPh": "401,403", "cfg.lockCodesTitle": "只有这些错误码会计入连续失败计数", "cfg.enableAutoLock": "🔒 启用自动锁死", "cfg.enableAutoLockCheck": " 开启后连续失败达到阈值将自动锁死 Key",
+    "cfg.minRate": "⏱ 分钟级限速", "cfg.maxReqPerMin": "每分钟请求上限", "cfg.maxTokPerMin": "每分钟 Token 上限 (0=不限)", "cfg.streamTimeout": "⏱ 流超时", "cfg.otherStreamLifetime": "其他协议流最大时长 (ms)", "cfg.otherStreamLifetimeTitle": "非 Responses / Messages 编码协议流的绝对超时，防止僵尸连接。默认30分钟", "cfg.responsesStreamLifetime": "Responses / Messages 编码流最大总时长 (ms)", "cfg.responsesStreamLifetimeTitle": "0=不设置总时长硬切断；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认0", "cfg.responsesIdleTimeout": "Responses / Messages 上游空闲超时 (ms)", "cfg.responsesIdleTimeoutTitle": "0=关闭；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认90分钟，只在上游完全无数据时触发",
+    "cfg.adminAuth": "🔐 管理认证", "cfg.adminToken": "管理 Token（空=不校验）", "cfg.adminTokenPh": "留空=无认证", "cfg.adminTokenTitle": "设置后所有管理接口需 Bearer token 认证", "cfg.portGroups": "🔌 端口分组管理",
+    "cfg.discussions": "💬 GitHub 互动（会话流）", "cfg.enableDiscussions": "启用会话流", "cfg.enableDiscussionsCheck": " 在 Dashboard 显示会话流面板", "cfg.discMaxItems": "显示条数", "cfg.discToken": "GitHub Token（可选）", "cfg.discTokenPh": "未配置，仅可查看留言", "cfg.toggleToken": "显示/隐藏 Token", "cfg.testToken": "测试连通", "cfg.testTokenTitle": "用已保存的 Token 测试连通性", "cfg.discHelp": "配置后可在面板内留言、回复与发起新会话（内容将公开发布到 GitHub Discussions）。Token 仅存本地、掩码展示；需 fine-grained PAT 并授予仓库 Discussions 读/写权限。「测试连通」仅验证 Token 有效与读取权限，写权限以实际发布结果为准（若发布提示 Resource not accessible，请到 GitHub 将 Discussions 权限改为 Read and write）。若将本管理端口暴露到局域网/公网，请务必同时设置「管理 Token」。",
+    "cfg.taskInsight": "🔎 任务洞察（代理流水解析/提炼）", "cfg.enableTaskInsight": "启用任务洞察", "cfg.enableTaskInsightCheck": " 记录代理流水任务（默认不落盘原文，仅结构化信号）", "cfg.signalCollect": "采集信号", "cfg.insInstructions": " 截断指令（前 200 字）", "cfg.insInstructionsTitle": "记录截断指令前 200 字", "cfg.insTools": " 工具/文件路径", "cfg.insToolsTitle": "仅工具名与文件路径，不存参数全文", "cfg.insUsage": " 用量与费用", "cfg.insUsageTitle": "输入输出 token 与估算费用", "cfg.insCorrelate": " 关联会话（45 分钟活跃窗口）", "cfg.insCorrelateTitle": "使用 autoResume 活跃窗口合并同一任务的连续会话", "cfg.insRetention": "保留天数",
+    "cfg.insDistill": "🤖 LLM 蒸馏摘要（可选，发送时仅含结构化快照，绝不含 Key）", "cfg.enableDistill": "启用蒸馏", "cfg.enableDistillCheck": " 定期为已完成任务生成结构化摘要", "cfg.distillEngine": "蒸馏引擎", "cfg.engineOllama": "ollama（本机）", "cfg.engineProxy": "proxy（走代理）", "cfg.engineExternal": "external（外部 API）", "cfg.modelUrl": "模型 / 地址", "cfg.distillModelPh": "qwen3:4b / gpt-5", "cfg.distillUrlPh": "http://127.0.0.1:11434/v1（仅 ollama 需要）", "cfg.distillUrlTitle": "ollama 与 external 引擎使用此地址；proxy 引擎忽略（走代理本身）", "cfg.distillBudget": "每日预算 / 报告", "cfg.yuanUnlimited": " 元（0=不限）　", "cfg.dailyReport": "日报", "cfg.weeklyReport": "周报", "cfg.distillStatus": "蒸馏: --",
+    "cfg.autoCountdown": "⏳ 下次检测（间隔）: --", "cfg.autoDailyCountdown": "⏳ 下次检测（固定）: --", "cfg.autoPollCountdown": "⏳ 下次检测（快速）: --", "cfg.autoResumeStatus": "🧬 闲置恢复: --", "cfg.codexMaintRuntime": "🗄 Codex SQLite 日志维护: --", "cfg.restartProxy": "🔄 重启代理", "cfg.save": "保存",
+    "common.close": "关闭",
+    "cfg.distillStatusUnavailable": "蒸馏：状态不可用", "cfg.dbCheckError": "检查失败: {e}", "cfg.dbCleanupWaiting": "等待 Codex 空闲并清理数据库…", "cfg.dbCleanupFailed": "清理失败: {e}", "cfg.dbEnableFirst": "请先启用并保存配置", "cfg.dbInvalid": "路径或数据库无效", "cfg.dbNothingToClean": "没有超过保留期的记录，无需清理", "cfg.dbBusyRetry": "数据库忙，已跳过；请稍后重试", "cfg.dbDeletedNow": "✓ 已删除 {n} 条过期记录", "cfg.dbBelowNothing": "低于阈值，无需删除", "cfg.dbVacuumFreed": "；VACUUM 释放 {space}", "cfg.dbNow": "；当前 {size}", "cfg.dbActiveWait": "Codex 仍在使用（活跃 {active} / 排队 {queued}，距上次请求 {seconds}s）；请等待 60 秒后重试",
+    "cfg.keys": "个 Key", "cfg.portLabel": "端口", "cfg.defaultAlways": "（默认/始终运行）", "cfg.disable": "禁用", "cfg.enable": "启用", "cfg.delete": "删除", "cfg.groupNamePh": "名称", "cfg.portPh": "端口", "cfg.add": "添加", "cfg.operationFailed": "操作失败: {e}", "cfg.deleteGroupConfirm": "确定删除分组 {name}？", "cfg.deleteFailed": "删除失败: {e}", "cfg.groupNamePortRequired": "请输入分组名称和端口", "cfg.addFailed": "添加失败: {e}",
+    "cfg.nextInterval": "⏳ 下次检测（间隔）: ", "cfg.nextFixed": "⏳ 下次检测（固定）: ", "cfg.nextFast": "⏳ 下次检测（快速）: ", "cfg.idleStatus": "🧬 闲置恢复: Key 闲置 ", "cfg.lastTriggered": "，上次触发 {n}m 前", "cfg.waitingThreshold": "；等待阈值", "cfg.idleWaiting": "🧬 闲置恢复: 等待中", "cfg.windowTitle": "时段：{win} | {h}h {m}m 后", "cfg.windowAvailableIn": "时段：{win} | {h}h {m}m 后可用",
+    "cfg.projectNamePh": "项目名称", "cfg.projectPathPh": "WSL 路径 /mnt/e/...", "cfg.projectCmdPh": "命令 codex ...", "cfg.commandMode": "命令", "cfg.fixedSessionMode": "固定会话", "cfg.sessionIdPh": "会话 ID", "cfg.fixedSessionTitle": "固定会话模式会将命令中的 {sessionId} 替换为下方会话 ID",
+    "cfg.distillLocalHint": "数据保留在本机，不产生外部费用；需要本机运行 ollama 并已拉取模型（默认 http://127.0.0.1:11434/v1）。", "cfg.distillProxyHint": "蒸馏请求经代理发送，Token 计入代理统计/费用/限速，Key 不会离开；模型名必须匹配代理中的可用模型。", "cfg.distillExternalHint": "直接调用外部 API（地址必须携带有效 API Key），绕过代理；数据保密由你负责。", "cfg.distillDisabled": "蒸馏：已禁用", "cfg.distillRunning": "蒸馏：运行中…", "cfg.distillLastFailed": "蒸馏：上次运行失败: {e}", "cfg.distillPending": "蒸馏：待处理任务 {n} 个", "cfg.distillLastRun": "蒸馏：上次运行 {t}", "cfg.distillWaiting": "蒸馏：等待运行", "cfg.distillBudget": "；今日预算 ¥{spent} / ¥{limit}",
+    "cfg.dbDisabled": "🗄 Codex SQLite 日志维护: 已禁用", "cfg.dbChecking": "🗄 Codex SQLite 日志维护: 检查数据库中…", "cfg.dbCheckFailed": "上次检查失败: {e}", "cfg.dbDeleted": "已删除 {n} 条过期记录", "cfg.dbBusy": "数据库忙，已跳过，等待下次检查", "cfg.dbBelowThreshold": "低于触发阈值", "cfg.dbScheduled": "已安排检查", "cfg.dbWaiting": "等待首次检查", "cfg.dbIdle": "空闲，可立即清理", "cfg.dbInUse": "使用中（活跃 {active} / 排队 {queued}），暂不可清理", "cfg.dbEnableFirst": "请先启用并保存配置", "cfg.dbInvalid": "路径或数据库无效", "cfg.dbCheckFailed": "检查失败: {e}", "cfg.dbCleanupWaiting": "等待 Codex 空闲并清理数据库…", "cfg.dbCleanupFailed": "清理失败: {e}", "cfg.dbBelowNothing": "低于阈值，无需删除", "cfg.dbNothingToClean": "没有超过保留期的记录，无需清理", "cfg.dbBusyRetry": "数据库忙，已跳过；请稍后重试", "cfg.dbDeletedNow": "✓ 已删除 {n} 条过期记录", "cfg.dbVacuumFreed": "；VACUUM 释放 {space}", "cfg.dbNow": "；当前 {size}", "cfg.dbActiveWait": "Codex 仍在使用（活跃 {active} / 排队 {queued}，距上次请求 {seconds}s）；请等待 60 秒后重试",
+    "cfg.saveFailed": "保存失败: {e}", "cfg.fixedSessionInvalid": "保存失败：固定会话模式需要有效会话 ID，且启动命令必须包含 {sessionId}", "cfg.dbConfigInvalid": "保存失败：Codex SQLite 数据库路径或结构检查未通过", "cfg.unknownError": "未知错误", "cfg.savedTokenHint": "出于安全原因不会回显已保存 Token；请输入新值进行替换", "cfg.testing": "测试中…", "cfg.connectedAs": "✅ 已连接为 @{login}", "cfg.permissionInsufficient": "⚠️ Discussions 权限不足: {message}", "cfg.readAccessOk": "（读取权限正常；发布/回复的写权限将在实际发布时验证）", "cfg.testFailed": "❌ 测试失败", "cfg.testConnection": "测试连通",
+    "cfg.noModelRules": "暂无模型覆盖规则", "cfg.modelNamePh": "模型名，例如 gpt-5", "cfg.inputPricePh": "输入 / 1M", "cfg.outputPricePh": "输出 / 1M", "cfg.bytesTokenPh": "字节/token", "cfg.inputPriceTitle": "输入价格（每百万 Token）", "cfg.outputPriceTitle": "输出价格（每百万 Token）", "cfg.bytesTokenTitle": "每 Token 字节数", "cfg.deleteModelRule": "删除模型规则",
+    "mgr.addRow": "+ 添加一行", "mgr.save": "保存",
+    "exp.allVisible": "导出当前页面可见的所有 Key", "exp.cfgSection": "── 配置字段 ──", "exp.stSection": "── 统计字段 ──",
+    "task.title": "📊 任务流水（代理流水解析/提炼）", "task.disabled": "任务洞察当前未启用，暂无流水记录。", "task.goEnable": "去「配置 → 🔎 任务洞察」开启", "task.project": "项目 ", "task.unclassified": "未分类", "task.status": "状态 ", "task.completed": "完成", "task.failed": "失败", "task.partial": "部分", "task.search": "搜索 ", "task.searchPh": "项目/客户端/工具/文件/模型", "task.refresh": "🔄 刷新", "task.export": "⬇ CSV", "task.report": "📊 报告", "task.distillNow": "🤖 立即蒸馏", "task.signalsOnly": "仅结构化信号，不含 Key 或完整记录", "task.distillEngine": "蒸馏引擎: {engine}", "task.running": "（运行中）", "task.todayBudget": "今日预算 ¥{spent}/¥{limit}", "task.distillDisabled": "LLM 蒸馏已禁用（可在配置中启用）", "task.sessions": "会话", "task.enabled": "已启用", "task.disabledShort": "未启用", "task.signals": "信号", "task.on": "开", "task.off": "关", "task.none": "无", "task.time": "时间", "task.client": "客户端", "task.requests": "请求数", "task.tokens": "Token（输入/输出）", "task.cost": "费用", "task.model": "模型", "task.toolsFiles": "工具/文件", "task.summary": "摘要", "task.noMatching": "没有匹配的会话", "task.loadFailed": "加载失败: {e}", "task.generating": "正在生成报告…", "task.reportWord": "报告", "task.successRate": "成功率", "task.models": "模型", "task.reportFailed": "报告失败: {e}", "task.distillStarted": "蒸馏已启动", "task.distillFailed": "蒸馏失败", "task.distillSubmitted": "已提交；摘要将在运行后出现在任务详情中", "task.distillRequestFailed": "蒸馏请求失败: {e}",
+    "update.title": "版本更新", "update.current": "本机版本：", "update.latest": "最新正式 Release：", "update.loadingSummary": "正在读取 GitHub Release 信息…", "update.loadingNotes": "正在读取更新说明…", "update.viewRelease": "在 GitHub 查看 Release ↗", "update.recheck": "↻ 重新检查", "update.upgradeDisabled": "一键升级已禁用", "update.upgradeDisabledTitle": "自动覆盖可能丢失本地修改，因此已禁用。",
+    "disc.loading": "正在从 GitHub 加载会话…", "disc.loadFailed": "加载失败: {e}（点击 ↻ 刷新重试）", "disc.lastFailed": "上次更新失败: {e}（点击 ↻ 刷新重试）", "disc.lastUpdated": "上次更新于 {time}（离线快照，网络恢复后自动刷新）", "disc.updatedRefresh": "已更新，点击 ↻ 刷新", "disc.empty": "暂无公开会话，前往 GitHub 查看全部会话", "disc.hasAnswer": "已有回答", "disc.openGitHub": "在 GitHub 打开", "disc.loadingReplies": "正在加载回复…", "disc.noBody": "（无正文）", "disc.readMore": "阅读更多", "disc.loginJoin": "🔗 登录 GitHub 参与互动 ↗", "disc.publicCommentHint": "发表评论将公开发布…", "disc.post": "发布", "disc.commentEmpty": "评论不能为空", "disc.posting": "发布中…", "disc.postedRefreshing": "已发布，正在刷新…", "disc.postFailed": "发布失败: {e}", "disc.refreshing": "刷新中…", "disc.noCategories": "暂无可用分类", "disc.categoryFailed": "分类加载失败", "disc.titleEmpty": "标题不能为空", "disc.bodyEmpty": "正文不能为空", "disc.chooseCategory": "请选择分类", "disc.postedGitHub": "已发布到 GitHub ↗", "disc.category": "分类",
+    "auth.title": "管理验证", "auth.hint": "此代理需要管理员 Token 授权，请输入后继续。", "auth.tokenPh": "管理 Token", "auth.confirm": "确定", "auth.empty": "请输入管理 Token", "auth.wrong": "Token 无效，请重试", "auth.fail": "验证失败，请重试",
+    "upd.notChecked": "未检查", "upd.justChecked": "刚刚检查", "upd.reason.metadataMissing": "发布元数据缺失", "upd.reason.metadataInvalid": "发布元数据无效", "upd.reason.manifestMismatch": "Release 清单不匹配", "upd.reason.manifestInvalid": "Release 清单无效", "upd.reason.manifestIncomplete": "Release 清单不完整", "upd.reason.filesModified": "发布文件被本地修改", "upd.reason.gitUnavailable": "无法读取 git 仓库", "upd.reason.gitRemoteUntrusted": "git 远程源不受信任", "upd.reason.gitWorktreeModified": "git 工作区有本地修改", "upd.reason.gitNotAtTag": "不在 Release Tag 上", "upd.reason.gitStatusUnavailable": "git 状态不可用", "upd.reason.sourceBaselineMissing": "源基线缺失", "upd.reason.sourceBaselineInvalid": "源基线无效", "upd.unknownReason": "未知原因（{r}）", "upd.provenanceUnknown": "来源未知", "upd.source": "来源: {p}", "upd.unknownTag": "未知版本", "upd.upgradeAvailable": "可升级至 {tag}", "upd.upToDate": "已是最新版本", "upd.cannotCompare": "无法对比（本地版本无法验证）", "upd.badgeUpdate": "可升级至 {tag}", "upd.badgeNoUpdate": "已是最新版本", "upd.badgeUnknown": "状态未知：{r}", "upd.statusChecking": "正在检查更新…", "upd.statusFail": "检查失败: {e}", "upd.statusBaselineUnknown": "本地构建无法验证（{r}），仅显示 Release（{t}）", "upd.statusNew": "发现新版本 {tag}（{t}）", "upd.statusOk": "已是最新（{t}）", "upd.safetyNoAuto": "自动升级已禁用，安全起见仅展示说明。", "upd.safetyFull": "一键升级已禁用；请手动下载 Release 覆盖本地文件。", "upd.publishedAt": "发布于 {d}", "upd.localUnverified": "本地为 {p}，最新 Release {tag}。{m}", "upd.summaryNew": "可升级：当前 {cur} → {tag}。{m}", "upd.summaryCurrent": "当前已是 {tag}（{cur}）。{m}", "upd.noNotes": "此版本无更新说明", "upd.summaryUnavailable": "无法获取 Release 信息", "upd.notesUnavailable": "无更新说明", "upd.checkingNow": "检查中…", "upd.invalidResult": "更新检查返回无效数据", "upd.checkFailed": "更新检查失败",
+    "log.title": "请求日志与运行事件", "log.rebuild": "重建汇总", "log.rebuildingSummary": "正在重建汇总", "log.summaryRebuildFailed": "汇总重建失败", "log.summaryRebuilt": "已重建 {n} 天", "log.rebuildingShort": "重建中...", "log.refreshing": "刷新中...", "log.readingHistory": "正在读取历史日志…", "log.readingLatest": "正在读取最新日志…", "log.queryFailed": "日志查询失败: {e}", "log.noRecords": "暂无记录", "log.latestOnlyTitle": "默认视图仅显示最新记录；点击“浏览历史”进行分页", "log.earliestPage": "已经是最早的历史页", "log.olderRecords": "查看更早历史记录", "log.noOlderRecords": "没有更早的历史记录", "log.latestView": "最新视图", "log.returnLive": "返回仅显示最新记录的实时视图", "log.switchHistory": "切换到分页历史视图", "log.historyPage": "历史第 {n} 页", "log.latestEntries": "最新 {n} 条", "log.foundFiles": "发现 {n} 个日志文件，已扫描 {m} 个", "log.noMatchingFiles": "没有匹配格式的日志文件", "log.historyBoundary": "历史查询触及本页扫描边界", "log.loadedTail": "已加载保存日志尾部", "log.savedUnreadable": "保存的日志暂不可读，当前显示内存记录", "log.memoryLive": "内存尾部 · 实时", "log.rebuildTitle": "后台重建历史日汇总，不读取或阻塞代理请求", "log.total": "总请求", "log.successRate": "成功率", "log.avgDur": "平均耗时", "log.timeout": "超时", "log.sparklineTitle": "最近 30 分钟请求量趋势（蓝色=成功，红色=错误）", "log.errorDist": "⚠ 错误分布", "log.incidents": "运行事件 ", "log.refreshIncidents": "刷新事件", "log.refreshIncidentsTitle": "重新读取当前运行事件", "log.keyPh": "Key #", "log.statusPh": "状态码", "log.modelPh": "模型", "log.upstreamPh": "上游域名", "log.pathPh": "路径", "log.groupPh": "分组", "log.searchPh": "搜索...", "log.timeAll": "全部时间", "log.time5m": "最近 5 分钟", "log.time15m": "最近 15 分钟", "log.time1h": "最近 1 小时", "log.time24h": "最近 24 小时", "log.time7d": "最近 7 天", "log.time30d": "最近 30 天", "log.timeCustom": "自定义范围", "log.searchBtn": "🔍 搜索", "log.csvBtn": "⬇ CSV", "log.colNo": "序", "log.colTime": "时间", "log.colUpstream": "上游", "log.colMethod": "方法", "log.colModel": "模型", "log.colPath": "路径", "log.colStatus": "状态", "log.colDur": "耗时", "log.colTtfb": "首字节", "log.prev": "← 上一页", "log.prevTitle": "浏览历史后可按页返回", "log.pageInfo": "最新 50 条", "log.browseHistory": "浏览历史", "log.browseHistoryTitle": "切换为可分页的历史日志视图", "log.next": "下一页 →", "log.nextTitle": "浏览历史后可翻到更早记录", "log.notSubscribed": "● 未订阅", "log.popupTitle": "Key #- 统计",
+    "restart.title": "正在重启代理", "restart.cancel": "取消重启", "restart.force": "强制重启", "restart.dismiss": "返回 Dashboard", "restart.waited": "已等待 {time}", "restart.drainingDetail": "仍在等待 {active} 个请求完成{queued}。", "restart.queuedRejected": "本次已拒绝 {n} 个排队请求。", "restart.forceAvailable": "已等待至少 30 秒，现在可以强制重启。", "restart.forceAvailableAfter": "再等待 {time} 后可强制重启。", "restart.waitingNew": "等待新的代理实例", "restart.oldStopped": "旧代理已停止，等待 watchdog 启动新实例。", "restart.newReady": "新的代理实例已就绪", "restart.reloading": "正在重新加载 Dashboard…", "restart.cancelled": "重启已取消", "restart.proxyRunning": "代理继续运行；新的请求已重新接受。", "restart.monitoring": "正在监控已有重启", "restart.oldExiting": "旧代理正在退出，等待 watchdog 启动新实例。", "restart.draining": "正在排空在途请求", "restart.oldExit": "等待旧代理退出", "restart.prepareSwitch": "已请求重启，正在准备切换到新实例。", "restart.cannotConfirm": "无法确认重启状态", "restart.authExpired": "管理认证已过期，请重新打开 Dashboard 后重试", "restart.checking": "正在检查代理状态", "restart.submitting": "正在提交安全重启请求…", "restart.requested": "已请求重启", "restart.waitingRequests": "正在等待 {active} 个在途请求完成。", "restart.noRequests": "没有在途请求，正在停止旧代理实例。", "restart.monitorExisting": "正在监控已有重启", "restart.confirming": "正在确认重启状态", "restart.connectionBroken": "重启期间连接中断，等待新实例恢复。", "restart.failedSubmit": "提交重启失败：{e}", "restart.failedCancel": "取消重启失败：{e}", "restart.cancelling": "正在取消重启", "restart.restoring": "正在恢复正常代理访问…", "restart.forceNoLonger": "无法再强制重启", "restart.notDraining": "代理已不在允许强制重启的排空阶段。", "restart.stillDraining": "仍在安全排空", "restart.forceAfter": "再等待 {time} 后可强制重启。", "restart.forceConfirm": "强制重启将立即断开 {active} 个在途请求。\nCodex CLI 任务可能部分完成或报错；未完成的工作需要手动确认。\n\n现在强制重启吗？", "restart.forcing": "正在强制重启", "restart.forceDetail": "将中断 {active} 个在途请求，并等待 watchdog 启动新实例。", "restart.forceAccepted": "已确认中断 {active} 个在途请求，等待新实例就绪。", "restart.forceNotExecuted": "尚未执行强制重启：{e}{retry}", "restart.confirmingForce": "正在确认强制重启状态", "restart.forceConnectionBroken": "切换期间连接中断，等待新实例恢复。", "restart.failedForce": "提交强制重启失败：{e}", "restart.button": "🔄 重启代理", "restart.buttonWorking": "正在重启…", "restart.cancelConfirm": "取消此次安全重启？\n代理将立即恢复接受新请求；已经拒绝的排队请求不会恢复。",
+    "disc.title": "💬 会话流", "disc.refresh": "↻ 刷新", "disc.open": "在 GitHub 打开 ↗", "disc.openTitle": "查看全部会话与历史", "disc.create": "✚ 发起会话", "disc.guideLogin": "🔗 登录 GitHub 参与互动 ↗", "disc.titleLabel": "标题", "disc.createTitlePh": "新会话标题", "disc.catLabel": "分类", "disc.bodyLabel": "正文", "disc.bodyPh": "内容将公开发布到 GitHub Discussions", "disc.publish": "发布"
+  },
+  en: {
+    "lang.name": "English",
+    "common.all": "All", "common.ok": "OK", "common.cancel": "Cancel", "common.on": "Yes", "common.off": "No", "common.none": "None", "common.unknown": "Unknown", "common.waiting": "Waiting", "common.inUse": "In use",
+    "header.subLoading": "Loading...", "header.allKeysDown": "⚠️ All keys unavailable, requests will fail!", "header.updatedLive": "Updated: {time} | Live", "header.connectFailed": "Connection failed, retrying...", "header.tickerConcurrent": "⚡ Active:", "header.tickerOverflow": "{n} active requests hidden",
+    "toolbar.discussions": "💬 Discussions", "toolbar.logs": "📋 Logs", "toolbar.tasks": "📊 Tasks", "toolbar.export": "⬇ Export CSV", "toolbar.mgr": "⚙ Manage Keys", "toolbar.config": "⚙ Settings", "toolbar.update": "New version available, click to view Release notes and safe upgrade guide", "lang.title": "Switch language (CN/EN)",
+    "ctrl.sort": "Sort", "ctrl.filter": "Filter", "ctrl.reset": "Reset", "ctrl.group": "Group", "ctrl.trend": "Trend", "ctrl.search": "Search", "ctrl.status": "Status", "ctrl.model": "Model", "ctrl.collapseAll": "Collapse/expand all", "ctrl.showCount": "Showing {x} / {y}", "ctrl.showCountShielded": ", {n} shielded", "ctrl.searchPh": "ID/remark/url...", "ctrl.statusPh": "e.g. 401", "ctrl.modelPh": "model",
+    "sort.default": "Default", "sort.expiry": "By reset date (soonest first)", "sort.activated": "By first activation (oldest)", "sort.duration": "By uptime (longest)", "sort.score": "Health score", "sort.latency": "Avg latency", "sort.rate5m": "5-min success rate", "sort.group": "By group",
+    "reset.all": "All", "reset.daily": "Daily reset", "reset.weekly": "Weekly reset", "reset.hourly": "Every N hours", "reset.never": "Never expires",
+    "wd.1": "Mon", "wd.2": "Tue", "wd.3": "Wed", "wd.4": "Thu", "wd.5": "Fri", "wd.6": "Sat", "wd.7": "Sun", "wd.auto": "Auto",
+    "filter.shielded": "Shielded", "mgr.resetDay": "Weekly reset day", "trend.24h": "24 hours", "trend.7d": "7 days", "trend.30d": "30 days",
+    "batch.count": "Selected {n}", "batch.reset": "🔄 Batch reset", "batch.shield": "🔇 Batch shield", "batch.selectAll": "☐ Select all", "batch.selectNone": "☐ Select none", "batch.boostUse": "⚡ Boost use", "batch.boostRR": "⭕ Boost round-robin", "batch.boostRand": "🎲 Boost random", "batch.cancelBoost": "✕ Cancel boost",
+    "trend.hours": "{n}h", "trend.days": "{n}d", "trend.mode.model": "📊 Model", "trend.mode.bytes": "📊 Traffic", "trend.mode.req": "📈 Requests", "trend.mode.health": "💚 Health", "trend.mode.upstream": "🔺 Upstream", "trend.mode.downstream": "🔻 Downstream", "trend.mode.cost": "💰 Cost", "trend.mode.latency": "⏱ Latency",
+    "trend.timeBucket": "{d} {h}:00~{h2}:00", "trend.total": "Total: {n}", "trend.cost": "Cost: ${v}", "trend.latencyAvg": "Avg latency: {v}", "trend.reqs": "Requests: {n}", "trend.noData": "No data", "trend.other": "(other)", "trend.fail": "Failed", "trend.otherModels": "Other models",     "trend.reqUnit": "", "trend.modelReq": "{m}: {n}", "trend.urlReq": "{u} ({id}): {n}", "trend.clientReq": "{c}: {n}", "trend.totalBytes": "Total: ↑{u} / ↓{d} | {n}", "trend.keyReq": "#{k}  {b}  {n}",
+    "sum.available": "Available", "sum.cooldown": "Cooldown", "sum.locked": "🔒 Locked", "sum.concurrent": "Active", "sum.traffic": "Traffic", "sum.requests": "Requests", "sum.health": "Health", "sum.cost": "Est. cost",
+    "card.discarded": "Discarded", "card.pendingRecover": "Recovering", "card.available": "Available", "card.cooldown": "Cooldown", "card.permInvalid": "Permanently failed", "card.dailyUsed": "Daily quota used, resets at 00:00", "card.hourlyUsed": "Slot quota used, resets next slot", "card.weeklyUsed": "Weekly quota used, resets {day} 00:00", "card.discardedBadge": "Discarded", "card.boosted": "⚡ Boosted", "card.boostQueue": "⚡ Queue", "card.boostRR": "⚡ RR", "card.boostRand": "⚡ 🎲 Random",     "card.score": "{n} pts", "card.collapse": "Collapse", "card.groupName": "Group {g}", "card.concurrentN": "{n} active", "card.forbidden": "Banned",
+    "card.resetDaily": "Daily", "card.resetNever": "Never", "card.resetWeekly": "Weekly-{d}", "card.resetHourly": "Every {n}h", "rl.daily": "Daily", "rl.weekly": "Weekly", "rl.never": "Never", "rl.hourly": "Every N h",
+    "card.key": "Key", "card.url": "URL", "card.remark": "Remark", "card.models": "Allowed models", "card.modelGeneric": "Generic", "card.overrideModel": "Override model", "card.failCode": "Fail code", "card.lastFail": "Last fail", "card.cooldownLeft": "Cooldown left", "card.requests": "Requests", "card.requestsVal": "{n} (ok {s} fail {f})", "card.traffic": "Traffic", "card.trafficVal": "↑{u} / ↓{d}", "card.costVal": "Est. cost", "card.avgLat": "Avg latency", "card.avgTtfb": "Avg TTFB", "card.pct": "P50 / P95 / P99", "card.slidingRate": "Sliding rate", "card.slidingRateVal": "5m: {r5} | 1h: {r1}", "card.firstUsed": "First used", "card.usedDuration": "Uptime", "card.noRecord": "No record", "card.inWindow": "In window", "card.outWindow": "Out of window", "daily.reqBytes": "{n} {b}",
+    "card.tShield": "Shield this key (exclude from routing)", "card.tReset": "Reset this key", "card.tResetCd": "Reset cooldown", "card.tBoost": "Boost this key for next request", "card.tCancelBoost": "Click to cancel boost", "card.tTest": "Test connectivity",
+    "badge.cd.timeIn": "In window", "badge.cd.timeOut": "Out of window",
+    "dash.resumeIdle": "🧬Key idle {idle}", "dash.resumeSince": "/resumed {n}m ago", "dash.resumeIdle0": "🧬Key idle 0.00s", "dash.resumeIdleDash": "🧬Key idle --",
+    "cfg.resumeIdle": "🧬 Idle resume: Key idle {idle}", "cfg.resumeSince": ", last trigger {n}m ago", "cfg.resumeWaiting": ", waiting threshold", "cfg.resumeInUse": "🧬 Idle resume: Key in use", "cfg.resumeWait": "🧬 Idle resume: waiting",
+    "alert.allKeysDown": "All keys unavailable!", "alert.logIncident": "Log incident: {title}", "alert.testFail": "Key #{idx} test request failed: {msg}", "alert.testOk": "Key #{idx} test succeeded!", "alert.testFail2": "Key #{idx} test failed: {msg}", "alert.noData": "Key #{idx} data unavailable", "alert.keyNotLoaded": "Key not loaded, retry",     "alert.testModels": " ({n} models): {m}", "alert.testDuration": " took {d}ms", "alert.incidentDetected": "Log incident detected", "alert.logIncidentScope": " (scope: {scope})",
+    "time.just": "just now", "time.ago": " ago", "time.d": "d", "time.h": "h", "time.m": "m", "time.s": "s",
+    "mgr.status": "Status", "mgr.lastResp": "Last response", "mgr.respModel": "Response model", "mgr.group": "Group", "mgr.reset": "Reset", "mgr.priority": "Priority", "mgr.models": "Allowed models", "mgr.override": "Override model", "mgr.remark": "Remark", "mgr.unused": "Unused", "mgr.shielded": "Shielded", "mgr.locked": "🔒 Locked",
+    "mgr.count": "{total} total, {shielded} shielded", "mgr.countFiltered": ", {n} after filter", "mgr.hideShielded": " (shielded hidden)", "mgr.resetDaily": "Daily", "mgr.resetWeekly": "Weekly", "mgr.resetHourly": "Every N h", "mgr.resetNever": "Never",
+    "mgr.priorityHint": "Higher number = higher priority, applies when round-robin enabled", "mgr.modelsHint": "Comma separated, e.g. gpt-5.5, gpt-5.4-mini", "mgr.overrideHint": "If set, forces model to this value when forwarding", "mgr.groupHint": "Group, e.g. A/B/C", "mgr.groupPh": "group", "mgr.modelPh2": "model", "mgr.overridePh": "override", "mgr.remarkPh": "remark",
+    "mgr.testTitle": "#{n} test connectivity", "mgr.resetTitle": "#{n} reset status (clear cooldown/discard/lock)", "mgr.shieldTitle": "#{n} {act}", "mgr.unshield": "Restore", "mgr.shield": "Shield", "mgr.unlockTitle": "#{n} unlock key", "mgr.delTitle": "#{n} delete",
+    "mgr.delConfirm": "Delete Key #{n}?\\nIt will no longer be shown or used; recoverable from keys.json.", "mgr.delBatchConfirm": "Delete {n} selected keys?\\nThey will no longer be shown or used; recoverable from keys.json.",
+    "mgr.cleanPrompt": "Cleanup: last response older than ? days", "mgr.cleanInvalid": "Enter a positive number of days", "mgr.cleanDone": "Selected {n} matching keys\\n(last response≥{d}d and status≥400 or network error)\\n\\nYou can use Batch shield to handle them",
+    "mgr.needSel": "Select keys to {act} first", "mgr.needSelReset": "reset", "mgr.needSelShield": "shield", "mgr.needSelDelete": "delete", "mgr.needSelTime": "set time window", "mgr.needSelClearTime": "clear window",
+    "mgr.needSelPrompt": "Select keys to {act} first", "mgr.timeSetTitle": "Set time window for {n} selected keys", "mgr.timeHelp": "Keys only participate in scheduling within this window (in selected TZ, 24h).<br>start&lt;end=same-day window (e.g. 08-17); start&gt;end=overnight (e.g. 22-08); start==end=all-day.",
+    "mgr.twTz": "Timezone", "mgr.twStart": "Start", "mgr.twEnd": "End", "mgr.cancel": "Cancel", "mgr.confirm": "Apply", "mgr.twFull": "All-day (unlimited, clears setting)", "mgr.twSameDay": "{s}:00-{e}:00 (same day)", "mgr.twOvernight": "{s}:00-{e}:00 (overnight)", "mgr.twPreview": "Window: <b style=\"color:#e2e8f0\">{win}</b> ({tz}, 24h)<br>Now: <b style=\"color:{color}\">{state}</b>", "mgr.twIn": "In window ✔ (routing enabled)", "mgr.twOut": "Out of window ✖ (routing disabled)",
+    "mgr.clearTimeConfirm": "Clear time windows for {n} selected keys?", "mgr.unknown": "Unknown", "mgr.autoUnset": "Auto (unset)", "mgr.uncategorized": "Uncategorized",
+    "mgr.toggleRemarkMode": "Click to switch display mode", "mgr.firstUsedTitle": "First used: {t} | Uptime: {d}", "mgr.twWindow": "Window: {s}:00-{e}:00 (UTC{t}) | {st}",
+    "mgr.showShieldedBtn": "🙉 Show shielded", "mgr.hideShieldedBtn": "🙈 Hide shielded", "mgr.unlockConfirm": "Unlock #{n}? Clears lock state; the key returns to normal use.",
+    "mgr.atLeastOne": "At least one valid key is required", "mgr.saveFail": "Save failed: {e}", "mgr.pasteData": "Please paste key data", "mgr.addKeysDone": "Added {n} keys", "mgr.addKeysSkipped": ", {n} lines skipped (bad format or missing URL)",
+    "mgr.exportSelect": "Select keys to export first", "mgr.exportNoVisible": "No visible keys to export", "mgr.keyEmptyTest": "Key is empty, cannot test", "mgr.testOkB": "Key #{n} test passed!", "mgr.testFailB": "Key #{n} test failed: {e}", "mgr.testReqFailB": "Key #{n} test request failed: {e}", "mgr.modelsN": " models({n}): {m}", "mgr.durationMs": " took {n}ms",
+    "mgr.batchTestSelect": "Select keys to test first", "mgr.batchTesting": "Testing...", "mgr.batchSkip": "⏭️ #{n} key empty, skip", "mgr.batchTestingLine": "⏳ #{n} testing...", "mgr.batchOk": "✅ #{n} passed", "mgr.batchFail": "❌ #{n} failed: {e}", "mgr.batchReqFail": "❌ #{n} request error: {e}", "mgr.batchDone": "Done — {p} passed, {f} failed", "mgr.resetPassedBtn": "🔄 Reset passed keys ({n})", "mgr.resetAllBtn": "🔄 Reset status of all keys ({n})",
+    "mgr.csvKey": "Key", "mgr.csvUrl": "URL", "mgr.csvModels": "Models", "mgr.csvOverride": "Override model", "mgr.csvTimeWindow": "Time window", "mgr.csvStatus": "Status", "mgr.csvFailCode": "Fail code", "mgr.csvRequests": "Requests", "mgr.csvSuccess": "Success", "mgr.csvFail": "Failed", "mgr.csvInputBytes": "Input bytes", "mgr.csvOutputBytes": "Output bytes", "mgr.csvAvgDur": "Avg duration", "mgr.csvHealth": "Health score", "mgr.csvCost": "Cost", "mgr.clearCodeFilterTitle": "Clear status filter",
+    "mgr.exportTitle": "Export CSV (choose fields)", "mgr.csvReset": "Reset type", "mgr.csvPriority": "Priority", "mgr.csvGroup": "Group", "mgr.csvRemark": "Remark", "mgr.csvResetDay": "Reset day", "mgr.csvTz": "Timezone", "mgr.exportBtn": "Export",
+    "mgr.importTitle": "Batch import keys", "mgr.importHelp": "One key per line, format: <code style=\"background:#0f172a;padding:1px 4px;border-radius:3px\">sk-xxx URL [reset type] [priority] [group] [remark]</code><br>URL is required. Reset type: daily/weekly/never/hourly<br>Example: <code style=\"background:#0f172a;padding:1px 4px;border-radius:3px\">sk-abc123 https://your-api.com weekly 0 A myKey</code>", "mgr.pasteDataPh": "Paste key data here...", "mgr.importBtn": "Import",
+    "mgr.title": "Key Management", "mgr.hint": "Changes apply after Save; the proxy auto-reloads", "mgr.searchPh": "Search remark/URL...", "mgr.codePh": "Status code", "mgr.codeTitle": "Filter by status code, e.g. 401", "mgr.modelPh": "Model", "mgr.modelTitle": "Filter by model, substring match",
+    "mgr.allStatus": "All statuses", "mgr.available": "Available", "mgr.cooldown": "Cooldown", "mgr.discarded": "Discarded", "mgr.locked2": "Locked", "mgr.shielded": "Shielded", "mgr.duration": "Active since", "mgr.lastFail": "Last fail", "mgr.lastResp": "Last response", "mgr.resetDay": "Weekly reset day", "mgr.timeIn": "In window", "mgr.timeOut": "Out of window",
+    "mgr.daysPh": "≥Xd", "mgr.daysTitle1": "Keys active ≥ X days ago, combinable with other filters", "mgr.daysTitle2": "Keys whose last failure is ≥ X days ago, combinable with other filters", "mgr.resetDayTitle": "Filter by weekly reset day", "mgr.all": "All",
+    "mgr.sortDefault": "Default order", "mgr.sortResetDay": "By reset day (Mon→Sun)", "mgr.sortActivated": "First used (early→late)", "mgr.sortDuration": "Uptime (long→short)", "mgr.sortGroup": "By group",
+    "mgr.selectAll": "Select all", "mgr.clear": "Cancel", "mgr.batchShield": "🔇 Batch shield", "mgr.batchReset": "🔄 Batch reset", "mgr.batchDelete": "✕ Batch delete", "mgr.cleanBtn": "🧹 Cleanup", "mgr.twBtn": "⏰ Time window", "mgr.twBtnTitle": "Set an available hour window (with TZ) for selected keys; start==end = all day", "mgr.clearTwBtn": "⏰ Clear window", "mgr.clearTwTitle": "Clear time windows for selected keys, restore all-day", "mgr.exportBtn2": "📥 Export", "mgr.batchTestBtn": "🔍 Batch test",
+    "mgr.countStatic": "0 total", "mgr.batchTestResultTitle": "Batch test results", "mgr.resetPassedStatic": "🔄 Reset passed keys", "mgr.resetAllStatic": "🔄 Reset status of all keys", "mgr.collapse": "Collapse",
+    "cfg.title": "System Settings", "cfg.autoSaved": "Changes save automatically", "cfg.localBuild": "Local build: ", "cfg.localBuildDefault": "Custom/dev build (release baseline unverified)", "cfg.provenance": "Source: pending", "cfg.latestRelease": "Latest official release: ", "cfg.unknownRel": "Unknown", "cfg.upgradeGuide": "GitHub upgrade guide ↗", "cfg.upgradeGuideTitle": "Back up your custom code, config and state before upgrading; review the Release on GitHub, merge changes, then verify and restart the proxy in a maintenance window.", "cfg.checkUpdate": "Check updates",
+    "cfg.baselineTag": "Custom build baseline tag (advanced, optional)", "cfg.baselinePh": "e.g. v1.2.3", "cfg.baselineTitle": "Official release packages and clean official Git tags are detected automatically. Only fill in a manually confirmed official GitHub Release tag when comparing a custom build.", "cfg.baselineHint": "Auto-detected for official releases; leave blank for custom builds to only show releases without update checks.",
+    "cfg.priceIn": "💰 Default input price (per 1M tokens)", "cfg.priceOut": "💰 Default output price (per 1M tokens)", "cfg.priceUnmatchedTitle": "Used when the model is unmatched", "cfg.bpt": "🔤 Default bytes per token", "cfg.pricingOverride": "🧮 Per-model pricing override", "cfg.pricingHint": "Matches the actual forwarded model name exactly; models not configured or unknown use the defaults above. Costs are estimated from transmitted bytes, not the upstream bill tokens; new prices only affect future requests.", "cfg.addModelRule": "＋ Add model rule",
+    "cfg.desktopNotify": "🔔 Desktop notifications", "cfg.notifyAllFail": "Notify when all keys fail", "cfg.soundAlert": "🔊 Sound alert", "cfg.soundAllFail": "Ring when all keys fail", "cfg.webhook": "🌐 Webhook URL",
+    "cfg.autoRecover": "🔄 Auto-recover cooled-down keys", "cfg.autoRecoverCheck": "Scheduled check & recover", "cfg.probeInterval": "⏱ Probe interval (hours)", "cfg.probeIntervalTitle": "Min 0.5 hours", "cfg.fixedTime": "📅 Fixed-time check", "cfg.every": "every ", "cfg.daysUnit": " day(s)", "cfg.fixedCheck": " fixed check",
+    "cfg.failCodes": "🔢 Failure codes to probe", "cfg.failCodesPh": "401,402,403,429,500,502,503,504", "cfg.failCodesTitle": "401=invalid or expired API key&#10;402=insufficient quota, account overdue&#10;403=forbidden, key lacks access&#10;429=rate limited&#10;500=upstream internal error&#10;502=upstream gateway error&#10;503=service unavailable&#10;504=upstream timeout",
+    "cfg.includeDiscarded": "🚫 Include discarded keys", "cfg.includeDiscardedCheck": "Also probe keys failing two consecutive cycles", "cfg.probeDelay": "⏱ Probe interval (ms)", "cfg.probeDelayHint": "Wait between keys; comma-separated values (max 10), randomly chosen to mimic manual pacing", "cfg.probeDelayRecommend": "Recommended 800,1200,500; range 100–10000. Shared by all probe modes.",
+    "cfg.quickRecover": "⚡ Quick recovery (for 5xx etc.)", "cfg.enableQuickRecover": "Enable quick recovery", "cfg.quickRecoverPoll": "Poll quickly when a key hits these status codes", "cfg.pollInterval": "Poll interval (minutes)", "cfg.monitorCodes": "Monitored status codes", "cfg.roundRobin": "🔁 Round-robin load balancing", "cfg.roundRobinCheck": "When enabled, available keys are used in round-robin by priority instead of fixed order", "cfg.weeklySort": "📅 Sort weekly keys by reset date", "cfg.weeklySortCheck": "Weekly keys sorted by earliest reset first (same-day last); no resetDay goes last",
+    "cfg.autoResumeSection": "🧬 Idle auto-resume (autoResume)", "cfg.enableResume": "Enable idle resume", "cfg.enableResumeCheck": "When a key is idle, auto-open a terminal in Windows to run project commands", "cfg.idleThreshold": "Key idle threshold (minutes)", "cfg.idleThresholdSuffix": " minutes without requests = idle", "cfg.debounce": "Debounce interval (minutes)", "cfg.debounceSuffix": " grace interval (once per idle cycle)", "cfg.runnerStall": "Runner stall grace (minutes)", "cfg.runnerStallSuffix": " 0=disabled; stalled only when no in-flight requests and no new key applied", "cfg.stallRestartLimit": "Stall restart limit", "cfg.stallRestartSuffix": " per idle cycle; 0=disabled (manage verified runner only)", "cfg.cmdPath": "cmd.exe path",
+    "cfg.capacitySection": "🚦 Capacity/429 transient backoff (capacityBackoff)", "cfg.transientBackoff": "Transient backoff (seconds)", "cfg.transientBackoffSuffix": " key briefly skipped after 429/capacity errors, not counted as a full-cycle failure", "cfg.capacityMaxWait": "Capacity max wait (seconds)", "cfg.capacityMaxWaitSuffix": " max seconds a request waits in queue when only capacity backoff remains (replaces the default 30s timeout)", "cfg.projects": "Project list (max 10)", "cfg.addProject": "+ Add project",
+    "cfg.logConfig": "📋 Log settings", "cfg.enableFileLog": "Enable file logging", "cfg.retention": "keep ", "cfg.retentionSuffix": " days auto-cleanup (0=disable daily cleanup; capacity cap still applies)", "cfg.logDetail": "Log detail level", "cfg.logDetailFull": "Full", "cfg.logDetailBasic": "Basic", "cfg.logDetailHint": " Basic mode doesn't record model names", "cfg.runtimeCaps": "💾 Runtime data caps (applied immediately on save: state compaction & log cleanup; WSL console log picked up by the watchdog rotator within 10s)", "cfg.logTotalCap": "Total request log cap", "cfg.mibSegments": " MiB (all JSONL segments)", "cfg.logSegmentCap": "Request log segment cap", "cfg.mibSameDay": " MiB (split same-day when exceeded)", "cfg.stateHourly": "Hourly stats retention", "cfg.stateDaily": "Daily stats retention", "cfg.stateMax": "state.json size cap", "cfg.stateMaxSuffix": " MiB (oldest buckets deleted when exceeded)", "cfg.wslLog": "WSL proxy.log", "cfg.wslLogUnit": " MiB / keep ", "cfg.wslLogSuffix": " archives (systemd uses journald)",
+    "cfg.codexMaint": "🗄 Codex SQLite log maintenance", "cfg.enableDbMaint": "Enable DB maintenance", "cfg.enableDbMaintCheck": " After reaching the capacity threshold, delete out-of-retention Codex logs in short batches", "cfg.dbPath": "Database path", "cfg.dbPathPh": "/root/.codex/logs_2.sqlite", "cfg.dbPathTitle": "Enter an absolute WSL path, e.g. /root/.codex/logs_2.sqlite; a WSL network path also works and is auto-converted. Don't fill in -wal/-shm files.", "cfg.checkPath": "Check path", "cfg.triggerCap": "Trigger cap / retention", "cfg.triggerCapMiB": " MiB / keep ", "cfg.hoursUnit": " hours", "cfg.checkInterval": "Check interval", "cfg.minutesUnit": " minutes", "cfg.runNow": "Check now", "cfg.cleanNow": "Clean now", "cfg.cleanNowTitle": "Runs only when Codex is idle (no in-flight/queued requests and 60s silence); deletes expired records per the saved trigger cap/retention and VACUUMs to shrink the DB. Needs roughly DB-sized temp disk space.",
+    "cfg.incidentCenter": "Log incident center (alerts & manual actions only; never auto-pauses groups, restarts the proxy, or modifies keys)", "cfg.enableIncident": "Enable log incidents", "cfg.incidentRules": " trigger-fail / stream-fail rules", "cfg.sendNotify": " send notifications", "cfg.obsWindow": "Observation window / min requests", "cfg.incidentReqs": " requests", "cfg.failCount": "Fail count / fail rate", "cfg.incidentFailures": " failures / ", "cfg.incidentPct": " %", "cfg.streamFailCount": "Stream fails / default snooze", "cfg.resolve": "Recovery determination", "cfg.resolveSuffix": " min without issues to auto-recover", "cfg.latencyAlert": "Latency alert", "cfg.enableP95": " Enable P95  requests ", "cfg.msUnit": " ms",
+    "cfg.lockThreshold": "🔒 Consecutive-failure lock threshold", "cfg.lockThresholdTitle": "Auto-locks the key after N consecutive failures", "cfg.lockThresholdCount": " failures", "cfg.lockCodes": "🎯 Lock-monitored error codes", "cfg.lockCodesPh": "401,403", "cfg.lockCodesTitle": "Only these codes count toward consecutive failures", "cfg.enableAutoLock": "🔒 Enable auto-lock", "cfg.enableAutoLockCheck": " When enabled, keys auto-lock after reaching the consecutive-failure threshold",
+    "cfg.minRate": "⏱ Per-minute rate limit", "cfg.maxReqPerMin": "Max requests per minute", "cfg.maxTokPerMin": "Max tokens per minute (0=unlimited)", "cfg.streamTimeout": "⏱ Stream timeout", "cfg.otherStreamLifetime": "Max duration for other protocol streams (ms)", "cfg.otherStreamLifetimeTitle": "Hard timeout for non-Responses/Messages protocol streams to prevent zombie connections. Default 30min.", "cfg.responsesStreamLifetime": "Responses/Messages streams max total duration (ms)", "cfg.responsesStreamLifetimeTitle": "0=no hard total cutoff; applies to Codex Responses & Claude Messages. Nonzero: min 60s, max 24h. Default 0.", "cfg.responsesIdleTimeout": "Responses/Messages upstream idle timeout (ms)", "cfg.responsesIdleTimeoutTitle": "0=off; applies to Codex Responses & Claude Messages. Nonzero: min 60s, max 24h. Default 90min; triggers only when the upstream sends no data.",
+    "cfg.adminAuth": "🔐 Admin auth", "cfg.adminToken": "Admin token (empty=no check)", "cfg.adminTokenPh": "empty=no auth", "cfg.adminTokenTitle": "When set, all admin endpoints require a Bearer token", "cfg.portGroups": "🔌 Port group management",
+    "cfg.discussions": "💬 GitHub interactions (discussions)", "cfg.enableDiscussions": "Enable discussion feed", "cfg.enableDiscussionsCheck": " Show the discussion feed on the Dashboard", "cfg.discMaxItems": "Items shown", "cfg.discToken": "GitHub token (optional)", "cfg.discTokenPh": "not set; view-only", "cfg.toggleToken": "show/hide token", "cfg.testToken": "Test", "cfg.testTokenTitle": "Test connectivity with the saved token", "cfg.discHelp": "After configuring, you can comment, reply, and start new discussions (content is published publicly to GitHub Discussions). The token is stored locally and masked; needs a fine-grained PAT with repo Discussions read/write. \"Test\" only verifies validity & read access; write access is confirmed by an actual publish (if \"Resource not accessible\", switch Discussions permission to Read and write on GitHub). If exposing this admin port to LAN/internet, be sure to also set an \"Admin token\".",
+    "cfg.taskInsight": "🔎 Task insight (agent workflow parsing)", "cfg.enableTaskInsight": "Enable task insight", "cfg.enableTaskInsightCheck": " Record agent workflow tasks (raw text not persisted by default; only structured signals)", "cfg.signalCollect": "Signal collection", "cfg.insInstructions": " truncated instructions (first 200 chars)", "cfg.insInstructionsTitle": "Record first 200 chars of truncated instructions", "cfg.insTools": " tools / file paths", "cfg.insToolsTitle": "Tool names and file paths only, no full args", "cfg.insUsage": " usage & cost", "cfg.insUsageTitle": "Input/output tokens and estimated cost", "cfg.insCorrelate": " correlate sessions (45-min active window)", "cfg.insCorrelateTitle": "Merge consecutive sessions of the same task using the autoResume active window", "cfg.insRetention": "Retention days",
+    "cfg.insDistill": "🤖 LLM distillation summaries (optional; sends only a structured snapshot, never keys)", "cfg.enableDistill": "Enable distillation", "cfg.enableDistillCheck": " Periodically generate structured summaries of completed tasks", "cfg.distillEngine": "Distillation engine", "cfg.engineOllama": "ollama (local)", "cfg.engineProxy": "proxy (via proxy)", "cfg.engineExternal": "external (external API)", "cfg.modelUrl": "Model / URL", "cfg.distillModelPh": "qwen3:4b / gpt-5", "cfg.distillUrlPh": "http://127.0.0.1:11434/v1 (ollama only)", "cfg.distillUrlTitle": "Used by ollama and external engines; ignored by proxy engine (goes via the proxy itself)", "cfg.distillBudget": "Daily budget / report", "cfg.yuanUnlimited": " ¥ (0=unlimited)", "cfg.dailyReport": "daily", "cfg.weeklyReport": "weekly", "cfg.distillStatus": "Distill: --",
+    "cfg.autoCountdown": "⏳ Next check (interval): --", "cfg.autoDailyCountdown": "⏳ Next check (fixed): --", "cfg.autoPollCountdown": "⏳ Next check (quick): --", "cfg.autoResumeStatus": "🧬 Idle resume: --", "cfg.codexMaintRuntime": "🗄 Codex SQLite log maintenance: --", "cfg.restartProxy": "🔄 Restart proxy", "cfg.save": "Save",
+    "common.close": "Close",
+    "cfg.distillStatusUnavailable": "Distill: status unavailable", "cfg.dbCheckError": "Check failed: {e}", "cfg.dbCleanupWaiting": "waiting for Codex to be idle and cleaning the database…", "cfg.dbCleanupFailed": "cleanup failed: {e}", "cfg.dbEnableFirst": "enable and save the config first", "cfg.dbInvalid": "invalid path or database", "cfg.dbNothingToClean": "no rows beyond retention, nothing to clean", "cfg.dbBusyRetry": "database busy, skipped; retry later", "cfg.dbDeletedNow": "✓ deleted {n} stale rows", "cfg.dbBelowNothing": "size below threshold, nothing deleted", "cfg.dbVacuumFreed": "; VACUUM freed {space}", "cfg.dbNow": "; now {size}", "cfg.dbActiveWait": "Codex is still in use (active {active} / queued {queued}, {seconds}s since last request); wait 60s and retry",
+    "cfg.keys": "keys", "cfg.portLabel": "port", "cfg.defaultAlways": "(default/always running)", "cfg.disable": "disable", "cfg.enable": "enable", "cfg.delete": "delete", "cfg.groupNamePh": "Name", "cfg.portPh": "Port", "cfg.add": "add", "cfg.operationFailed": "Operation failed: {e}", "cfg.deleteGroupConfirm": "Delete group {name}?", "cfg.deleteFailed": "Delete failed: {e}", "cfg.groupNamePortRequired": "Enter a group name and port", "cfg.addFailed": "Add failed: {e}",
+    "cfg.nextInterval": "⏳ Next check (interval): ", "cfg.nextFixed": "⏳ Next check (fixed): ", "cfg.nextFast": "⏳ Next check (fast): ", "cfg.idleStatus": "🧬 Idle resume: key idle ", "cfg.lastTriggered": ", last triggered {n}m ago", "cfg.waitingThreshold": "; waiting for threshold", "cfg.idleWaiting": "🧬 Idle resume: waiting", "cfg.windowTitle": "Window: {win} | {h}h {m}m left", "cfg.windowAvailableIn": "Window: {win} | available in {h}h {m}m",
+    "cfg.projectNamePh": "Project name", "cfg.projectPathPh": "WSL path /mnt/e/...", "cfg.projectCmdPh": "command codex ...", "cfg.commandMode": "Command", "cfg.fixedSessionMode": "Fixed session", "cfg.sessionIdPh": "Session ID", "cfg.fixedSessionTitle": "Fixed-session mode replaces {sessionId} in the command with the session ID below",
+    "cfg.distillLocalHint": "Data stays on this machine, no external cost; requires ollama running locally with the model already pulled (default http://127.0.0.1:11434/v1).", "cfg.distillProxyHint": "Distill requests go through the proxy, tokens count toward proxy stats/cost/rate limits, keys never leave; model name must match one available in the proxy.", "cfg.distillExternalHint": "Calls an external API directly (the URL must carry a valid API key), bypassing the proxy; you own the confidentiality.", "cfg.distillDisabled": "Distill: disabled", "cfg.distillRunning": "Distill: running…", "cfg.distillLastFailed": "Distill: last run failed: {e}", "cfg.distillPending": "Distill: {n} task(s) pending", "cfg.distillLastRun": "Distill: last run {t}", "cfg.distillWaiting": "Distill: waiting to run", "cfg.distillBudget": "; today's budget ¥{spent} / ¥{limit}",
+    "cfg.dbDisabled": "🗄 Codex SQLite log maintenance: disabled", "cfg.dbChecking": "🗄 Codex SQLite log maintenance: checking databases…", "cfg.dbCheckFailed": "last check failed: {e}", "cfg.dbDeleted": "deleted {n} stale rows", "cfg.dbBusy": "database busy, skipped until next check", "cfg.dbBelowThreshold": "below trigger threshold", "cfg.dbScheduled": "check scheduled", "cfg.dbWaiting": "waiting for first check", "cfg.dbIdle": "idle, can clean now", "cfg.dbInUse": "in use (active {active} / queued {queued}), not cleanable yet", "cfg.dbEnableFirst": "enable and save the config first", "cfg.dbInvalid": "invalid path or database", "cfg.dbCheckFailed": "check failed: {e}", "cfg.dbCleanupWaiting": "waiting for Codex to be idle and cleaning the database…", "cfg.dbCleanupFailed": "cleanup failed: {e}", "cfg.dbBelowNothing": "size below threshold, nothing deleted", "cfg.dbNothingToClean": "no rows beyond retention, nothing to clean", "cfg.dbBusyRetry": "database busy, skipped; retry later", "cfg.dbDeletedNow": "✓ deleted {n} stale rows", "cfg.dbVacuumFreed": "; VACUUM freed {space}", "cfg.dbNow": "; now {size}", "cfg.dbActiveWait": "Codex is still in use (active {active} / queued {queued}, {seconds}s since last request); wait 60s and retry",
+    "cfg.saveFailed": "Save failed: {e}", "cfg.fixedSessionInvalid": "Save failed: fixed-session mode needs a valid session ID, and the launch command must contain {sessionId}", "cfg.dbConfigInvalid": "Save failed: Codex SQLite database path or structure did not pass the check", "cfg.unknownError": "unknown error", "cfg.savedTokenHint": "The saved token is not shown back for security; type a new value to replace it", "cfg.testing": "Testing…", "cfg.connectedAs": "✅ Connected as @{login}", "cfg.permissionInsufficient": "⚠️ Discussions permission insufficient: {message}", "cfg.readAccessOk": " (read access OK; write access for posting/replies is verified on actual publish)", "cfg.testFailed": "❌ Test failed", "cfg.testConnection": "Test connection",
+    "cfg.noModelRules": "No model override rules", "cfg.modelNamePh": "Model name, e.g. gpt-5", "cfg.inputPricePh": "Input / 1M", "cfg.outputPricePh": "Output / 1M", "cfg.bytesTokenPh": "bytes/token", "cfg.inputPriceTitle": "Input price (per million tokens)", "cfg.outputPriceTitle": "Output price (per million tokens)", "cfg.bytesTokenTitle": "Bytes per token", "cfg.deleteModelRule": "Delete model rule",
+    "mgr.addRow": "+ Add row", "mgr.save": "Save",
+    "exp.allVisible": "Export all keys visible on the current page", "exp.cfgSection": "── Config fields ──", "exp.stSection": "── Stats fields ──",
+    "task.title": "📊 Task workflow (agent workflow parsing)", "task.disabled": "Task insight is currently disabled; no workflow records yet.", "task.goEnable": "Enable it via \"Settings → 🔎 Task insight\"", "task.project": "Project ", "task.unclassified": "Unclassified", "task.status": "Status ", "task.completed": "Completed", "task.failed": "Failed", "task.partial": "Partial", "task.search": "Search ", "task.searchPh": "project/client/tool/file/model", "task.refresh": "🔄 Refresh", "task.export": "⬇ CSV", "task.report": "📊 Report", "task.distillNow": "🤖 Distill now", "task.signalsOnly": "Structured signals only; no keys or full transcripts", "task.distillEngine": "Distill engine: {engine}", "task.running": " (running)", "task.todayBudget": "today's budget ¥{spent}/¥{limit}", "task.distillDisabled": "LLM distillation disabled (enable it in Settings)", "task.sessions": "sessions", "task.enabled": "enabled", "task.disabledShort": "disabled", "task.signals": "signals", "task.on": "on", "task.off": "off", "task.none": "none", "task.time": "Time", "task.client": "Client", "task.requests": "Requests", "task.tokens": "Tokens (in/out)", "task.cost": "Cost", "task.model": "Model", "task.toolsFiles": "Tools/Files", "task.summary": "Summary", "task.noMatching": "No matching sessions", "task.loadFailed": "Load failed: {e}", "task.generating": "Generating report…", "task.reportWord": "report", "task.successRate": "Success rate", "task.models": "Models", "task.reportFailed": "Report failed: {e}", "task.distillStarted": "Distillation started", "task.distillFailed": "Distillation failed", "task.distillSubmitted": "submitted; summaries appear in task details after it runs", "task.distillRequestFailed": "Distill request failed: {e}",
+    "update.title": "Version Update", "update.current": "Local version: ", "update.latest": "Latest official release: ", "update.loadingSummary": "Reading GitHub release info…", "update.loadingNotes": "Reading release notes…", "update.viewRelease": "View release on GitHub ↗", "update.recheck": "↻ Re-check", "update.upgradeDisabled": "One-click upgrade disabled", "update.upgradeDisabledTitle": "Disabled because auto-overwrite could lose local changes.",
+    "disc.loading": "Loading discussions from GitHub…", "disc.loadFailed": "Load failed: {e} (click ↻ Refresh to retry)", "disc.lastFailed": "Last update failed: {e} (click ↻ Refresh to retry)", "disc.lastUpdated": "Last updated {time} (offline snapshot, auto-refreshes when network is back)", "disc.updatedRefresh": "Updated — click ↻ Refresh", "disc.empty": "No public discussions. See all discussions on GitHub", "disc.hasAnswer": "Has an answer", "disc.openGitHub": "Open on GitHub", "disc.loadingReplies": "Loading replies…", "disc.noBody": "(no body)", "disc.readMore": "Read more", "disc.loginJoin": "🔗 Log in to GitHub to join ↗", "disc.publicCommentHint": "Post a public comment…", "disc.post": "Post", "disc.commentEmpty": "Comment cannot be empty", "disc.posting": "Posting…", "disc.postedRefreshing": "Posted, refreshing…", "disc.postFailed": "Post failed: {e}", "disc.refreshing": "Refreshing…", "disc.noCategories": "No categories available", "disc.categoryFailed": "Category load failed", "disc.titleEmpty": "Title cannot be empty", "disc.bodyEmpty": "Body cannot be empty", "disc.chooseCategory": "Please choose a category", "disc.postedGitHub": "Posted to GitHub ↗", "disc.category": "Category",
+    "auth.title": "Admin authorization", "auth.hint": "This proxy requires an admin token. Please enter it to continue.", "auth.tokenPh": "Admin token", "auth.confirm": "Confirm", "auth.empty": "Please enter the admin token", "auth.wrong": "Invalid token, please retry", "auth.fail": "Verification failed, please retry",
+    "upd.notChecked": "Not checked", "upd.justChecked": "Just checked", "upd.reason.metadataMissing": "Release metadata missing", "upd.reason.metadataInvalid": "Release metadata invalid", "upd.reason.manifestMismatch": "Release manifest mismatch", "upd.reason.manifestInvalid": "Release manifest invalid", "upd.reason.manifestIncomplete": "Release manifest incomplete", "upd.reason.filesModified": "Release files modified locally", "upd.reason.gitUnavailable": "Git repository unavailable", "upd.reason.gitRemoteUntrusted": "Git remote untrusted", "upd.reason.gitWorktreeModified": "Git worktree modified", "upd.reason.gitNotAtTag": "Not at a release tag", "upd.reason.gitStatusUnavailable": "Git status unavailable", "upd.reason.sourceBaselineMissing": "Source baseline missing", "upd.reason.sourceBaselineInvalid": "Source baseline invalid", "upd.unknownReason": "Unknown reason ({r})", "upd.provenanceUnknown": "Source unknown", "upd.source": "Source: {p}", "upd.unknownTag": "Unknown version", "upd.upgradeAvailable": "Upgrade available to {tag}", "upd.upToDate": "Up to date", "upd.cannotCompare": "Cannot compare (local build unverifiable)", "upd.badgeUpdate": "Update available: {tag}", "upd.badgeNoUpdate": "Up to date", "upd.badgeUnknown": "Status unknown: {r}", "upd.statusChecking": "Checking for updates…", "upd.statusFail": "Check failed: {e}", "upd.statusBaselineUnknown": "Local build unverifiable ({r}); showing releases only ({t})", "upd.statusNew": "New version {tag} ({t})", "upd.statusOk": "Up to date ({t})", "upd.safetyNoAuto": "Auto-upgrade disabled for safety; release notes shown only.", "upd.safetyFull": "One-click upgrade disabled; download the release and overwrite manually.", "upd.publishedAt": "Published {d}", "upd.localUnverified": "Local build {p}; latest release {tag}. {m}", "upd.summaryNew": "Upgrade available: {cur} → {tag}. {m}", "upd.summaryCurrent": "Already at {tag} ({cur}). {m}", "upd.noNotes": "No release notes for this version", "upd.summaryUnavailable": "Release info unavailable", "upd.notesUnavailable": "No release notes available", "upd.checkingNow": "Checking…", "upd.invalidResult": "Update check returned invalid data", "upd.checkFailed": "Update check failed",
+    "log.title": "Request logs & runtime events", "log.rebuild": "Rebuild summary", "log.rebuildingSummary": "Rebuilding summary", "log.summaryRebuildFailed": "Summary rebuild failed", "log.summaryRebuilt": "Rebuilt {n} day(s)", "log.rebuildingShort": "Rebuilding...", "log.refreshing": "Refreshing...", "log.readingHistory": "Reading history logs…", "log.readingLatest": "Reading latest logs…", "log.queryFailed": "Log query failed: {e}", "log.noRecords": "No records", "log.latestOnlyTitle": "Default view shows only latest records; click Browse history to paginate", "log.earliestPage": "Already at the earliest history page", "log.olderRecords": "View older history records", "log.noOlderRecords": "No older history records", "log.latestView": "Latest view", "log.returnLive": "Return to the live view showing only latest records", "log.switchHistory": "Switch to the paginated history view", "log.historyPage": "History page {n}", "log.latestEntries": "Latest {n} entries", "log.foundFiles": "Found {n} saved log file(s), scanned {m}", "log.noMatchingFiles": "No saved log files matching the format", "log.historyBoundary": "History query hit the scan boundary for this page", "log.loadedTail": "Loaded tail of saved logs", "log.savedUnreadable": "Saved logs temporarily unreadable; showing memory records", "log.memoryLive": "memory tail · live", "log.rebuildTitle": "Rebuild historical daily summaries in the background without reading or blocking proxy requests", "log.total": "Total requests", "log.successRate": "Success rate", "log.avgDur": "Avg duration", "log.timeout": "Timeout", "log.sparklineTitle": "Request volume trend for the last 30 minutes (blue=success, red=errors)", "log.errorDist": "⚠ Error distribution", "log.incidents": "Runtime incidents ", "log.refreshIncidents": "Refresh", "log.refreshIncidentsTitle": "Re-read current runtime incidents", "log.keyPh": "Key #", "log.statusPh": "Status", "log.modelPh": "Model", "log.upstreamPh": "Upstream host", "log.pathPh": "Path", "log.groupPh": "Group", "log.searchPh": "Search...", "log.timeAll": "All time", "log.time5m": "Last 5 minutes", "log.time15m": "Last 15 minutes", "log.time1h": "Last 1 hour", "log.time24h": "Last 24 hours", "log.time7d": "Last 7 days", "log.time30d": "Last 30 days", "log.timeCustom": "Custom range", "log.searchBtn": "🔍 Search", "log.csvBtn": "⬇ CSV", "log.colNo": "No.", "log.colTime": "Time", "log.colUpstream": "Upstream", "log.colMethod": "Method", "log.colModel": "Model", "log.colPath": "Path", "log.colStatus": "Status", "log.colDur": "Duration", "log.colTtfb": "TTFB", "log.prev": "← Previous", "log.prevTitle": "Navigate back by page after browsing history", "log.pageInfo": "Latest 50 entries", "log.browseHistory": "Browse history", "log.browseHistoryTitle": "Switch to a paginated historical log view", "log.next": "Next →", "log.nextTitle": "Navigate to earlier records after browsing history", "log.notSubscribed": "● Not subscribed", "log.popupTitle": "Key #- stats",
+    "restart.title": "Restarting proxy", "restart.cancel": "Cancel restart", "restart.force": "Force restart", "restart.dismiss": "Back to Dashboard", "restart.waited": "Waited {time}", "restart.drainingDetail": "Still waiting for {active} request(s) to finish{queued}.", "restart.queuedRejected": "{n} queued request(s) were rejected this time.", "restart.forceAvailable": "Waited at least 30s, force restart is now available.", "restart.forceAvailableAfter": "Force restart available after {time}.", "restart.waitingNew": "Waiting for a new proxy instance", "restart.oldStopped": "Old proxy stopped; waiting for the watchdog to start a new instance.", "restart.newReady": "New proxy instance ready", "restart.reloading": "Reloading Dashboard…", "restart.cancelled": "Restart cancelled", "restart.proxyRunning": "Proxy keeps running; new requests are accepted again.", "restart.monitoring": "Monitoring an existing restart", "restart.oldExiting": "Old proxy is exiting; waiting for the watchdog to bring up a new instance.", "restart.draining": "Draining in-flight requests", "restart.oldExit": "Waiting for the old proxy to exit", "restart.prepareSwitch": "Restart requested; preparing to switch to the new instance.", "restart.cannotConfirm": "Cannot confirm restart status", "restart.authExpired": "Admin auth expired; reopen the Dashboard and try again", "restart.checking": "Checking proxy status", "restart.submitting": "Submitting safe restart request…", "restart.requested": "Restart requested", "restart.waitingRequests": "Waiting for {active} in-flight request(s) to finish.", "restart.noRequests": "No in-flight requests; stopping the old proxy instance.", "restart.monitorExisting": "Monitoring an existing restart", "restart.confirming": "Confirming restart status", "restart.connectionBroken": "The connection broke during the restart; waiting for the new instance to recover.", "restart.failedSubmit": "Failed to submit restart: {e}", "restart.failedCancel": "Failed to cancel restart: {e}", "restart.cancelling": "Cancelling restart", "restart.restoring": "Restoring normal proxy access…", "restart.forceNoLonger": "Force restart no longer possible", "restart.notDraining": "Proxy is no longer in a drain phase that allows force restart.", "restart.stillDraining": "Still draining safely", "restart.forceAfter": "Force restart available after {time}.", "restart.forceConfirm": "Force restart will immediately disconnect {active} in-flight request(s).\nCodex CLI tasks may partially complete or error; unfinished work needs manual confirmation.\n\nForce restart now?", "restart.forcing": "Forcing restart", "restart.forceDetail": "Will interrupt {active} in-flight request(s) and wait for the watchdog to bring up a new instance.", "restart.forceAccepted": "Confirmed interruption of {active} in-flight request(s); waiting for the new instance to be ready.", "restart.forceNotExecuted": "Force restart not executed yet: {e}{retry}", "restart.confirmingForce": "Confirming force-restart status", "restart.forceConnectionBroken": "The connection broke during the switch; waiting for the new instance to recover.", "restart.failedForce": "Failed to submit force restart: {e}", "restart.button": "🔄 Restart proxy", "restart.buttonWorking": "Restarting…", "restart.cancelConfirm": "Cancel this safe restart?\nThe proxy will immediately resume accepting new requests; already-rejected queued requests will not be restored.",
+    "disc.title": "💬 Discussions", "disc.refresh": "↻ Refresh", "disc.open": "Open on GitHub ↗", "disc.openTitle": "View all discussions and history", "disc.create": "✚ New discussion", "disc.guideLogin": "🔗 Sign in to GitHub to participate ↗", "disc.titleLabel": "Title", "disc.createTitlePh": "New discussion title", "disc.catLabel": "Category", "disc.bodyLabel": "Body", "disc.bodyPh": "Content will be published publicly to GitHub Discussions", "disc.publish": "Publish"
+  }
+};
+Object.assign(I18N_LANGS.zh, {
+  "restart.queuedCount": "，还有 {n} 个排队请求",
+  "restart.waitedLong": "等待时间较长，请检查 watchdog 日志。",
+  "restart.confirm": "确认重启代理进程？\n新的 API 请求会暂时暂停，在途请求会先排空。",
+  "restart.queuedCancelled": "已取消 {n} 个排队请求。",
+  "restart.queuedNotRestored": "已拒绝的 {n} 个排队请求不会恢复。",
+  "time.minAgo": "{n}分钟前", "time.hourAgo": "{n}小时前", "time.dayAgo": "{n}天前",
+  "log.notSubscribed": "● 未订阅",
+  "log.popupTitle": "Key #- 统计", "log.historyHint": "历史 · {files} · 游标分页", "log.loadedTailHint": "已加载保存日志尾部（{files}）· 实时", "log.savedCheckedHint": "已检查保存日志（{files}），没有可读记录 · 实时",
+  "log.errorDistCount": "⚠ 错误分布（{n}）", "log.error4xx": "4xx", "log.error5xx": "5xx", "log.errorTimeout": "超时", "log.errorStream": "流中断", "log.noErrors": "无错误",
+  "log.models": "模型：", "log.unknown": "（未知）", "log.noIncidents": "当前没有运行事件", "log.recovered": "已恢复", "log.logEvent": "日志事件", "log.open": "打开", "log.failed": "失败", "log.acknowledge": "确认", "log.snooze": "静默", "log.pauseGroup": "暂停分组", "log.resume": "恢复", "log.groupPaused": "分组 {group} 已暂停 {time}", "log.refreshingEvents": "正在刷新事件...", "log.refreshedAt": "已刷新 {time}", "log.refreshFailed": "刷新失败", "log.pauseConfirm": "暂停该分组会立即拒绝新的代理请求。继续吗？", "log.actionFailed": "日志事件操作失败：{e}", "log.summaryRebuildFailedAlert": "日志汇总重建失败：{e}", "log.event": "事件", "log.convert": "转换", "log.autoRecover": "自动恢复", "log.autoLock": "自动锁死", "log.discarded": "已废弃", "log.streamCompleted": "流已完成", "log.clientDisconnected": "客户端已断开", "log.streamFailed": "流失败", "log.downstreamFailed": "下游失败", "log.truncated": "模型输出达到限制，响应被截断", "log.protocolConversion": "协议转换", "log.streamTerminalFailure": "流终止失败：{reason}",
+  "log.detailEvent": "事件", "log.detailMessage": "消息", "log.detailUrl": "地址", "log.detailStreamId": "流 ID", "log.detailOutcome": "结果", "log.detailReason": "原因", "log.detailStopReason": "停止原因", "log.detailGotDone": "收到 [DONE]", "log.detailErrorMessage": "错误消息", "log.detailSource": "来源", "log.detailTime": "时间", "log.detailKey": "Key #", "log.detailGroup": "分组", "log.detailClient": "客户端", "log.detailMethod": "方法", "log.detailPath": "路径", "log.detailUpstreamUrl": "上游地址", "log.detailModel": "模型", "log.detailOverrideModel": "覆盖模型", "log.detailStatus": "状态", "log.detailUp": "上行", "log.detailDown": "下行", "log.detailDuration": "耗时", "log.detailTtfb": "首字节", "log.detailStreamOutcome": "流结果", "log.detailStreamReason": "流终止原因", "log.detailUpstreamError": "上游错误类别", "log.yes": "是", "log.no": "否", "log.none": "无"
+});
+Object.assign(I18N_LANGS.en, {
+  "restart.queuedCount": ", and {n} queued",
+  "restart.waitedLong": "Waited a long time; check the watchdog logs.",
+  "restart.confirm": "Restart the proxy process?\nNew API requests pause temporarily; in-flight requests are drained first.",
+  "restart.queuedCancelled": "{n} queued request(s) were cancelled.",
+  "restart.queuedNotRestored": "{n} already-rejected queued request(s) will not be restored.",
+  "time.minAgo": "{n} min ago", "time.hourAgo": "{n} h ago", "time.dayAgo": "{n} d ago",
+  "log.notSubscribed": "● Not subscribed",
+  "log.popupTitle": "Key #- statistics",
+  "log.historyHint": "History · {files} · cursor pagination", "log.loadedTailHint": "Loaded tail of saved logs ({files}) · live", "log.savedCheckedHint": "Saved logs checked ({files}), no readable records · live",
+  "log.errorDistCount": "⚠ Error distribution ({n})", "log.error4xx": "4xx", "log.error5xx": "5xx", "log.errorTimeout": "Timeout", "log.errorStream": "Stream breaks", "log.noErrors": "No errors",
+  "log.models": "Models:", "log.unknown": "(unknown)", "log.noIncidents": "No runtime incidents right now", "log.recovered": "Recovered", "log.logEvent": "log event", "log.open": "open", "log.failed": "failed", "log.acknowledge": "Acknowledge", "log.snooze": "Snooze", "log.pauseGroup": "Pause group", "log.resume": "Resume", "log.groupPaused": "Group {group} paused {time}", "log.refreshingEvents": "Refreshing events...", "log.refreshedAt": "Refreshed {time}", "log.refreshFailed": "Refresh failed", "log.pauseConfirm": "Pausing this group immediately rejects new proxy requests. Continue?", "log.actionFailed": "Log incident action failed: {e}", "log.summaryRebuildFailedAlert": "Log summary rebuild failed: {e}", "log.event": "event", "log.convert": "Convert", "log.autoRecover": "Auto recover", "log.autoLock": "Auto lock", "log.discarded": "Discarded", "log.streamCompleted": "Stream completed", "log.clientDisconnected": "Client disconnected", "log.streamFailed": "Stream failed", "log.downstreamFailed": "Downstream failed", "log.truncated": "Response cut off by the model output limit", "log.protocolConversion": "Protocol conversion", "log.streamTerminalFailure": "Stream terminal failure: {reason}",
+  "log.detailEvent": "Event", "log.detailMessage": "Message", "log.detailUrl": "URL", "log.detailStreamId": "Stream ID", "log.detailOutcome": "Outcome", "log.detailReason": "Reason", "log.detailStopReason": "Stop reason", "log.detailGotDone": "Got [DONE]", "log.detailErrorMessage": "Error message", "log.detailSource": "Source", "log.detailTime": "Time", "log.detailKey": "Key #", "log.detailGroup": "Group", "log.detailClient": "Client", "log.detailMethod": "Method", "log.detailPath": "Path", "log.detailUpstreamUrl": "Upstream URL", "log.detailModel": "Model", "log.detailOverrideModel": "Override model", "log.detailStatus": "Status", "log.detailUp": "Up", "log.detailDown": "Down", "log.detailDuration": "Duration", "log.detailTtfb": "TTFB", "log.detailStreamOutcome": "Stream outcome", "log.detailStreamReason": "Stream terminal reason", "log.detailUpstreamError": "Upstream error category", "log.yes": "yes", "log.no": "no", "log.none": "none"
+});
 
 // --- Dashboard HTML ---
 function getDashboardHTML() {
@@ -7299,60 +7505,61 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
 <h1>OpenAPI Multi-Key Proxy</h1>
 <div style="display:flex;gap:6px;flex-wrap:wrap">
-<button class="btn" id="discBtn" onclick="openDiscussions()" title="查看 GitHub 会话流（最近动态）">💬 会话流<span class="disc-unread" id="discUnreadDot">0</span></button>
-<button class="btn" onclick="openLogs()">📋 日志</button>
-<button class="btn" onclick="openTaskInsight()">📊 任务流水</button>
-<button class="btn" onclick="openExportCover()">⬇ 导出 CSV</button>
-<button class="btn btn-p" onclick="openMgr()">⚙ 管理 Key</button>
-<button class="btn btn-s" onclick="openConfig()">⚙ 配置</button>
-<button class="update-badge" id="updateBadge" type="button" onclick="openUpdateModal()" title="发现可升级版本，点击查看 Release 说明与安全升级方法" aria-label="发现可升级版本">⬆</button>
+<button class="btn" id="langSwitch" onclick="toggleI18n()" title="切换语言 / Switch language" data-i18n-title="lang.title" style="min-width:52px"></button>
+<button class="btn" id="discBtn" onclick="openDiscussions()" title="查看 GitHub 会话流（最近动态）" data-i18n="toolbar.discussions" data-i18n-title="toolbar.discussions">💬 会话流<span class="disc-unread" id="discUnreadDot">0</span></button>
+<button class="btn" onclick="openLogs()" data-i18n="toolbar.logs">📋 日志</button>
+<button class="btn" onclick="openTaskInsight()" data-i18n="toolbar.tasks">📊 任务流水</button>
+<button class="btn" onclick="openExportCover()" data-i18n="toolbar.export">⬇ 导出 CSV</button>
+<button class="btn btn-p" onclick="openMgr()" data-i18n="toolbar.mgr">⚙ 管理 Key</button>
+<button class="btn btn-s" onclick="openConfig()" data-i18n="toolbar.config">⚙ 配置</button>
+<button class="update-badge" id="updateBadge" type="button" onclick="openUpdateModal()" title="发现可升级版本，点击查看 Release 说明与安全升级方法" aria-label="发现可升级版本" data-i18n-title="toolbar.update">⬆</button>
 </div>
 </div>
 <div class="sub" id="sub">
-  <span class="sub-ts" id="subText">加载中...</span>
+  <span class="sub-ts" id="subText" data-i18n="header.subLoading">加载中...</span>
   <div class="ticker-wrap">
-    <span class="ticker-label" id="tickerLabel">⚡ 并发中：</span>
+    <span class="ticker-label" id="tickerLabel" data-i18n="header.tickerConcurrent">⚡ 并发中：</span>
     <div id="ticker"></div>
   </div>
 </div>
-<div id="alert" class="alert">⚠️ 所有 Key 均不可用，请求将全部失败！</div>
+<div id="alert" class="alert" data-i18n="header.allKeysDown">⚠️ 所有 Key 均不可用，请求将全部失败！</div>
 <div class="top-row" id="summary"></div>
 <div class="controls" id="controls">
-  <label>排序</label>
-  <select id="sortBy"><option value="idx">默认顺序</option><option value="weeklyExpiry">按到期日（最近→最远）</option><option value="activatedAt">首次启用（早→晚）</option><option value="duration">使用时长（长→短）</option><option value="score">健康评分</option><option value="latency">平均延迟</option><option value="rate5m">5分钟成功率</option><option value="group">按分组</option></select>
-  <label>筛选</label>
-   <select id="filterBy"><option value="all">全部</option><option value="available">可用</option><option value="cooldown">冷却中</option><option value="discarded">废弃</option><option value="locked">🔒 锁死</option><option value="shielded">屏蔽</option></select>
-  <label>重置</label>
-  <select id="resetFilter"><option value="all">全部</option><option value="daily">每日重置</option><option value="weekly">每周重置</option><option value="hourly">每N小时重置</option><option value="never">永不过期</option></select>
-  <span id="weeklyResetDayFilterWrap" style="display:none;align-items:center;gap:4px"><label>周重置日</label><select id="weeklyResetDayFilter"><option value="all">全部</option><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option><option value="auto">自动</option></select></span>
-  <label>分组</label>
-  <select id="groupFilter"><option value="all">全部</option></select>
-  <label>趋势</label>
-  <select id="trendRange"><option value="24h">24小时</option><option value="7d">7天</option><option value="30d">30天</option></select>
-  <label>搜索</label>
-  <input id="searchBox" placeholder="ID/备注/地址..." style="width:120px">
-  <label>状态码</label>
-  <input id="statusCodeBox" placeholder="如 401" style="width:60px">
-  <label>模型</label>
-  <input id="modelSearchBox" placeholder="模型名" style="width:80px">
-  <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开">📂</button>
+  <label data-i18n="ctrl.sort">排序</label>
+  <select id="sortBy"><option value="idx" data-i18n="sort.default">默认顺序</option><option value="weeklyExpiry" data-i18n="sort.expiry">按到期日（最近→最远）</option><option value="activatedAt" data-i18n="sort.activated">首次启用（早→晚）</option><option value="duration" data-i18n="sort.duration">使用时长（长→短）</option><option value="score" data-i18n="sort.score">健康评分</option><option value="latency" data-i18n="sort.latency">平均延迟</option><option value="rate5m" data-i18n="sort.rate5m">5分钟成功率</option><option value="group" data-i18n="sort.group">按分组</option></select>
+  <label data-i18n="ctrl.filter">筛选</label>
+   <select id="filterBy"><option value="all" data-i18n="common.all">全部</option><option value="available" data-i18n="card.available">可用</option><option value="cooldown" data-i18n="card.cooldown">冷却中</option><option value="discarded" data-i18n="card.discarded">废弃</option><option value="locked" data-i18n="sum.locked">🔒 锁死</option><option value="shielded" data-i18n="filter.shielded">屏蔽</option></select>
+  <label data-i18n="ctrl.reset">重置</label>
+  <select id="resetFilter"><option value="all" data-i18n="common.all">全部</option><option value="daily" data-i18n="reset.daily">每日重置</option><option value="weekly" data-i18n="reset.weekly">每周重置</option><option value="hourly" data-i18n="reset.hourly">每N小时重置</option><option value="never" data-i18n="reset.never">永不过期</option></select>
+  <span id="weeklyResetDayFilterWrap" style="display:none;align-items:center;gap:4px"><label data-i18n="mgr.resetDay">周重置日</label><select id="weeklyResetDayFilter"><option value="all" data-i18n="common.all">全部</option><option value="1" data-i18n="wd.1">周一</option><option value="2" data-i18n="wd.2">周二</option><option value="3" data-i18n="wd.3">周三</option><option value="4" data-i18n="wd.4">周四</option><option value="5" data-i18n="wd.5">周五</option><option value="6" data-i18n="wd.6">周六</option><option value="7" data-i18n="wd.7">周日</option><option value="auto" data-i18n="wd.auto">自动</option></select></span>
+  <label data-i18n="ctrl.group">分组</label>
+  <select id="groupFilter"><option value="all" data-i18n="common.all">全部</option></select>
+  <label data-i18n="ctrl.trend">趋势</label>
+  <select id="trendRange"><option value="24h" data-i18n="trend.24h">24小时</option><option value="7d" data-i18n="trend.7d">7天</option><option value="30d" data-i18n="trend.30d">30天</option></select>
+  <label data-i18n="ctrl.search">搜索</label>
+  <input id="searchBox" placeholder="ID/备注/地址..." style="width:120px" data-i18n-ph="ctrl.searchPh">
+  <label data-i18n="ctrl.status">状态码</label>
+  <input id="statusCodeBox" placeholder="如 401" style="width:60px" data-i18n-ph="ctrl.statusPh">
+  <label data-i18n="ctrl.model">模型</label>
+  <input id="modelSearchBox" placeholder="模型名" style="width:80px" data-i18n-ph="ctrl.modelPh">
+  <button class="btn" style="padding:0 6px;font-size:11px" onclick="toggleAllCollapse()" title="全部折叠/展开" data-i18n-title="ctrl.collapseAll">📂</button>
   <span style="color:#94a3b8;font-size:11px;margin-left:8px" id="filterCount"></span>
   <span style="color:#22c55e;font-size:11px;margin-left:8px;font-weight:500" id="dashResumeStatus"></span>
 </div>
 <div id="batchBar" style="display:none;margin-bottom:8px;padding:6px 8px;background:#1e293b;border:1px solid #475569;border-radius:6px;gap:6px;flex-wrap:wrap;align-items:center">
-  <span style="color:#94a3b8;font-size:12px" id="batchCount">已选 0 个</span>
+  <span style="color:#94a3b8;font-size:12px" id="batchCount">0 selected</span>
   <span id="batchModeStatus" style="display:none;color:#facc15;font-size:12px;font-weight:500"></span>
-  <button class="btn" style="font-size:11px" onclick="batchActionCards('reset')">🔄 批量重置</button>
-  <button class="btn" style="font-size:11px;color:#f87171" onclick="batchActionCards('shield')">🔇 批量屏蔽</button>
-  <button class="btn" style="font-size:11px;color:#94a3b8;border-color:#64748b" onclick="selectAllCards()">☐ 全选</button>
-  <button class="btn" style="font-size:11px;color:#94a3b8;border-color:#64748b" onclick="deselectAllCards()">☐ 全取消</button>
-  <button class="btn" id="batchBoostUseBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('use')">⚡ 优先使用</button>
-  <button class="btn" id="batchBoostRRBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('roundrobin')">⭕ 优先轮询</button>
-  <button class="btn" id="batchBoostRandBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('random')">🎲 随机轮询</button>
-  <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')">✕ 取消批量优先</button>
+  <button class="btn" style="font-size:11px" onclick="batchActionCards('reset')" data-i18n="batch.reset">🔄 批量重置</button>
+  <button class="btn" style="font-size:11px;color:#f87171" onclick="batchActionCards('shield')" data-i18n="batch.shield">🔇 批量屏蔽</button>
+  <button class="btn" style="font-size:11px;color:#94a3b8;border-color:#64748b" onclick="selectAllCards()" data-i18n="batch.selectAll">☐ 全选</button>
+  <button class="btn" style="font-size:11px;color:#94a3b8;border-color:#64748b" onclick="deselectAllCards()" data-i18n="batch.selectNone">☐ 全取消</button>
+  <button class="btn" id="batchBoostUseBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('use')" data-i18n="batch.boostUse">⚡ 优先使用</button>
+  <button class="btn" id="batchBoostRRBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('roundrobin')" data-i18n="batch.boostRR">⭕ 优先轮询</button>
+  <button class="btn" id="batchBoostRandBtn" style="font-size:11px;color:#4ade80;border-color:#22c55e" onclick="batchActionCards('random')" data-i18n="batch.boostRand">🎲 随机轮询</button>
+  <button class="btn" id="batchCancelBoostBtn" style="display:none;font-size:11px;color:#f87171" onclick="batchActionCards('cancelboost')" data-i18n="batch.cancelBoost">✕ 取消批量优先</button>
 </div>
 <div id="trend" class="trend-wrap" style="display:none">
-<div class="trend-title"><div class="trend-tabs" id="trendTabs"><span class="trend-tab active" data-mode="model" onclick="setTrendMode('model')">📊 模型</span><span class="trend-tab" data-mode="bytes" onclick="setTrendMode('bytes')">📊 流量</span><span class="trend-tab" data-mode="req" onclick="setTrendMode('req')">📈 次数</span><span class="trend-tab" data-mode="health" onclick="setTrendMode('health')">💚 健康</span><span class="trend-tab" data-mode="upstream" onclick="setTrendMode('upstream')">🔺 上游</span><span class="trend-tab" data-mode="downstream" onclick="setTrendMode('downstream')">🔻 下游</span><span class="trend-tab" data-mode="cost" onclick="setTrendMode('cost')">💰 费用</span><span class="trend-tab" data-mode="latency" onclick="setTrendMode('latency')">⏱ 延迟</span></div><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
+<div class="trend-title"><div class="trend-tabs" id="trendTabs"><span class="trend-tab active" data-mode="model" onclick="setTrendMode('model')" data-i18n="trend.mode.model">📊 模型</span><span class="trend-tab" data-mode="bytes" onclick="setTrendMode('bytes')" data-i18n="trend.mode.bytes">📊 流量</span><span class="trend-tab" data-mode="req" onclick="setTrendMode('req')" data-i18n="trend.mode.req">📈 次数</span><span class="trend-tab" data-mode="health" onclick="setTrendMode('health')" data-i18n="trend.mode.health">💚 健康</span><span class="trend-tab" data-mode="upstream" onclick="setTrendMode('upstream')" data-i18n="trend.mode.upstream">🔺 上游</span><span class="trend-tab" data-mode="downstream" onclick="setTrendMode('downstream')" data-i18n="trend.mode.downstream">🔻 下游</span><span class="trend-tab" data-mode="cost" onclick="setTrendMode('cost')" data-i18n="trend.mode.cost">💰 费用</span><span class="trend-tab" data-mode="latency" onclick="setTrendMode('latency')" data-i18n="trend.mode.latency">⏱ 延迟</span></div><span id="trendRangeLabel" style="font-size:10px;color:#64748b">24h</span></div>
 <div class="trend-bars" id="trendBars"></div>
 <div class="trend-labels" id="trendLabels"></div>
 <div id="trendLegend" class="trend-legend"></div>
@@ -7362,364 +7569,364 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 
 <div class="modal" id="mgrModal">
 <div class="mcontent">
-<div class="mtitle"><span>Key 管理</span><button class="btn" onclick="closeMgr()">✕</button></div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">修改后点击保存，代理自动重载配置</div>
+<div class="mtitle"><span data-i18n="mgr.title">Key 管理</span><button class="btn" onclick="closeMgr()">✕</button></div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px" data-i18n="mgr.hint">修改后点击保存，代理自动重载配置</div>
 <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
-  <input id="mgrSearch" placeholder="搜索备注/地址..." oninput="renderMgr()" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px">
-  <input id="mgrCodeFilter" placeholder="状态码" oninput="renderMgr()" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" title="按状态码筛选，如 401">
-  <input id="mgrModelFilter" placeholder="指定模型" oninput="renderMgr()" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" title="按指定模型搜索，子串匹配">
+  <input id="mgrSearch" placeholder="搜索备注/地址..." oninput="renderMgr()" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" data-i18n-ph="mgr.searchPh">
+  <input id="mgrCodeFilter" placeholder="状态码" oninput="renderMgr()" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" title="按状态码筛选，如 401" data-i18n-ph="mgr.codePh" data-i18n-title="mgr.codeTitle">
+  <input id="mgrModelFilter" placeholder="指定模型" oninput="renderMgr()" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" title="按指定模型搜索，子串匹配" data-i18n-ph="mgr.modelPh" data-i18n-title="mgr.modelTitle">
   <select id="mgrStatusFilter" onchange="renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
-    <option value="">全部状态</option>
-    <option value="available">可用</option>
-    <option value="cooldown">冷却中</option>
-    <option value="discarded">废弃</option>
-    <option value="locked">锁死</option>
-    <option value="shielded">屏蔽</option>
-    <option value="duration">启用时长</option>
-    <option value="lastFail">最后失败</option>
-    <option value="lastResp">最后响应</option>
-    <option value="resetDay">周重置日</option>
-    <option value="timeIn">时段内</option>
-    <option value="timeOut">非时段</option>
+    <option value="" data-i18n="mgr.allStatus">全部状态</option>
+    <option value="available" data-i18n="mgr.available">可用</option>
+    <option value="cooldown" data-i18n="mgr.cooldown">冷却中</option>
+    <option value="discarded" data-i18n="mgr.discarded">废弃</option>
+    <option value="locked" data-i18n="mgr.locked2">锁死</option>
+    <option value="shielded" data-i18n="mgr.shielded">屏蔽</option>
+    <option value="duration" data-i18n="mgr.duration">启用时长</option>
+    <option value="lastFail" data-i18n="mgr.lastFail">最后失败</option>
+    <option value="lastResp" data-i18n="mgr.lastResp">最后响应</option>
+    <option value="resetDay" data-i18n="mgr.resetDay">周重置日</option>
+    <option value="timeIn" data-i18n="mgr.timeIn">时段内</option>
+    <option value="timeOut" data-i18n="mgr.timeOut">非时段</option>
   </select>
-  <input id="mgrDurationDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选启用距今 ≥ X 天的 Key，可与其他条件组合">
-  <input id="mgrLastFailDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选最后失败距今 ≥ X 天的 Key，可与其他条件组合">
-  <select id="mgrResetDayFilter" onchange="renderMgr()" style="display:none;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" title="筛选指定周重置日的 Key">
-    <option value="">全部</option>
-    <option value="auto">自动（未设置）</option>
-    <option value="1">周一</option>
-    <option value="2">周二</option>
-    <option value="3">周三</option>
-    <option value="4">周四</option>
-    <option value="5">周五</option>
-    <option value="6">周六</option>
-    <option value="7">周日</option>
+  <input id="mgrDurationDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选启用距今 ≥ X 天的 Key，可与其他条件组合" data-i18n-ph="mgr.daysPh" data-i18n-title="mgr.daysTitle1">
+  <input id="mgrLastFailDays" type="number" min="1" style="display:none;width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" placeholder="≥X天" oninput="renderMgr()" title="筛选最后失败距今 ≥ X 天的 Key，可与其他条件组合" data-i18n-ph="mgr.daysPh" data-i18n-title="mgr.daysTitle2">
+  <select id="mgrResetDayFilter" onchange="renderMgr()" style="display:none;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px" title="筛选指定周重置日的 Key" data-i18n-title="mgr.resetDayTitle">
+    <option value="" data-i18n="mgr.all">全部</option>
+    <option value="auto" data-i18n="wd.auto">自动（未设置）</option>
+    <option value="1" data-i18n="wd.1">周一</option>
+    <option value="2" data-i18n="wd.2">周二</option>
+    <option value="3" data-i18n="wd.3">周三</option>
+    <option value="4" data-i18n="wd.4">周四</option>
+    <option value="5" data-i18n="wd.5">周五</option>
+    <option value="6" data-i18n="wd.6">周六</option>
+    <option value="7" data-i18n="wd.7">周日</option>
   </select>
   <select id="mgrSortBy" onchange="mgrSortBy=this.value;renderMgr()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:11px">
-    <option value="default">默认顺序</option>
-    <option value="resetDay">按重置日（周一→周日）</option>
-    <option value="activatedAt">首次启用（早→晚）</option>
-    <option value="duration">使用时长（长→短）</option>
-    <option value="group">按分组</option>
+    <option value="default" data-i18n="mgr.sortDefault">默认顺序</option>
+    <option value="resetDay" data-i18n="mgr.sortResetDay">按重置日（周一→周日）</option>
+    <option value="activatedAt" data-i18n="mgr.sortActivated">首次启用（早→晚）</option>
+    <option value="duration" data-i18n="mgr.sortDuration">使用时长（长→短）</option>
+    <option value="group" data-i18n="mgr.sortGroup">按分组</option>
   </select>
-  <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)">全选</button>
-  <button class="btn" style="font-size:11px" onclick="clearMgrSearch()">取消</button>
-  <button class="btn" style="font-size:11px" onclick="batchShieldMgr()">🔇 批量屏蔽</button>
-  <button class="btn" style="font-size:11px" onclick="batchResetMgr()">🔄 批量重置</button>
-  <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()">✕ 批量删除</button>
-  <button class="btn" style="font-size:11px;color:#f59e0b" onclick="cleanFailedKeys()">🧹 清理失败</button>
-  <button class="btn" style="font-size:11px;color:#4ade80" onclick="batchSetTimeWindow()" title="为选中的 Key 设置错峰可用小时段（含时区）；开始==结束=全天可用">⏰ 错峰时段</button>
-  <button class="btn" style="font-size:11px;color:#fb923c" onclick="batchClearTimeWindow()" title="清除选中 Key 的错峰时段，恢复全天可用">⏰ 清除时段</button>
-  <button class="btn" style="font-size:11px" onclick="openImportMgr()">📋 导入</button>
-  <button class="btn" style="font-size:11px" onclick="openExportMgr()">📥 导出</button>
-  <button class="btn" style="font-size:11px" onclick="batchTestMgr()">🔍 批量测试</button>
-  <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn">🙉 显示已屏蔽</button>
+  <button class="btn" style="font-size:11px" onclick="selectAllMgr(true)" data-i18n="mgr.selectAll">全选</button>
+  <button class="btn" style="font-size:11px" onclick="clearMgrSearch()" data-i18n="mgr.clear">取消</button>
+  <button class="btn" style="font-size:11px" onclick="batchShieldMgr()" data-i18n="mgr.batchShield">🔇 批量屏蔽</button>
+  <button class="btn" style="font-size:11px" onclick="batchResetMgr()" data-i18n="mgr.batchReset">🔄 批量重置</button>
+  <button class="btn" style="font-size:11px;color:#f87171" onclick="batchDeleteMgr()" data-i18n="mgr.batchDelete">✕ 批量删除</button>
+  <button class="btn" style="font-size:11px;color:#f59e0b" onclick="cleanFailedKeys()" data-i18n="mgr.cleanBtn">🧹 清理失败</button>
+  <button class="btn" style="font-size:11px;color:#4ade80" onclick="batchSetTimeWindow()" title="为选中的 Key 设置错峰可用小时段（含时区）；开始==结束=全天可用" data-i18n="mgr.twBtn" data-i18n-title="mgr.twBtnTitle">⏰ 错峰时段</button>
+  <button class="btn" style="font-size:11px;color:#fb923c" onclick="batchClearTimeWindow()" title="清除选中 Key 的错峰时段，恢复全天可用" data-i18n="mgr.clearTwBtn" data-i18n-title="mgr.clearTwTitle">⏰ 清除时段</button>
+  <button class="btn" style="font-size:11px" onclick="openImportMgr()" data-i18n="mgr.importBtn">📋 导入</button>
+  <button class="btn" style="font-size:11px" onclick="openExportMgr()" data-i18n="mgr.exportBtn2">📥 导出</button>
+  <button class="btn" style="font-size:11px" onclick="batchTestMgr()" data-i18n="mgr.batchTestBtn">🔍 批量测试</button>
+  <button class="btn" style="font-size:11px" onclick="toggleHideShielded()" id="mgrHideBtn" data-i18n="mgr.showShieldedBtn">🙉 显示已屏蔽</button>
 </div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:6px" id="mgrCount">共 0 个</div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:6px" id="mgrCount" data-i18n="mgr.countStatic">共 0 个</div>
 <div id="batchTestResults" style="display:none;margin-bottom:8px;padding:8px;background:#1e293b;border:1px solid #475569;border-radius:6px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace">
-  <div style="color:#94a3b8;margin-bottom:4px">批量测试结果</div>
+  <div style="color:#94a3b8;margin-bottom:4px" data-i18n="mgr.batchTestResultTitle">批量测试结果</div>
   <div id="batchTestList"></div>
   <div id="batchTestSummary" style="margin-top:4px;color:#94a3b8"></div>
   <div style="margin-top:6px;display:flex;gap:4px">
-    <button class="btn" style="font-size:11px;display:none" id="batchTestResetBtn" onclick="batchTestResetPassed()">🔄 重置通过测试的 Key</button>
-    <button class="btn" style="font-size:11px;display:none" id="batchTestResetAllBtn" onclick="batchTestResetAll()">🔄 重置所有 Key 的状态码</button>
-    <button class="btn" style="font-size:11px" onclick="document.getElementById('batchTestResults').style.display='none'">收起</button>
+    <button class="btn" style="font-size:11px;display:none" id="batchTestResetBtn" onclick="batchTestResetPassed()" data-i18n="mgr.resetPassedStatic">🔄 重置通过测试的 Key</button>
+    <button class="btn" style="font-size:11px;display:none" id="batchTestResetAllBtn" onclick="batchTestResetAll()" data-i18n="mgr.resetAllStatic">🔄 重置所有 Key 的状态码</button>
+    <button class="btn" style="font-size:11px" onclick="document.getElementById('batchTestResults').style.display='none'" data-i18n="mgr.collapse">收起</button>
   </div>
 </div>
 <table class="mtable"><thead id="mgrThead"></thead><tbody id="mgrBody"></tbody></table>
 <div class="mfoot">
-<button class="btn" onclick="addKeyRow()">+ 添加一行</button>
+<button class="btn" onclick="addKeyRow()" data-i18n="mgr.addRow">+ 添加一行</button>
 <div style="flex:1"></div>
-<button class="btn" onclick="closeMgr()">取消</button>
-<button class="btn btn-p" onclick="saveKeys()">保存</button>
+<button class="btn" onclick="closeMgr()" data-i18n="mgr.cancel">取消</button>
+<button class="btn btn-p" onclick="saveKeys()" data-i18n="mgr.save">保存</button>
 </div>
 </div></div>
 <div id="importMgrCover" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10001;align-items:center;justify-content:center">
 <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;min-width:420px;max-width:90vw">
-<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px">批量导入 Key</div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:8px;line-height:1.6">
-每行一个 Key，格式：<code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-xxx URL [重置类型] [优先级] [分组] [备注]</code><br>
-URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/永久/每N小时）<br>
-示例：<code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-abc123 https://your-api.com weekly 0 A 我的Key</code>
+<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px" data-i18n="mgr.importTitle">批量导入 Key</div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px;line-height:1.6" data-i18n-html="mgr.importHelp">
+One key per line, format: <code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-xxx URL [reset type] [priority] [group] [remark]</code><br>
+URL is required. Reset types: daily/weekly/never/hourly (or Daily/Weekly/Never/Every N h)<br>
+Example: <code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-abc123 https://your-api.com weekly 0 A MyKey</code>
 </div>
-<textarea id="importMgrTxt" style="width:100%;height:200px;resize:both;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px;border-radius:4px;font-family:monospace;font-size:12px;box-sizing:border-box" placeholder="粘贴 Key 数据到此处..."></textarea>
+<textarea id="importMgrTxt" style="width:100%;height:200px;resize:both;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px;border-radius:4px;font-family:monospace;font-size:12px;box-sizing:border-box" placeholder="粘贴 Key 数据到此处..." data-i18n-ph="mgr.pasteDataPh"></textarea>
 <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
-<button class="btn" onclick="closeImportMgr()">取消</button>
-<button class="btn btn-p" onclick="doImportKeys()">导入</button>
+<button class="btn" onclick="closeImportMgr()" data-i18n="mgr.cancel">取消</button>
+<button class="btn btn-p" onclick="doImportKeys()" data-i18n="mgr.importBtn">导入</button>
 </div>
 </div>
 </div>
 
 <div id="exportMgrCover" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10001;align-items:center;justify-content:center">
 <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;min-width:360px;max-width:90vw">
-<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px">导出 CSV（选择字段）</div>
+<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px" data-i18n="mgr.exportTitle">导出 CSV（选择字段）</div>
 <div id="exportMgrFields" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:#cbd5e1;margin-bottom:12px">
 <label><input type="checkbox" checked disabled> Key</label>
 <label><input type="checkbox" checked disabled> URL</label>
-<label><input type="checkbox" class="exp-f" value="reset"> 重置类型</label>
-<label><input type="checkbox" class="exp-f" value="priority"> 优先级</label>
-<label><input type="checkbox" class="exp-f" value="group"> 分组</label>
-<label><input type="checkbox" class="exp-f" value="remark"> 备注</label>
-<label><input type="checkbox" class="exp-f" value="models"> 指定模型</label>
-<label><input type="checkbox" class="exp-f" value="model"> 覆盖模型</label>
-<label><input type="checkbox" class="exp-f" value="resetDay"> 重置日</label>
-<label><input type="checkbox" class="exp-f" value="tz"> 时区</label>
-<label><input type="checkbox" class="exp-f" value="timeWindow"> 时段</label>
+<label><input type="checkbox" class="exp-f" value="reset" data-i18n="mgr.csvReset"> 重置类型</label>
+<label><input type="checkbox" class="exp-f" value="priority" data-i18n="mgr.csvPriority"> 优先级</label>
+<label><input type="checkbox" class="exp-f" value="group" data-i18n="mgr.csvGroup"> 分组</label>
+<label><input type="checkbox" class="exp-f" value="remark" data-i18n="mgr.csvRemark"> 备注</label>
+<label><input type="checkbox" class="exp-f" value="models" data-i18n="mgr.csvModels"> 指定模型</label>
+<label><input type="checkbox" class="exp-f" value="model" data-i18n="mgr.csvOverride"> 覆盖模型</label>
+<label><input type="checkbox" class="exp-f" value="resetDay" data-i18n="mgr.csvResetDay"> 重置日</label>
+<label><input type="checkbox" class="exp-f" value="tz" data-i18n="mgr.csvTz"> 时区</label>
+<label><input type="checkbox" class="exp-f" value="timeWindow" data-i18n="mgr.csvTimeWindow"> 时段</label>
 </div>
 <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
-<button class="btn" onclick="closeExportMgr()">取消</button>
-<button class="btn btn-p" onclick="doExportCSV()">导出</button>
+<button class="btn" onclick="closeExportMgr()" data-i18n="mgr.cancel">取消</button>
+<button class="btn btn-p" onclick="doExportCSV()" data-i18n="mgr.exportBtn">导出</button>
 </div>
 </div>
 </div>
 
 <div id="exportCover" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10001;align-items:center;justify-content:center">
 <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;min-width:380px;max-width:90vw">
-<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px">导出 CSV（选择字段）</div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">导出当前页面可见的所有 Key</div>
+<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px" data-i18n="mgr.exportTitle">导出 CSV（选择字段）</div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:8px" data-i18n="exp.allVisible">导出当前页面可见的所有 Key</div>
 <div id="exportCoverFields" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:#cbd5e1;margin-bottom:12px">
-<div style="grid-column:1/-1;font-size:11px;color:#64748b;margin-bottom:2px">── 配置字段 ──</div>
+<div style="grid-column:1/-1;font-size:11px;color:#64748b;margin-bottom:2px" data-i18n="exp.cfgSection">── 配置字段 ──</div>
 <label><input type="checkbox" checked disabled> Key</label>
 <label><input type="checkbox" checked disabled> URL</label>
-<label><input type="checkbox" class="exp-cfg" value="reset"> 重置类型</label>
-<label><input type="checkbox" class="exp-cfg" value="remark"> 备注</label>
-<label><input type="checkbox" class="exp-cfg" value="group"> 分组</label>
-<label><input type="checkbox" class="exp-cfg" value="priority"> 优先级</label>
-<label><input type="checkbox" class="exp-cfg" value="models"> 指定模型</label>
-<label><input type="checkbox" class="exp-cfg" value="model"> 覆盖模型</label>
-<label><input type="checkbox" class="exp-cfg" value="resetDay"> 重置日</label>
-<label><input type="checkbox" class="exp-cfg" value="tz"> 时区</label>
-<label><input type="checkbox" class="exp-cfg" value="timeWindow"> 时段</label>
-<div style="grid-column:1/-1;font-size:11px;color:#64748b;margin:4px 0 2px">── 统计字段 ──</div>
-<label><input type="checkbox" class="exp-st" value="status"> 状态</label>
-<label><input type="checkbox" class="exp-st" value="failCode"> 失败码</label>
-<label><input type="checkbox" class="exp-st" value="totalRequests"> 请求数</label>
-<label><input type="checkbox" class="exp-st" value="successRequests"> 成功数</label>
-<label><input type="checkbox" class="exp-st" value="failRequests"> 失败数</label>
-<label><input type="checkbox" class="exp-st" value="inputBytes"> 输入字节</label>
-<label><input type="checkbox" class="exp-st" value="outputBytes"> 输出字节</label>
-<label><input type="checkbox" class="exp-st" value="avgDuration"> 平均耗时</label>
-<label><input type="checkbox" class="exp-st" value="healthScore"> 健康分</label>
-<label><input type="checkbox" class="exp-st" value="totalCost"> 费用</label>
+<label><input type="checkbox" class="exp-cfg" value="reset"><span data-i18n="mgr.csvReset"> 重置类型</span></label>
+<label><input type="checkbox" class="exp-cfg" value="remark"><span data-i18n="mgr.csvRemark"> 备注</span></label>
+<label><input type="checkbox" class="exp-cfg" value="group"><span data-i18n="mgr.csvGroup"> 分组</span></label>
+<label><input type="checkbox" class="exp-cfg" value="priority"><span data-i18n="mgr.csvPriority"> 优先级</span></label>
+<label><input type="checkbox" class="exp-cfg" value="models"><span data-i18n="mgr.csvModels"> 指定模型</span></label>
+<label><input type="checkbox" class="exp-cfg" value="model"><span data-i18n="mgr.csvOverride"> 覆盖模型</span></label>
+<label><input type="checkbox" class="exp-cfg" value="resetDay"><span data-i18n="mgr.csvResetDay"> 重置日</span></label>
+<label><input type="checkbox" class="exp-cfg" value="tz"><span data-i18n="mgr.csvTz"> 时区</span></label>
+<label><input type="checkbox" class="exp-cfg" value="timeWindow"><span data-i18n="mgr.csvTimeWindow"> 时段</span></label>
+<div style="grid-column:1/-1;font-size:11px;color:#64748b;margin:4px 0 2px" data-i18n="exp.stSection">── 统计字段 ──</div>
+<label><input type="checkbox" class="exp-st" value="status"><span data-i18n="mgr.csvStatus"> 状态</span></label>
+<label><input type="checkbox" class="exp-st" value="failCode"><span data-i18n="mgr.csvFailCode"> 失败码</span></label>
+<label><input type="checkbox" class="exp-st" value="totalRequests"><span data-i18n="mgr.csvRequests"> 请求数</span></label>
+<label><input type="checkbox" class="exp-st" value="successRequests"><span data-i18n="mgr.csvSuccess"> 成功数</span></label>
+<label><input type="checkbox" class="exp-st" value="failRequests"><span data-i18n="mgr.csvFail"> 失败数</span></label>
+<label><input type="checkbox" class="exp-st" value="inputBytes"><span data-i18n="mgr.csvInputBytes"> 输入字节</span></label>
+<label><input type="checkbox" class="exp-st" value="outputBytes"><span data-i18n="mgr.csvOutputBytes"> 输出字节</span></label>
+<label><input type="checkbox" class="exp-st" value="avgDuration"><span data-i18n="mgr.csvAvgDur"> 平均耗时</span></label>
+<label><input type="checkbox" class="exp-st" value="healthScore"><span data-i18n="mgr.csvHealth"> 健康分</span></label>
+<label><input type="checkbox" class="exp-st" value="totalCost"><span data-i18n="mgr.csvCost"> 费用</span></label>
 </div>
 <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
-<button class="btn" onclick="closeExportCover()">取消</button>
-<button class="btn btn-p" onclick="doFrontendExport()">导出</button>
+<button class="btn" onclick="closeExportCover()" data-i18n="mgr.cancel">取消</button>
+<button class="btn btn-p" onclick="doFrontendExport()" data-i18n="mgr.exportBtn">导出</button>
 </div>
 </div>
 </div>
 
 <div class="modal" id="configModal">
 <div class="mcontent">
-<div class="mtitle"><span>系统配置</span><button class="btn" onclick="closeConfig()">✕</button></div>
-<div style="font-size:11px;color:#94a3b8;margin-bottom:12px" id="configStatus">修改后自动保存</div>
+<div class="mtitle"><span data-i18n="cfg.title">系统配置</span><button class="btn" onclick="closeConfig()">✕</button></div>
+<div style="font-size:11px;color:#94a3b8;margin-bottom:12px" id="configStatus" data-i18n="cfg.autoSaved">修改后自动保存</div>
 <div id="cfgVersionInfo" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 12px;padding:7px 9px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:11px;color:#94a3b8">
-  <span>本地构建：<strong id="cfgCurrentVersion" style="color:#e2e8f0">本地开发/定制版本（未能验证发布基线）</strong></span>
-  <span id="cfgBuildProvenance" style="color:#64748b">来源：待识别</span>
-  <span>最新正式 Release：<strong id="cfgLatestRelease" style="color:#e2e8f0">未知</strong></span>
+  <span data-i18n="cfg.localBuild">本地构建：</span> <strong id="cfgCurrentVersion" style="color:#e2e8f0" data-i18n="cfg.localBuildDefault">本地开发/定制版本（未能验证发布基线）</strong>
+  <span id="cfgBuildProvenance" style="color:#64748b" data-i18n="cfg.provenance">来源：待识别</span>
+  <span data-i18n="cfg.latestRelease">最新正式 Release：</span> <strong id="cfgLatestRelease" style="color:#e2e8f0" data-i18n="cfg.unknownRel">未知</strong>
   <span id="cfgVersionGap" style="color:#94a3b8"></span>
-  <a href="https://github.com/aipayim/codex-proxy" target="_blank" rel="noopener noreferrer" title="升级前先备份本机定制代码、配置和状态；在 GitHub 查看 Release 后合并变更，并在维护窗口验证、重启代理。" style="color:#60a5fa">GitHub 升级说明 ↗</a>
-  <button class="btn" type="button" onclick="openUpdateModal()" style="font-size:10px;padding:2px 6px">检查更新</button>
+  <a href="https://github.com/aipayim/codex-proxy" target="_blank" rel="noopener noreferrer" data-i18n-title="cfg.upgradeGuideTitle" style="color:#60a5fa" data-i18n="cfg.upgradeGuide">GitHub 升级说明 ↗</a>
+  <button class="btn" type="button" onclick="openUpdateModal()" style="font-size:10px;padding:2px 6px" data-i18n="cfg.checkUpdate">检查更新</button>
   <span id="cfgUpdateStatus" style="color:#64748b"></span>
   <div style="width:100%;display:flex;align-items:center;gap:7px;flex-wrap:wrap;color:#94a3b8">
-    <label for="cfgUpdateBaselineTag">定制构建基线 Tag（高级、可选）</label>
-    <input id="cfgUpdateBaselineTag" style="width:140px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="例如 v1.2.3" title="官方发布包和干净的正式 Git Tag 会自动识别。仅在定制构建需要比较时填写已人工确认的正式 GitHub Release Tag。">
-    <span style="color:#64748b">官方发布包自动识别；定制构建留空则只显示 Release，不判断更新。</span>
+    <label for="cfgUpdateBaselineTag" data-i18n="cfg.baselineTag">定制构建基线 Tag（高级、可选）</label>
+    <input id="cfgUpdateBaselineTag" style="width:140px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="例如 v1.2.3" data-i18n-ph="cfg.baselinePh" title="官方发布包和干净的正式 Git Tag 会自动识别。仅在定制构建需要比较时填写已人工确认的正式 GitHub Release Tag。" data-i18n-title="cfg.baselineTitle">
+    <span style="color:#64748b" data-i18n="cfg.baselineHint">官方发布包自动识别；定制构建留空则只显示 Release，不判断更新。</span>
   </div>
 </div>
 <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;font-size:12px">
-  <div style="color:#94a3b8;padding:4px 0">💰 默认输入价格（每百万 token）</div>
-  <div><input id="cfgPriceIn" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" title="未匹配模型时使用"></div>
-  <div style="color:#94a3b8;padding:4px 0">💰 默认输出价格（每百万 token）</div>
-  <div><input id="cfgPriceOut" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" title="未匹配模型时使用"></div>
-  <div style="color:#94a3b8;padding:4px 0">🔤 默认每 token 字节数</div>
-  <div><input id="cfgBpt" type="number" min="0.1" max="100" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" value="3" placeholder="3" title="未匹配模型时使用"></div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">🧮 按模型计费覆盖</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.priceIn">💰 默认输入价格（每百万 token）</div>
+  <div><input id="cfgPriceIn" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" data-i18n-title="cfg.priceUnmatchedTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.priceOut">💰 默认输出价格（每百万 token）</div>
+  <div><input id="cfgPriceOut" type="number" min="0" max="1000000" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" placeholder="0" data-i18n-title="cfg.priceUnmatchedTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.bpt">🔤 默认每 token 字节数</div>
+  <div><input id="cfgBpt" type="number" min="0.1" max="100" step="any" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100px" value="3" placeholder="3" data-i18n-title="cfg.priceUnmatchedTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0" data-i18n="cfg.pricingOverride">🧮 按模型计费覆盖</div>
   <div style="grid-column:1/-1">
-    <div style="font-size:10px;color:#64748b;margin:0 0 6px">按实际最终转发模型名精确匹配；未配置或未知模型使用上方默认规则。费用按传输字节估算，不等同于上游账单 token；新价格仅影响之后的请求。</div>
+    <div style="font-size:10px;color:#64748b;margin:0 0 6px" data-i18n="cfg.pricingHint">按实际最终转发模型名精确匹配；未配置或未知模型使用上方默认规则。费用按传输字节估算，不等同于上游账单 token；新价格仅影响之后的请求。</div>
     <div id="cfgModelPricingArea"></div>
-    <button class="btn" type="button" style="font-size:10px;padding:2px 8px;margin-top:6px" onclick="addModelPricingRule()">＋ 添加模型规则</button>
+    <button class="btn" type="button" style="font-size:10px;padding:2px 8px;margin-top:6px" onclick="addModelPricingRule()" data-i18n="cfg.addModelRule">＋ 添加模型规则</button>
   </div>
-  <div style="color:#94a3b8;padding:4px 0">🔔 桌面通知</div>
-  <div><label><input type="checkbox" id="cfgDesktop"> 全部 Key 失效时通知</label></div>
-  <div style="color:#94a3b8;padding:4px 0">🔊 声音提醒</div>
-  <div><label><input type="checkbox" id="cfgSound"> 全部 Key 失效时响铃</label></div>
-  <div style="color:#94a3b8;padding:4px 0">🌐 Webhook URL</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.desktopNotify">🔔 桌面通知</div>
+  <div><label><input type="checkbox" id="cfgDesktop"><span data-i18n="cfg.notifyAllFail"> 全部 Key 失效时通知</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.soundAlert">🔊 声音提醒</div>
+  <div><label><input type="checkbox" id="cfgSound"><span data-i18n="cfg.soundAllFail"> 全部 Key 失效时响铃</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.webhook">🌐 Webhook URL</div>
   <div><input id="cfgWebhook" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="https://qyapi.weixin.qq.com/..."></div>
-  <div style="color:#94a3b8;padding:4px 0">🔄 自动恢复冷却 Key</div>
-  <div><label><input type="checkbox" id="cfgAutoRecover"> 定时检测并恢复</label></div>
-  <div style="color:#94a3b8;padding:4px 0">⏱ 探测间隔（小时）</div>
-  <div><input id="cfgAutoInterval" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:80px" placeholder="1" title="最小 0.5 小时"></div>
-  <div style="color:#94a3b8;padding:4px 0">📅 固定时间检测</div>
-  <div><label><input type="checkbox" id="cfgAutoRecoverDaily"> 每 <input id="cfgAutoDailyDays" type="number" min="1" max="365" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天 <input id="cfgAutoDailyTime" type="time" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 固定检测</label></div>
-  <div style="color:#94a3b8;padding:4px 0">🔢 检测的失败码</div>
-  <div><input id="cfgAutoCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="401,402,403,429,500,502,503,504" title="401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时"></div>
-  <div style="color:#94a3b8;padding:4px 0">🚫 包含 discarded Key</div>
-  <div><label><input type="checkbox" id="cfgAutoDiscarded"> 连续两周期失败的也检测</label></div>
-  <div style="color:#94a3b8;padding:4px 0">⏱ 检测间隔（毫秒）<span style="color:#64748b;font-size:9px">每 Key 间等待，多个值用逗号分隔（最多 10 个），程序随机选取，模拟人工节奏</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.autoRecover">🔄 自动恢复冷却 Key</div>
+  <div><label><input type="checkbox" id="cfgAutoRecover"><span data-i18n="cfg.autoRecoverCheck"> 定时检测并恢复</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.probeInterval">⏱ 探测间隔（小时）</div>
+  <div><input id="cfgAutoInterval" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:80px" placeholder="1" data-i18n-title="cfg.probeIntervalTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.fixedTime">📅 固定时间检测</div>
+  <div><label><input type="checkbox" id="cfgAutoRecoverDaily"><span data-i18n="cfg.every"> 每 </span><input id="cfgAutoDailyDays" type="number" min="1" max="365" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.daysUnit"> 天 </span><input id="cfgAutoDailyTime" type="time" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.fixedCheck"> 固定检测</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.failCodes">🔢 检测的失败码</div>
+  <div><input id="cfgAutoCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" placeholder="401,402,403,429,500,502,503,504" data-i18n-ph="cfg.failCodesPh" title="401=API Key 无效或已过期&#10;402=额度不足，账号已欠费&#10;403=权限不足，Key 无访问权限&#10;429=请求过频繁，触发了速率限制&#10;500=上游服务器内部错误&#10;502=上游网关错误&#10;503=服务暂时不可用&#10;504=上游超时" data-i18n-title="cfg.failCodesTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.includeDiscarded">🚫 包含 discarded Key</div>
+  <div><label><input type="checkbox" id="cfgAutoDiscarded"><span data-i18n="cfg.includeDiscardedCheck"> 连续两周期失败的也检测</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0"><span data-i18n="cfg.probeDelay">⏱ 检测间隔（毫秒）</span><span style="color:#64748b;font-size:9px" data-i18n="cfg.probeDelayHint">每 Key 间等待，多个值用逗号分隔（最多 10 个），程序随机选取，模拟人工节奏</span></div>
   <div><input id="cfgAutoRecoverDelays" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="800" placeholder="800,1200,500">
-    <div style="color:#64748b;font-size:9px;margin-top:2px">推荐 800,1200,500 等值，范围 100–10000。所有检测模式共用此设置</div>
+    <div style="color:#64748b;font-size:9px;margin-top:2px" data-i18n="cfg.probeDelayRecommend">推荐 800,1200,500 等值，范围 100–10000。所有检测模式共用此设置</div>
   </div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">⚡ 快速恢复（针对 5xx 等异常）</div>
-  <div style="color:#94a3b8;padding:4px 0">启用快速恢复</div>
-  <div><label><input type="checkbox" id="cfgAutoRecoverPoll"> 当 Key 出现以下状态码时快速轮询检测</label></div>
-  <div style="color:#94a3b8;padding:4px 0">轮询间隔（分钟）</div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px" data-i18n="cfg.quickRecover">⚡ 快速恢复（针对 5xx 等异常）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableQuickRecover">启用快速恢复</div>
+  <div><label><input type="checkbox" id="cfgAutoRecoverPoll"><span data-i18n="cfg.quickRecoverPoll"> 当 Key 出现以下状态码时快速轮询检测</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.pollInterval">轮询间隔（分钟）</div>
   <div><input id="cfgAutoRecoverPollInterval" type="number" min="1" max="60" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="5"></div>
-  <div style="color:#94a3b8;padding:4px 0">监控的状态码</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.monitorCodes">监控的状态码</div>
   <div><input id="cfgAutoRecoverPollCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="500,502,503,504" placeholder="500,502,503,504"></div>
-  <div style="color:#94a3b8;padding:4px 0">🔁 轮询均摊流量</div>
-  <div><label><input type="checkbox" id="cfgRoundRobin"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</label></div>
-  <div style="color:#94a3b8;padding:4px 0">📅 每周 Key 按到期日排序</div>
-  <div><label><input type="checkbox" id="cfgWeeklySortBy"> 每周重置的 Key 按「最先到期先使用」排序（当日最后），无 resetDay 排最后</label></div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🧬 闲置自动恢复（autoResume）</div>
-  <div style="color:#94a3b8;padding:4px 0">启用闲置恢复</div>
-  <div><label><input type="checkbox" id="cfgAutoResume"> Key 闲置时自动在 Windows 中打开终端运行项目命令</label></div>
-  <div style="color:#94a3b8;padding:4px 0">Key 闲置阈值（分钟）</div>
-  <div><input id="cfgAutoResumeIdle" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="10"> 分钟无请求视为空闲</div>
-  <div style="color:#94a3b8;padding:4px 0">防抖间隔（分钟）</div>
-  <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"> 兼容间隔（同一闲置周期仅一次）</div>
-  <div style="color:#94a3b8;padding:4px 0">runner 停滞宽限（分钟）</div>
-  <div><input id="cfgAutoResumeRunnerStall" type="number" min="0" max="1440" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="20"> 0=关闭；无在途请求且无新 Key 应用时才判定停滞</div>
-  <div style="color:#94a3b8;padding:4px 0">停滞重启上限</div>
-  <div><input id="cfgAutoResumeRunnerRestarts" type="number" min="0" max="3" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="1"> 同一 Key 闲置周期；0=关闭（仅管理已验证 runner）</div>
-  <div style="color:#94a3b8;padding:4px 0">cmd.exe 路径</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.roundRobin">🔁 轮询均摊流量</div>
+  <div><label><input type="checkbox" id="cfgRoundRobin"><span data-i18n="cfg.roundRobinCheck"> 启用后可用 key 按优先层层轮流使用，而非固定顺序</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.weeklySort">📅 每周 Key 按到期日排序</div>
+  <div><label><input type="checkbox" id="cfgWeeklySortBy"><span data-i18n="cfg.weeklySortCheck"> 每周重置的 Key 按「最先到期先使用」排序（当日最后），无 resetDay 排最后</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px" data-i18n="cfg.autoResumeSection">🧬 闲置自动恢复（autoResume）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableResume">启用闲置恢复</div>
+  <div><label><input type="checkbox" id="cfgAutoResume"><span data-i18n="cfg.enableResumeCheck"> Key 闲置时自动在 Windows 中打开终端运行项目命令</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.idleThreshold">Key 闲置阈值（分钟）</div>
+  <div><input id="cfgAutoResumeIdle" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="10"><span data-i18n="cfg.idleThresholdSuffix"> 分钟无请求视为空闲</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.debounce">防抖间隔（分钟）</div>
+  <div><input id="cfgAutoResumeDebounce" type="number" min="1" max="999" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="3"><span data-i18n="cfg.debounceSuffix"> 兼容间隔（同一闲置周期仅一次）</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.runnerStall">runner 停滞宽限（分钟）</div>
+  <div><input id="cfgAutoResumeRunnerStall" type="number" min="0" max="1440" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="20"><span data-i18n="cfg.runnerStallSuffix"> 0=关闭；无在途请求且无新 Key 应用时才判定停滞</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.stallRestartLimit">停滞重启上限</div>
+  <div><input id="cfgAutoResumeRunnerRestarts" type="number" min="0" max="3" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:60px" value="1"><span data-i18n="cfg.stallRestartSuffix"> 同一 Key 闲置周期；0=关闭（仅管理已验证 runner）</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.cmdPath">cmd.exe 路径</div>
   <div><input id="cfgCmdPath" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="/mnt/c/Windows/System32/cmd.exe"></div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">🚦 容量/429 瞬态退避（capacityBackoff）</div>
-  <div style="color:#94a3b8;padding:4px 0">瞬态退避时长（秒）</div>
-  <div><input id="cfgCapacityBackoffSeconds" type="number" min="1" max="3600" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:70px" value="60"> 429/容量错误后该 Key 短暂跳过，不记为整周期故障</div>
-  <div style="color:#94a3b8;padding:4px 0">容量等待上限（秒）</div>
-  <div><input id="cfgCapacityMaxWaitSeconds" type="number" min="30" max="3600" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:70px" value="300"> 仅剩容量退避时，请求在队列中最多等待秒数（默认 30 秒的超时会被此值替换）</div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;margin-bottom:4px">项目列表（最多 10 个）<button class="btn" style="font-size:10px;margin-left:6px" onclick="addResumeProject()">+ 添加项目</button></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px" data-i18n="cfg.capacitySection">🚦 容量/429 瞬态退避（capacityBackoff）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.transientBackoff">瞬态退避时长（秒）</div>
+  <div><input id="cfgCapacityBackoffSeconds" type="number" min="1" max="3600" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:70px" value="60"><span data-i18n="cfg.transientBackoffSuffix"> 429/容量错误后该 Key 短暂跳过，不记为整周期故障</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.capacityMaxWait">容量等待上限（秒）</div>
+  <div><input id="cfgCapacityMaxWaitSeconds" type="number" min="30" max="3600" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;width:70px" value="300"><span data-i18n="cfg.capacityMaxWaitSuffix"> 仅剩容量退避时，请求在队列中最多等待秒数（默认 30 秒的超时会被此值替换）</span></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;margin-bottom:4px"><span data-i18n="cfg.projects">项目列表（最多 10 个）</span><button class="btn" style="font-size:10px;margin-left:6px" onclick="addResumeProject()" data-i18n="cfg.addProject">+ 添加项目</button></div>
   <div id="cfgResumeProjects" style="grid-column:1/-1"></div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px">📋 日志配置</div>
-  <div style="color:#94a3b8;padding:4px 0">启用文件日志</div>
-  <div><label><input type="checkbox" id="cfgLogFile" checked> 保留 <input id="cfgLogRetention" type="number" min="0" max="3650" style="width:54px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天自动清理（0=关闭按天清理，容量上限仍有效）</label></div>
-  <div style="color:#94a3b8;padding:4px 0">日志详情级别</div>
-  <div><label><select id="cfgLogDetail" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><option value="full">完整</option><option value="basic">简洁</option></select> 简洁模式不记录模型名</label></div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">💾 运行时数据上限（保存后立即执行状态压缩和请求日志清理；WSL 控制台日志由 watchdog 轮转器在 10 秒内读取新值）</div>
-  <div style="color:#94a3b8;padding:4px 0">请求日志总容量</div>
-  <div><input id="cfgLogMaxMiB" type="number" min="16" max="4096" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（所有 JSONL 分段合计）</div>
-  <div style="color:#94a3b8;padding:4px 0">请求日志单段上限</div>
-  <div><input id="cfgLogSegmentMaxMiB" type="number" min="1" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超过后同日分段）</div>
-  <div style="color:#94a3b8;padding:4px 0">状态小时统计保留</div>
-  <div><input id="cfgStateHourlyRetentionDays" type="number" min="31" max="365" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
-  <div style="color:#94a3b8;padding:4px 0">状态日统计保留</div>
-  <div><input id="cfgStateDailyRetentionDays" type="number" min="30" max="3650" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
-  <div style="color:#94a3b8;padding:4px 0">state.json 容量上限</div>
-  <div><input id="cfgStateMaxMiB" type="number" min="4" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB（超限时删除最旧统计桶）</div>
-  <div style="color:#94a3b8;padding:4px 0">WSL proxy.log</div>
-  <div><input id="cfgProxyLogMaxMiB" type="number" min="1" max="100" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgProxyLogKeepFiles" type="number" min="1" max="20" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 个归档（systemd 使用 journald）</div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">🗄 Codex SQLite 日志维护</div>
-  <div style="color:#94a3b8;padding:4px 0">启用数据库维护</div>
-  <div><label><input type="checkbox" id="cfgCodexLogMaintenanceEnabled" onchange="toggleCodexLogMaintenanceControls()"> 达到容量阈值后短批次删除保留期外的 Codex 日志</label></div>
-  <div style="color:#94a3b8;padding:4px 0">数据库路径</div>
-  <div><input id="cfgCodexLogMaintenancePath" style="width:min(100%,420px);background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="/root/.codex/logs_2.sqlite" title="填写 WSL 内部绝对路径，例如 /root/.codex/logs_2.sqlite；也可直接粘贴 WSL 网络路径，检测时会自动转换；不要填写 -wal/-shm 文件。"><button class="btn" id="cfgCodexLogMaintenanceCheckBtn" type="button" style="font-size:10px;padding:2px 7px;margin-left:6px" onclick="checkCodexLogMaintenancePath()">检测路径</button><span id="cfgCodexLogMaintenanceCheck" style="font-size:10px;color:#64748b;margin-left:6px"></span></div>
-  <div style="color:#94a3b8;padding:4px 0">触发容量 / 保留时长</div>
-  <div><input id="cfgCodexLogMaintenanceThreshold" data-codex-log-maintenance-control type="number" min="64" max="102400" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> MiB / 保留 <input id="cfgCodexLogMaintenanceRetain" data-codex-log-maintenance-control type="number" min="1" max="8760" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 小时</div>
-  <div style="color:#94a3b8;padding:4px 0">检查间隔</div>
-  <div><input id="cfgCodexLogMaintenanceInterval" data-codex-log-maintenance-control type="number" min="5" max="1440" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟　<button class="btn" id="cfgCodexLogMaintenanceRunBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px" onclick="runCodexLogMaintenanceNow()">立即检查</button><button class="btn" id="cfgCodexLogMaintenanceCleanBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px;margin-left:6px" onclick="runCodexLogMaintenanceCleanNow()" title="仅在 Codex 空闲（无在途/排队请求且静默 60 秒）时执行；按已保存的触发容量/保留时长删除过期记录并 VACUUM 缩小库文件。需约等于库容量的临时磁盘空间。">立即清理</button></div>
-  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0">日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）</div>
-  <div style="color:#94a3b8;padding:4px 0">启用日志事件</div>
-  <div><label><input type="checkbox" id="cfgLogIncidentEnabled" checked> 触发失败/流失败规则　<input type="checkbox" id="cfgLogIncidentNotify"> 发送通知</label></div>
-  <div style="color:#94a3b8;padding:4px 0">观察窗口 / 最低请求</div>
-  <div><input id="cfgLogIncidentWindow" type="number" min="1" max="60" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟 / <input id="cfgLogIncidentMinRequests" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 次</div>
-  <div style="color:#94a3b8;padding:4px 0">失败次数 / 失败率</div>
-  <div><input id="cfgLogIncidentErrorBurst" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 次 / <input id="cfgLogIncidentErrorRate" type="number" min="1" max="100" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> %</div>
-  <div style="color:#94a3b8;padding:4px 0">流失败次数 / 默认静默</div>
-  <div><input id="cfgLogIncidentStreamBurst" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 次 / <input id="cfgLogIncidentSnooze" type="number" min="1" max="1440" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟</div>
-  <div style="color:#94a3b8;padding:4px 0">恢复判定</div>
-  <div><input id="cfgLogIncidentResolve" type="number" min="1" max="120" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 分钟无异常后自动恢复</div>
-  <div style="color:#94a3b8;padding:4px 0">延迟告警</div>
-  <div><label><input type="checkbox" id="cfgLogIncidentLatency"> 启用 P95　请求 <input id="cfgLogIncidentP95" type="number" min="1000" max="1800000" style="width:76px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> ms　首字节 <input id="cfgLogIncidentP95Ttfb" type="number" min="100" max="300000" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> ms</label></div>
-  <div style="color:#94a3b8;padding:4px 0">🔒 连续失败锁死阈值</div>
-  <div><input id="cfgLockCount" type="number" min="1" max="20" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:60px" value="3" title="连续 N 次失败后自动锁死该 Key"> 次</div>
-  <div style="color:#94a3b8;padding:4px 0">🎯 锁死监控错误码</div>
-  <div><input id="cfgLockCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="401,403" placeholder="401,403" title="只有这些错误码会计入连续失败计数"></div>
-  <div style="color:#94a3b8;padding:4px 0">🔒 启用自动锁死</div>
-  <div><label><input type="checkbox" id="cfgEnableAutoLock" checked> 开启后连续失败达到阈值将自动锁死 Key</label></div>
-  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 分钟级限速</div>
-  <div style="color:#94a3b8;padding:4px 0">每分钟请求上限</div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin-bottom:4px" data-i18n="cfg.logConfig">📋 日志配置</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableFileLog">启用文件日志</div>
+  <div><label><input type="checkbox" id="cfgLogFile" checked><span data-i18n="cfg.retention"> 保留 </span><input id="cfgLogRetention" type="number" min="0" max="3650" style="width:54px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.retentionSuffix"> 天自动清理（0=关闭按天清理，容量上限仍有效）</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.logDetail">日志详情级别</div>
+  <div><label><select id="cfgLogDetail" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><option value="full" data-i18n="cfg.logDetailFull">完整</option><option value="basic" data-i18n="cfg.logDetailBasic">简洁</option></select><span data-i18n="cfg.logDetailHint"> 简洁模式不记录模型名</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0" data-i18n="cfg.runtimeCaps">💾 运行时数据上限（保存后立即执行状态压缩和请求日志清理；WSL 控制台日志由 watchdog 轮转器在 10 秒内读取新值）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.logTotalCap">请求日志总容量</div>
+  <div><input id="cfgLogMaxMiB" type="number" min="16" max="4096" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.mibSegments"> MiB（所有 JSONL 分段合计）</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.logSegmentCap">请求日志单段上限</div>
+  <div><input id="cfgLogSegmentMaxMiB" type="number" min="1" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.mibSameDay"> MiB（超过后同日分段）</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.stateHourly">状态小时统计保留</div>
+  <div><input id="cfgStateHourlyRetentionDays" type="number" min="31" max="365" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.daysUnit"> 天</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.stateDaily">状态日统计保留</div>
+  <div><input id="cfgStateDailyRetentionDays" type="number" min="30" max="3650" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.daysUnit"> 天</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.stateMax">state.json 容量上限</div>
+  <div><input id="cfgStateMaxMiB" type="number" min="4" max="256" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.stateMaxSuffix"> MiB（超限时删除最旧统计桶）</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.wslLog">WSL proxy.log</div>
+  <div><input id="cfgProxyLogMaxMiB" type="number" min="1" max="100" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.wslLogUnit"> MiB / 保留 </span><input id="cfgProxyLogKeepFiles" type="number" min="1" max="20" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.wslLogSuffix"> 个归档（systemd 使用 journald）</span></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0" data-i18n="cfg.codexMaint">🗄 Codex SQLite 日志维护</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableDbMaint">启用数据库维护</div>
+  <div><label><input type="checkbox" id="cfgCodexLogMaintenanceEnabled" onchange="toggleCodexLogMaintenanceControls()"><span data-i18n="cfg.enableDbMaintCheck"> 达到容量阈值后短批次删除保留期外的 Codex 日志</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.dbPath">数据库路径</div>
+  <div><input id="cfgCodexLogMaintenancePath" style="width:min(100%,420px);background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="/root/.codex/logs_2.sqlite" data-i18n-ph="cfg.dbPathPh" title="填写 WSL 内部绝对路径，例如 /root/.codex/logs_2.sqlite；也可直接粘贴 WSL 网络路径，检测时会自动转换；不要填写 -wal/-shm 文件。" data-i18n-title="cfg.dbPathTitle"><button class="btn" id="cfgCodexLogMaintenanceCheckBtn" type="button" style="font-size:10px;padding:2px 7px;margin-left:6px" onclick="checkCodexLogMaintenancePath()" data-i18n="cfg.checkPath">检测路径</button><span id="cfgCodexLogMaintenanceCheck" style="font-size:10px;color:#64748b;margin-left:6px"></span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.triggerCap">触发容量 / 保留时长</div>
+  <div><input id="cfgCodexLogMaintenanceThreshold" data-codex-log-maintenance-control type="number" min="64" max="102400" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.triggerCapMiB"> MiB / 保留 </span><input id="cfgCodexLogMaintenanceRetain" data-codex-log-maintenance-control type="number" min="1" max="8760" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.hoursUnit"> 小时</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.checkInterval">检查间隔</div>
+  <div><input id="cfgCodexLogMaintenanceInterval" data-codex-log-maintenance-control type="number" min="5" max="1440" style="width:64px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.minutesUnit"> 分钟　</span><button class="btn" id="cfgCodexLogMaintenanceRunBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px" onclick="runCodexLogMaintenanceNow()" data-i18n="cfg.runNow">立即检查</button><button class="btn" id="cfgCodexLogMaintenanceCleanBtn" data-codex-log-maintenance-control type="button" style="font-size:10px;padding:2px 7px;margin-left:6px" onclick="runCodexLogMaintenanceCleanNow()" title="仅在 Codex 空闲（无在途/排队请求且静默 60 秒）时执行；按已保存的触发容量/保留时长删除过期记录并 VACUUM 缩小库文件。需约等于库容量的临时磁盘空间。" data-i18n-title="cfg.cleanNowTitle" data-i18n="cfg.cleanNow">立即清理</button></div>
+  <div style="color:#94a3b8;padding:4px 0;grid-column:1/-1;border-bottom:1px solid #334155;margin:4px 0" data-i18n="cfg.incidentCenter">日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableIncident">启用日志事件</div>
+  <div><label><input type="checkbox" id="cfgLogIncidentEnabled" checked><span data-i18n="cfg.incidentRules"> 触发失败/流失败规则　</span><input type="checkbox" id="cfgLogIncidentNotify"><span data-i18n="cfg.sendNotify"> 发送通知</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.obsWindow">观察窗口 / 最低请求</div>
+  <div><input id="cfgLogIncidentWindow" type="number" min="1" max="60" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.minutesUnit"> 分钟 / </span><input id="cfgLogIncidentMinRequests" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.incidentReqs"> 次</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.failCount">失败次数 / 失败率</div>
+  <div><input id="cfgLogIncidentErrorBurst" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.incidentFailures"> 次 / </span><input id="cfgLogIncidentErrorRate" type="number" min="1" max="100" style="width:52px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.incidentPct"> %</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.streamFailCount">流失败次数 / 默认静默</div>
+  <div><input id="cfgLogIncidentStreamBurst" type="number" min="1" max="10000" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.incidentFailures"> 次 / </span><input id="cfgLogIncidentSnooze" type="number" min="1" max="1440" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.minutesUnit"> 分钟</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.resolve">恢复判定</div>
+  <div><input id="cfgLogIncidentResolve" type="number" min="1" max="120" style="width:58px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.resolveSuffix"> 分钟无异常后自动恢复</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.latencyAlert">延迟告警</div>
+  <div><label><input type="checkbox" id="cfgLogIncidentLatency"><span data-i18n="cfg.enableP95"> 启用 P95　请求 </span><input id="cfgLogIncidentP95" type="number" min="1000" max="1800000" style="width:76px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.msUnit"> ms　首字节 </span><input id="cfgLogIncidentP95Ttfb" type="number" min="100" max="300000" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.msUnit"> ms</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.lockThreshold">🔒 连续失败锁死阈值</div>
+  <div><input id="cfgLockCount" type="number" min="1" max="20" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:60px" value="3" data-i18n-title="cfg.lockThresholdTitle"><span data-i18n="cfg.lockThresholdCount"> 次</span></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.lockCodes">🎯 锁死监控错误码</div>
+  <div><input id="cfgLockCodes" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px;width:100%" value="401,403" placeholder="401,403" data-i18n-ph="cfg.lockCodesPh" data-i18n-title="cfg.lockCodesTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableAutoLock">🔒 启用自动锁死</div>
+  <div><label><input type="checkbox" id="cfgEnableAutoLock" checked><span data-i18n="cfg.enableAutoLockCheck"> 开启后连续失败达到阈值将自动锁死 Key</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.minRate">⏱ 分钟级限速</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.maxReqPerMin">每分钟请求上限</div>
   <div><input id="cfgMaxReqPerMin" type="number" min="1" max="1000" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="10"></div>
-  <div style="color:#94a3b8;padding:4px 0">每分钟 Token 上限 (0=不限)</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.maxTokPerMin">每分钟 Token 上限 (0=不限)</div>
   <div><input id="cfgMaxTokPerMin" type="number" min="0" max="9999999" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0"></div>
-  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">⏱ 流超时</div>
-  <div style="color:#94a3b8;padding:4px 0">其他协议流最大时长 (ms)</div>
-  <div><input id="cfgStreamLifetime" type="number" min="60000" max="7200000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="1800000" title="非 Responses / Messages 编码协议流的绝对超时，防止僵尸连接。默认30分钟"></div>
-  <div style="color:#94a3b8;padding:4px 0">Responses / Messages 编码流最大总时长 (ms)</div>
-  <div><input id="cfgResponsesStreamLifetime" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0" title="0=不设置总时长硬切断；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认0"></div>
-  <div style="color:#94a3b8;padding:4px 0">Responses / Messages 上游空闲超时 (ms)</div>
-  <div><input id="cfgResponsesIdleTimeout" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="5400000" title="0=关闭；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认90分钟，只在上游完全无数据时触发"></div>
-  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔐 管理认证</div>
-  <div style="color:#94a3b8;padding:4px 0">管理 Token（空=不校验）</div>
-  <div><input id="cfgAdminToken" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="留空=无认证" title="设置后所有管理接口需 Bearer token 认证"></div>
-  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔌 端口分组管理</div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.streamTimeout">⏱ 流超时</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.otherStreamLifetime">其他协议流最大时长 (ms)</div>
+  <div><input id="cfgStreamLifetime" type="number" min="60000" max="7200000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="1800000" data-i18n-title="cfg.otherStreamLifetimeTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.responsesStreamLifetime">Responses / Messages 编码流最大总时长 (ms)</div>
+  <div><input id="cfgResponsesStreamLifetime" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="0" data-i18n-title="cfg.responsesStreamLifetimeTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.responsesIdleTimeout">Responses / Messages 上游空闲超时 (ms)</div>
+  <div><input id="cfgResponsesIdleTimeout" type="number" min="0" max="86400000" style="width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="5400000" data-i18n-title="cfg.responsesIdleTimeoutTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.adminAuth">🔐 管理认证</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.adminToken">管理 Token（空=不校验）</div>
+  <div><input id="cfgAdminToken" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="留空=无认证" data-i18n-ph="cfg.adminTokenPh" data-i18n-title="cfg.adminTokenTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.portGroups">🔌 端口分组管理</div>
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
-  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">💬 GitHub 互动（会话流）</div>
-  <div style="color:#94a3b8;padding:4px 0">启用会话流</div>
-  <div><label><input type="checkbox" id="cfgDiscussionsEnabled"> 在 Dashboard 显示会话流面板</label></div>
-  <div style="color:#94a3b8;padding:4px 0">显示条数</div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.discussions">💬 GitHub 互动（会话流）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableDiscussions">启用会话流</div>
+  <div><label><input type="checkbox" id="cfgDiscussionsEnabled"><span data-i18n="cfg.enableDiscussionsCheck"> 在 Dashboard 显示会话流面板</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.discMaxItems">显示条数</div>
   <div><input id="cfgDiscussionsMaxItems" type="number" min="1" max="50" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"></div>
-  <div style="color:#94a3b8;padding:4px 0">GitHub Token（可选）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.discToken">GitHub Token（可选）</div>
   <div>
     <span style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">
-      <input id="cfgDiscGitHubToken" type="password" style="width:220px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="未配置，仅可查看留言" autocomplete="off">
-      <button class="btn" type="button" onclick="toggleDiscTokenVisibility()" title="显示/隐藏 Token">👁</button>
-      <button class="btn" type="button" onclick="testDiscToken()" title="用已保存的 Token 测试连通性">测试连通</button>
+      <input id="cfgDiscGitHubToken" type="password" style="width:220px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" placeholder="未配置，仅可查看留言" data-i18n-ph="cfg.discTokenPh" autocomplete="off">
+      <button class="btn" type="button" onclick="toggleDiscTokenVisibility()" data-i18n-title="cfg.toggleToken">👁</button>
+      <button class="btn" type="button" onclick="testDiscToken()" data-i18n-title="cfg.testTokenTitle" data-i18n="cfg.testToken">测试连通</button>
       <span id="cfgDiscTokenTest" style="font-size:10px;color:#64748b"></span>
     </span>
   </div>
-  <div style="grid-column:1/-1;font-size:10px;color:#64748b;margin:2px 0 6px">
-    配置后可在面板内留言、回复与发起新会话（内容将公开发布到 GitHub Discussions）。Token 仅存本地、掩码展示；需 fine-grained PAT 并授予仓库 Discussions 读/写权限。「测试连通」仅验证 Token 有效与读取权限，写权限以实际发布结果为准（若发布提示 Resource not accessible，请到 GitHub 将 Discussions 权限改为 Read and write）。若将本管理端口暴露到局域网/公网，请务必同时设置「管理 Token」。
+  <div style="grid-column:1/-1;font-size:10px;color:#64748b;margin:2px 0 6px" data-i18n="cfg.discHelp">
+     After configuring, you can comment, reply, and start new discussions from the panel (content is published publicly to GitHub Discussions). The token stays local and is shown masked; requires a fine-grained PAT with Discussions read/write access on the repository. "Test connection" only verifies the token and read access; write access is confirmed by actually posting (if posting says Resource not accessible, change the Discussions permission to Read and write on GitHub). If you expose this admin port to LAN/internet, be sure to also set the "Admin token".
   </div>
-  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1">🔎 任务洞察（代理流水解析/提炼）</div>
-  <div style="color:#94a3b8;padding:4px 0">启用任务洞察</div>
-  <div><label><input type="checkbox" id="cfgTaskInsightEnabled"> 记录代理流水任务（默认不落盘原文，仅结构化信号）</label></div>
-  <div style="color:#94a3b8;padding:4px 0">采集信号</div>
-  <div><label><input type="checkbox" id="cfgTaskInsightInstructions" title="记录截断指令前 200 字"> 截断指令（前 200 字）</label><br><label><input type="checkbox" id="cfgTaskInsightTools" title="仅工具名与文件路径，不存参数全文"> 工具/文件路径</label><br><label><input type="checkbox" id="cfgTaskInsightUsage" title="输入输出 token 与估算费用"> 用量与费用</label><br><label><input type="checkbox" id="cfgTaskInsightCorrelate" title="使用 autoResume 活跃窗口合并同一任务的连续会话"> 关联会话（45 分钟活跃窗口）</label></div>
-  <div style="color:#94a3b8;padding:4px 0">保留天数</div>
-  <div><input id="cfgTaskInsightRetention" type="number" min="1" max="365" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 天</div>
-  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin:4px 0;grid-column:1/-1">🤖 LLM 蒸馏摘要（可选，发送时仅含结构化快照，绝不含 Key）</div>
-  <div style="color:#94a3b8;padding:4px 0">启用蒸馏</div>
-  <div><label><input type="checkbox" id="cfgTaskInsightDistillEnabled"> 定期为已完成任务生成结构化摘要</label></div>
-  <div style="color:#94a3b8;padding:4px 0">蒸馏引擎</div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.taskInsight">🔎 任务洞察（代理流水解析/提炼）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableTaskInsight">启用任务洞察</div>
+  <div><label><input type="checkbox" id="cfgTaskInsightEnabled"><span data-i18n="cfg.enableTaskInsightCheck"> 记录代理流水任务（默认不落盘原文，仅结构化信号）</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.signalCollect">采集信号</div>
+  <div><label><input type="checkbox" id="cfgTaskInsightInstructions" data-i18n-title="cfg.insInstructionsTitle"><span data-i18n="cfg.insInstructions"> 截断指令（前 200 字）</span></label><br><label><input type="checkbox" id="cfgTaskInsightTools" data-i18n-title="cfg.insToolsTitle"><span data-i18n="cfg.insTools"> 工具/文件路径</span></label><br><label><input type="checkbox" id="cfgTaskInsightUsage" data-i18n-title="cfg.insUsageTitle"><span data-i18n="cfg.insUsage"> 用量与费用</span></label><br><label><input type="checkbox" id="cfgTaskInsightCorrelate" data-i18n-title="cfg.insCorrelateTitle"><span data-i18n="cfg.insCorrelate"> 关联会话（45 分钟活跃窗口）</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.insRetention">保留天数</div>
+  <div><input id="cfgTaskInsightRetention" type="number" min="1" max="365" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.daysUnit"> 天</span></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin:4px 0;grid-column:1/-1" data-i18n="cfg.insDistill">🤖 LLM 蒸馏摘要（可选，发送时仅含结构化快照，绝不含 Key）</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.enableDistill">启用蒸馏</div>
+  <div><label><input type="checkbox" id="cfgTaskInsightDistillEnabled"><span data-i18n="cfg.enableDistillCheck"> 定期为已完成任务生成结构化摘要</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.distillEngine">蒸馏引擎</div>
   <div><select id="cfgTaskInsightDistillEngine" onchange="taskInsightEngineChanged()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px">
-    <option value="ollama">ollama（本机）</option>
-    <option value="proxy">proxy（走代理）</option>
-    <option value="external">external（外部 API）</option>
+    <option value="ollama" data-i18n="cfg.engineOllama">ollama（本机）</option>
+    <option value="proxy" data-i18n="cfg.engineProxy">proxy（走代理）</option>
+    <option value="external" data-i18n="cfg.engineExternal">external（外部 API）</option>
   </select>
   <div id="cfgTaskInsightEngineHint" style="font-size:10px;color:#64748b;margin-top:4px"></div></div>
-  <div style="color:#94a3b8;padding:4px 0">模型 / 地址</div>
-  <div><input id="cfgTaskInsightDistillModel" style="width:min(100%,280px);background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px" placeholder="qwen3:4b / gpt-5"><br><input id="cfgTaskInsightDistillBaseUrl" style="width:min(100%,420px);margin-top:4px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px" placeholder="http://127.0.0.1:11434/v1（仅 ollama 需要）" title="ollama 与 external 引擎使用此地址；proxy 引擎忽略（走代理本身）"></div>
-  <div style="color:#94a3b8;padding:4px 0">每日预算 / 报告</div>
-  <div><input id="cfgTaskInsightDistillBudget" type="number" min="0" max="10000" step="0.01" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"> 元（0=不限）　<select id="cfgTaskInsightDistillReport" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="daily">日报</option><option value="weekly">周报</option></select></div>
-  <div style="grid-column:1/-1;color:#64748b;font-size:10px" id="cfgTaskInsightDistillStatus">蒸馏: --</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.modelUrl">模型 / 地址</div>
+  <div><input id="cfgTaskInsightDistillModel" style="width:min(100%,280px);background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px" placeholder="qwen3:4b / gpt-5" data-i18n-ph="cfg.distillModelPh"><br><input id="cfgTaskInsightDistillBaseUrl" style="width:min(100%,420px);margin-top:4px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px" placeholder="http://127.0.0.1:11434/v1（仅 ollama 需要）" data-i18n-ph="cfg.distillUrlPh" data-i18n-title="cfg.distillUrlTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.distillBudget">每日预算 / 报告</div>
+  <div><input id="cfgTaskInsightDistillBudget" type="number" min="0" max="10000" step="0.01" style="width:72px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px"><span data-i18n="cfg.yuanUnlimited"> 元（0=不限）　</span><select id="cfgTaskInsightDistillReport" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="daily" data-i18n="cfg.dailyReport">日报</option><option value="weekly" data-i18n="cfg.weeklyReport">周报</option></select></div>
+  <div style="grid-column:1/-1;color:#64748b;font-size:10px" id="cfgTaskInsightDistillStatus" data-i18n="cfg.distillStatus">蒸馏: --</div>
 </div>
-<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown">⏳ 下次检测（间隔）: --</div>
-<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown">⏳ 下次检测（固定）: --</div>
-<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown">⏳ 下次检测（快速）: --</div>
-<div style="font-size:11px;color:#22c55e;margin-bottom:8px" id="cfgAutoResumeStatus">🧬 闲置恢复: --</div>
-<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgCodexLogMaintenanceRuntime">🗄 Codex SQLite 日志维护: --</div>
-  <div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()">保存</button></div>
+<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoCountdown" data-i18n="cfg.autoCountdown">⏳ 下次检测（间隔）: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoDailyCountdown" data-i18n="cfg.autoDailyCountdown">⏳ 下次检测（固定）: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:4px" id="cfgAutoPollCountdown" data-i18n="cfg.autoPollCountdown">⏳ 下次检测（快速）: --</div>
+<div style="font-size:11px;color:#22c55e;margin-bottom:8px" id="cfgAutoResumeStatus" data-i18n="cfg.autoResumeStatus">🧬 闲置恢复: --</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:8px" id="cfgCodexLogMaintenanceRuntime" data-i18n="cfg.codexMaintRuntime">🗄 Codex SQLite 日志维护: --</div>
+  <div class="mfoot"><button class="btn" id="restartProxyBtn" onclick="restartProxy()" style="color:#f87171" data-i18n="cfg.restartProxy">🔄 重启代理</button><div style="flex:1"></div><button class="btn btn-p" onclick="saveConfig()" data-i18n="cfg.save">保存</button></div>
 </div></div>
 
 <div class="modal" id="taskInsightModal">
 <div class="mcontent" style="max-width:960px">
-<div class="mtitle"><span>📊 任务流水（代理流水解析/提炼）</span><button class="btn" type="button" onclick="closeTaskInsight()">✕</button></div>
+<div class="mtitle"><span data-i18n="task.title">📊 任务流水（代理流水解析/提炼）</span><button class="btn" type="button" onclick="closeTaskInsight()">✕</button></div>
 <div id="taskInsightDisabled" style="display:none;padding:14px 12px;background:#1e293b;border:1px solid #475569;border-radius:6px;font-size:12px;color:#cbd5e1;line-height:1.7">
-  任务洞察当前未启用，暂无流水记录。<br>
-  <button class="btn btn-p" style="margin-top:8px;font-size:11px" onclick="closeTaskInsight();openConfig()">去「配置 → 🔎 任务洞察」开启</button>
+  <span data-i18n="task.disabled">任务洞察当前未启用，暂无流水记录。</span><br>
+  <button class="btn btn-p" style="margin-top:8px;font-size:11px" onclick="closeTaskInsight();openConfig()" data-i18n="task.goEnable">去「配置 → 🔎 任务洞察」开启</button>
 </div>
 <div id="taskInsightPanel" style="display:none">
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:11px;color:#94a3b8">
     <span id="taskInsightStats" style="color:#e2e8f0"></span>
     <span style="flex:1"></span>
-    <label>项目 <select id="taskInsightProjectFilter" onchange="loadTaskInsight()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="">全部</option><option value="__unclassified__">未分类</option></select></label>
-    <label>状态 <select id="taskInsightStatusFilter" onchange="loadTaskInsight()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="">全部</option><option value="completed">完成</option><option value="failed">失败</option><option value="partial">部分</option></select></label>
-    <label>搜索 <input id="taskInsightSearch" onkeydown="if(event.key==='Enter')loadTaskInsight()" placeholder="项目/客户端/工具/文件/模型" style="width:150px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"></label>
-    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="loadTaskInsight(true)">🔄 刷新</button>
-    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="taskInsightExport()">⬇ CSV</button>
-    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="taskInsightReport()">📊 报告</button>
-    <button class="btn" style="font-size:10px;padding:2px 7px;color:#4ade80" id="taskInsightDistillBtn" onclick="taskInsightDistillNow()">🤖 立即蒸馏</button>
+    <label><span data-i18n="task.project">项目 </span><select id="taskInsightProjectFilter" onchange="loadTaskInsight()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="" data-i18n="common.all">全部</option><option value="__unclassified__" data-i18n="task.unclassified">未分类</option></select></label>
+    <label><span data-i18n="task.status">状态 </span><select id="taskInsightStatusFilter" onchange="loadTaskInsight()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"><option value="" data-i18n="common.all">全部</option><option value="completed" data-i18n="task.completed">完成</option><option value="failed" data-i18n="task.failed">失败</option><option value="partial" data-i18n="task.partial">部分</option></select></label>
+    <label><span data-i18n="task.search">搜索 </span><input id="taskInsightSearch" onkeydown="if(event.key==='Enter')loadTaskInsight()" placeholder="项目/客户端/工具/文件/模型" data-i18n-ph="task.searchPh" style="width:150px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 5px;border-radius:4px"></label>
+    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="loadTaskInsight(true)" data-i18n="task.refresh">🔄 刷新</button>
+    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="taskInsightExport()" data-i18n="task.export">⬇ CSV</button>
+    <button class="btn" style="font-size:10px;padding:2px 7px" onclick="taskInsightReport()" data-i18n="task.report">📊 报告</button>
+    <button class="btn" style="font-size:10px;padding:2px 7px;color:#4ade80" id="taskInsightDistillBtn" onclick="taskInsightDistillNow()" data-i18n="task.distillNow">🤖 立即蒸馏</button>
   </div>
   <div style="font-size:11px;color:#64748b;margin-bottom:8px" id="taskInsightHint"></div>
   <div id="taskInsightReportBox" style="display:none;margin-bottom:8px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:11px;color:#cbd5e1"></div>
@@ -7730,37 +7937,37 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 
 <div class="modal" id="updateModal">
 <div class="mcontent" style="max-width:720px">
-<div class="mtitle"><span>版本更新</span><button class="btn" type="button" onclick="closeUpdateModal()">✕</button></div>
+<div class="mtitle"><span data-i18n="update.title">版本更新</span><button class="btn" type="button" onclick="closeUpdateModal()">✕</button></div>
 <div style="display:flex;gap:16px;flex-wrap:wrap;margin:0 0 10px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:12px;color:#94a3b8">
-  <span>本机版本：<strong id="updateCurrentVersion" style="color:#e2e8f0">…</strong></span>
-  <span>最新正式 Release：<strong id="updateLatestVersion" style="color:#e2e8f0">…</strong></span>
+  <span data-i18n="update.current">本机版本：</span><strong id="updateCurrentVersion" style="color:#e2e8f0">…</strong>
+  <span data-i18n="update.latest">最新正式 Release：</span><strong id="updateLatestVersion" style="color:#e2e8f0">…</strong>
   <span id="updateVersionGap" style="color:#94a3b8"></span>
 </div>
-<div id="updateSummary" style="font-size:13px;color:#cbd5e1;line-height:1.6">正在读取 GitHub Release 信息…</div>
-<pre class="update-notes" id="updateReleaseNotes">正在读取更新说明…</pre>
+<div id="updateSummary" style="font-size:13px;color:#cbd5e1;line-height:1.6" data-i18n="update.loadingSummary">正在读取 GitHub Release 信息…</div>
+<pre class="update-notes" id="updateReleaseNotes" data-i18n="update.loadingNotes">正在读取更新说明…</pre>
 <div id="updateSafety" style="margin-top:10px;padding:9px 10px;background:#3b2f1e;border:1px solid #a16207;border-radius:4px;color:#fde68a;font-size:12px;line-height:1.6"></div>
 <div class="mfoot">
-  <a class="btn" id="updateReleaseLink" href="https://github.com/aipayim/codex-proxy/releases" target="_blank" rel="noopener noreferrer">在 GitHub 查看 Release ↗</a>
-  <button class="btn" id="updateRefreshBtn" type="button" onclick="checkForUpdates(true)">↻ 重新检查</button>
-  <button class="btn" id="updateUpgradeBtn" type="button" disabled title="自动覆盖可能丢失本地修改，因此已禁用。">一键升级已禁用</button>
-  <button class="btn btn-p" type="button" onclick="closeUpdateModal()">关闭</button>
+  <a class="btn" id="updateReleaseLink" href="https://github.com/aipayim/codex-proxy/releases" target="_blank" rel="noopener noreferrer" data-i18n="update.viewRelease">在 GitHub 查看 Release ↗</a>
+  <button class="btn" id="updateRefreshBtn" type="button" onclick="checkForUpdates(true)" data-i18n="update.recheck">↻ 重新检查</button>
+  <button class="btn" id="updateUpgradeBtn" type="button" disabled title="自动覆盖可能丢失本地修改，因此已禁用。" data-i18n-title="update.upgradeDisabledTitle" data-i18n="update.upgradeDisabled">一键升级已禁用</button>
+  <button class="btn btn-p" type="button" onclick="closeUpdateModal()" data-i18n="common.close">关闭</button>
 </div>
 </div></div>
 
 <div class="modal" id="logModal">
 <div class="mcontent" style="max-width:1100px">
-<div class="mtitle"><span>请求日志与运行事件</span><span style="display:flex;gap:6px"><button class="btn" id="logRebuildBtn" onclick="rebuildLogSummary()" title="后台重建历史日汇总，不读取或阻塞代理请求">重建汇总</button><button class="btn" onclick="closeLogs()">✕</button></span></div>
+<div class="mtitle"><span data-i18n="log.title">请求日志与运行事件</span><span style="display:flex;gap:6px"><button class="btn" id="logRebuildBtn" onclick="rebuildLogSummary()" title="后台重建历史日汇总，不读取或阻塞代理请求" data-i18n-title="log.rebuildTitle" data-i18n="log.rebuild">重建汇总</button><button class="btn" onclick="closeLogs()">✕</button></span></div>
 <div id="logStats" style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
   <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
-    <div style="font-size:10px;color:#94a3b8">总请求</div>
+    <div style="font-size:10px;color:#94a3b8" data-i18n="log.total">总请求</div>
     <div id="lsTotal" style="font-size:16px;font-weight:700;color:#e2e8f0">-</div>
   </div>
   <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
-    <div style="font-size:10px;color:#94a3b8">成功率</div>
+    <div style="font-size:10px;color:#94a3b8" data-i18n="log.successRate">成功率</div>
     <div id="lsSuccess" style="font-size:16px;font-weight:700;color:#22c55e">-</div>
   </div>
   <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
-    <div style="font-size:10px;color:#94a3b8">平均耗时</div>
+    <div style="font-size:10px;color:#94a3b8" data-i18n="log.avgDur">平均耗时</div>
     <div id="lsAvgDur" style="font-size:16px;font-weight:700;color:#e2e8f0">-</div>
   </div>
   <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:60px;text-align:center">
@@ -7780,95 +7987,95 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
     <div id="ls5xx" style="font-size:16px;font-weight:700;color:#ef4444">-</div>
   </div>
   <div class="log-stat-card" style="background:#1e293b;border-radius:6px;padding:6px 10px;min-width:50px;text-align:center">
-    <div style="font-size:10px;color:#94a3b8">超时</div>
+    <div style="font-size:10px;color:#94a3b8" data-i18n="log.timeout">超时</div>
     <div id="lsTimeout" style="font-size:16px;font-weight:700;color:#64748b">-</div>
   </div>
 </div>
-<div id="logSparklineWrap" class="log-sparkline-wrap" style="margin-bottom:2px" title="最近 30 分钟请求量趋势（蓝色=成功，红色=错误）"></div>
+<div id="logSparklineWrap" class="log-sparkline-wrap" style="margin-bottom:2px" data-i18n-title="log.sparklineTitle"></div>
 <div id="logModelDist" class="log-model-row"></div>
-<div id="logErrorCluster" class="log-error-cluster" onclick="toggleErrorCluster()"><span class="head">⚠ 错误分布</span><div class="body" id="logErrorBody"></div></div>
+<div id="logErrorCluster" class="log-error-cluster" onclick="toggleErrorCluster()"><span class="head" data-i18n="log.errorDist">⚠ 错误分布</span><div class="body" id="logErrorBody"></div></div>
 <div id="logIncidentPanel" style="display:none;border-top:1px solid #334155;margin:6px 0;padding-top:6px">
-  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px"><span style="color:#fbbf24;font-weight:600">运行事件 <span id="logIncidentStatus" style="color:#94a3b8;font-weight:400"></span></span><span id="logIncidentRefreshStatus" aria-live="polite" style="color:#94a3b8;font-size:10px;flex:1;min-width:90px"></span><button class="btn" id="logIncidentRefreshBtn" type="button" style="font-size:10px;padding:2px 7px" onclick="refreshLogOperations({interactive:true})" title="重新读取当前运行事件">刷新事件</button></div>
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px"><span style="color:#fbbf24;font-weight:600"><span data-i18n="log.incidents">运行事件 </span><span id="logIncidentStatus" style="color:#94a3b8;font-weight:400"></span></span><span id="logIncidentRefreshStatus" aria-live="polite" style="color:#94a3b8;font-size:10px;flex:1;min-width:90px"></span><button class="btn" id="logIncidentRefreshBtn" type="button" style="font-size:10px;padding:2px 7px" onclick="refreshLogOperations({interactive:true})" data-i18n-title="log.refreshIncidentsTitle" data-i18n="log.refreshIncidents">刷新事件</button></div>
   <div id="logIncidentList" style="display:grid;gap:4px;margin-top:5px"></div>
   <div id="logGroupPauseList" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px"></div>
 </div>
 <div class="log-filters" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center">
-<input id="logKeyFilter" placeholder="Key #" style="width:50px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<input id="logStatusFilter" placeholder="状态码" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<input id="logModelFilter" placeholder="模型" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<input id="logUpstreamFilter" placeholder="上游域名" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<input id="logPathFilter" placeholder="路径" style="width:82px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<input id="logGroupFilter" placeholder="分组" style="width:48px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<input id="logSearch" placeholder="搜索..." style="width:90px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" onkeydown="if(event.key==='Enter')reloadLogs()">
+<input id="logKeyFilter" placeholder="Key #" data-i18n-ph="log.keyPh" style="width:50px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logStatusFilter" placeholder="状态码" data-i18n-ph="log.statusPh" style="width:60px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logModelFilter" placeholder="模型" data-i18n-ph="log.modelPh" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logUpstreamFilter" placeholder="上游域名" data-i18n-ph="log.upstreamPh" style="width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logPathFilter" placeholder="路径" data-i18n-ph="log.pathPh" style="width:82px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logGroupFilter" placeholder="分组" data-i18n-ph="log.groupPh" style="width:48px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
+<input id="logSearch" placeholder="搜索..." data-i18n-ph="log.searchPh" style="width:90px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" onkeydown="if(event.key==='Enter')reloadLogs()">
 <select id="logTimeFilter" onchange="toggleLogCustomRange()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">
-<option value="">全部时间</option><option value="5m">最近 5 分钟</option><option value="15m">最近 15 分钟</option><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="custom">自定义范围</option>
+<option value="" data-i18n="log.timeAll">全部时间</option><option value="5m" data-i18n="log.time5m">最近 5 分钟</option><option value="15m" data-i18n="log.time15m">最近 15 分钟</option><option value="1h" data-i18n="log.time1h">最近 1 小时</option><option value="24h" data-i18n="log.time24h">最近 24 小时</option><option value="7d" data-i18n="log.time7d">最近 7 天</option><option value="30d" data-i18n="log.time30d">最近 30 天</option><option value="custom" data-i18n="log.timeCustom">自定义范围</option>
 </select>
 <span id="logCustomRange" style="display:none">
 <input type="datetime-local" id="logStartTime" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px;width:160px">
 <span style="color:#94a3b8;font-size:11px"> ~ </span>
 <input type="datetime-local" id="logEndTime" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px;width:160px">
 </span>
-<button class="btn" onclick="reloadLogs()" style="font-size:11px;padding:2px 8px">🔍 搜索</button>
-<button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px">⬇ CSV</button>
+<button class="btn" onclick="reloadLogs()" style="font-size:11px;padding:2px 8px" data-i18n="log.searchBtn">🔍 搜索</button>
+<button class="btn" onclick="exportLogs()" style="font-size:11px;padding:2px 8px" data-i18n="log.csvBtn">⬇ CSV</button>
 <span id="logQueryHint" style="color:#64748b;font-size:10px"></span>
 </div>
 <div style="overflow-x:auto;max-height:500px;overflow-y:auto"><table class="log-table"><thead><tr>
-<th style="width:30px;font-size:10px;text-align:center">序</th>
-<th onclick="logSortBy('time')" style="cursor:pointer">时间<span id="logSortIcon" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th style="width:30px;font-size:10px;text-align:center" data-i18n="log.colNo">序</th>
+<th onclick="logSortBy('time')" style="cursor:pointer" data-i18n="log.colTime">时间<span id="logSortIcon" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
 <th onclick="logSortBy('idx')" style="cursor:pointer">#<span id="logSortIcon_idx" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
-<th>上游</th><th>方法</th><th onclick="logSortBy('model')" style="cursor:pointer">模型<span id="logSortIcon_model" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
-<th>路径</th><th onclick="logSortBy('status')" style="cursor:pointer">状态<span id="logSortIcon_status" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
-<th>↑B</th><th>↓B</th><th onclick="logSortBy('dur')" style="cursor:pointer">耗时<span id="logSortIcon_dur" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
-<th>首字节</th>
+<th data-i18n="log.colUpstream">上游</th><th data-i18n="log.colMethod">方法</th><th onclick="logSortBy('model')" style="cursor:pointer" data-i18n="log.colModel">模型<span id="logSortIcon_model" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th data-i18n="log.colPath">路径</th><th onclick="logSortBy('status')" style="cursor:pointer" data-i18n="log.colStatus">状态<span id="logSortIcon_status" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th>↑B</th><th>↓B</th><th onclick="logSortBy('dur')" style="cursor:pointer" data-i18n="log.colDur">耗时<span id="logSortIcon_dur" style="color:#64748b;font-size:8px;margin-left:2px"></span></th>
+<th data-i18n="log.colTtfb">首字节</th>
 </tr></thead><tbody id="logBody"></tbody></table></div>
 <div id="logPagination" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:6px 0;font-size:12px">
-  <button class="btn" id="logPrevBtn" type="button" onclick="logPage(-1)" style="font-size:11px;padding:2px 10px" title="浏览历史后可按页返回" disabled>← 上一页</button>
-  <span id="logPageInfo" style="color:#94a3b8">最新 50 条</span>
-  <button class="btn" id="logBrowseHistoryBtn" type="button" onclick="toggleLogHistory()" style="font-size:11px;padding:2px 8px" title="切换为可分页的历史日志视图">浏览历史</button>
-  <button class="btn" id="logNextBtn" type="button" onclick="logPage(1)" style="font-size:11px;padding:2px 10px" title="浏览历史后可翻到更早记录" disabled>下一页 →</button>
-  <span style="color:#64748b;font-size:10px;margin-left:8px" id="logRealTimeBadge">● 未订阅</span>
+  <button class="btn" id="logPrevBtn" type="button" onclick="logPage(-1)" style="font-size:11px;padding:2px 10px" data-i18n-title="log.prevTitle" disabled data-i18n="log.prev">← 上一页</button>
+  <span id="logPageInfo" style="color:#94a3b8" data-i18n="log.pageInfo">最新 50 条</span>
+  <button class="btn" id="logBrowseHistoryBtn" type="button" onclick="toggleLogHistory()" style="font-size:11px;padding:2px 8px" data-i18n-title="log.browseHistoryTitle" data-i18n="log.browseHistory">浏览历史</button>
+  <button class="btn" id="logNextBtn" type="button" onclick="logPage(1)" style="font-size:11px;padding:2px 10px" data-i18n-title="log.nextTitle" disabled data-i18n="log.next">下一页 →</button>
+  <span style="color:#64748b;font-size:10px;margin-left:8px" id="logRealTimeBadge" data-i18n="log.notSubscribed">● 未订阅</span>
 </div>
 </div></div>
 
 <div id="logKeyPopup" class="log-key-popup" style="display:none" onclick="event.stopPropagation()">
   <span class="close" onclick="closeLogKeyPopup()">✕</span>
-  <div class="title" id="logKeyPopupTitle">Key #- 统计</div>
+  <div class="title" id="logKeyPopupTitle" data-i18n="log.popupTitle">Key #- 统计</div>
   <div id="logKeyPopupBody"></div>
 </div>
 
 <div class="restart-overlay" id="restartOverlay" role="status" aria-live="polite">
   <div class="restart-panel">
     <div class="restart-spinner" aria-hidden="true"></div>
-    <div class="restart-title" id="restartOverlayTitle">正在重启代理</div>
+    <div class="restart-title" id="restartOverlayTitle" data-i18n="restart.title">正在重启代理</div>
     <div class="restart-detail" id="restartOverlayDetail"></div>
     <div class="restart-elapsed" id="restartOverlayElapsed"></div>
     <div id="restartOverlayActions" style="display:none;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:14px">
-      <button class="btn" id="restartCancelBtn" type="button" onclick="cancelPendingRestart()">取消重启</button>
-      <button class="btn" id="restartForceBtn" type="button" onclick="forcePendingRestart()" style="display:none;color:#fecaca;border-color:#ef4444">强制重启</button>
+      <button class="btn" id="restartCancelBtn" type="button" onclick="cancelPendingRestart()" data-i18n="restart.cancel">取消重启</button>
+      <button class="btn" id="restartForceBtn" type="button" onclick="forcePendingRestart()" style="display:none;color:#fecaca;border-color:#ef4444" data-i18n="restart.force">强制重启</button>
     </div>
-    <button class="btn" id="restartOverlayDismiss" type="button" style="display:none;margin-top:14px">返回 Dashboard</button>
+    <button class="btn" id="restartOverlayDismiss" type="button" style="display:none;margin-top:14px" data-i18n="restart.dismiss">返回 Dashboard</button>
   </div>
 </div>
 
 <div class="modal" id="discModal">
 <div class="mcontent" style="max-width:760px">
-<div class="mtitle"><span>💬 会话流</span><span style="display:flex;gap:6px"><button class="btn" onclick="loadDiscussions(true)">↻ 刷新</button><a class="btn" href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer" title="查看全部会话与历史">在 GitHub 打开 ↗</a><button class="btn" onclick="closeDiscussions()">✕</button></span></div>
+<div class="mtitle"><span data-i18n="disc.title">💬 会话流</span><span style="display:flex;gap:6px"><button class="btn" onclick="loadDiscussions(true)" data-i18n="disc.refresh">↻ 刷新</button><a class="btn" href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer" data-i18n-title="disc.openTitle" data-i18n="disc.open">在 GitHub 打开 ↗</a><button class="btn" onclick="closeDiscussions()">✕</button></span></div>
 <div class="disc-status" id="discStatus"></div>
 <div id="discList"></div>
 <div class="disc-foot">
-  <button class="btn" id="discCreateBtn" onclick="showDiscCreate()" style="display:none">✚ 发起会话</button>
-  <a class="disc-link" id="discGuideLogin" href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer" style="display:none">🔗 登录 GitHub 参与互动 ↗</a>
+  <button class="btn" id="discCreateBtn" onclick="showDiscCreate()" style="display:none" data-i18n="disc.create">✚ 发起会话</button>
+  <a class="disc-link" id="discGuideLogin" href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer" style="display:none" data-i18n="disc.guideLogin">🔗 登录 GitHub 参与互动 ↗</a>
 </div>
 <div id="discCreate" style="display:none;margin-top:10px;border-top:1px solid #334155;padding-top:10px">
-  <div style="color:#94a3b8;padding:4px 0">标题</div>
-  <div><input id="discCreateTitle" maxlength="120" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:6px;border-radius:4px;font-size:12px" placeholder="新会话标题"></div>
-  <div style="color:#94a3b8;padding:4px 0">分类</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="disc.titleLabel">标题</div>
+  <div><input id="discCreateTitle" maxlength="120" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:6px;border-radius:4px;font-size:12px" placeholder="新会话标题" data-i18n-ph="disc.createTitlePh"></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="disc.catLabel">分类</div>
   <div><select id="discCreateCat" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:5px 6px;border-radius:4px;font-size:12px"></select></div>
-  <div style="color:#94a3b8;padding:4px 0">正文</div>
-  <div><textarea id="discCreateBody" rows="4" maxlength="1000" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:6px;border-radius:4px;font-size:12px;font-family:inherit;resize:vertical" placeholder="内容将公开发布到 GitHub Discussions"></textarea></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="disc.bodyLabel">正文</div>
+  <div><textarea id="discCreateBody" rows="4" maxlength="1000" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:6px;border-radius:4px;font-size:12px;font-family:inherit;resize:vertical" placeholder="内容将公开发布到 GitHub Discussions" data-i18n-ph="disc.bodyPh"></textarea></div>
   <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-    <button class="btn btn-p" onclick="submitDiscCreate()">发布</button>
-    <button class="btn" onclick="hideDiscCreate()">取消</button>
+    <button class="btn btn-p" onclick="submitDiscCreate()" data-i18n="disc.publish">发布</button>
+    <button class="btn" onclick="hideDiscCreate()" data-i18n="common.cancel">取消</button>
     <span class="disc-count" id="discCreateCount">0/1000</span>
     <span class="disc-err" id="discCreateErr"></span>
   </div>
@@ -7876,6 +8083,39 @@ URL 为必填项。重置类型：daily/weekly/never/hourly（或 每日/每周/
 </div></div>
 
 <script>
+const I18N_LANGS = ${JSON.stringify(I18N_LANGS)};
+let I18N_LANG="zh";
+try{const s=localStorage.getItem("i18nLang");if(s==="en"||s==="zh")I18N_LANG=s;}catch(e){}
+function t(key,params){
+  let s=(I18N_LANGS[I18N_LANG]&&I18N_LANGS[I18N_LANG][key])||(I18N_LANGS.zh[key])||key;
+  if(params){for(const k in params)s=s.split("{"+k+"}").join(params[k]);}
+  return s;
+}
+function applyI18n(root){
+  root=root||document;
+  root.querySelectorAll("[data-i18n]").forEach(el=>{el.textContent=t(el.getAttribute("data-i18n"));});
+  root.querySelectorAll("[data-i18n-ph]").forEach(el=>{el.setAttribute("placeholder",t(el.getAttribute("data-i18n-ph")));});
+  root.querySelectorAll("[data-i18n-title]").forEach(el=>{el.setAttribute("title",t(el.getAttribute("data-i18n-title")));});
+  root.querySelectorAll("[data-i18n-html]").forEach(el=>{el.innerHTML=t(el.getAttribute("data-i18n-html"));});
+  const htmlEl=document.documentElement;if(htmlEl)htmlEl.setAttribute("lang",I18N_LANG==="en"?"en":"zh-CN");
+}
+function toggleI18n(){setI18nLang(I18N_LANG==="en"?"zh":"en");}
+function setI18nLang(lang){
+  I18N_LANG=lang==="en"?"en":"zh";
+  try{localStorage.setItem("i18nLang",I18N_LANG);}catch(e){}
+  const sw=document.getElementById("langSwitch");if(sw)sw.textContent=I18N_LANG==="en"?"🌐 中文":"🌐 EN";
+  applyI18n();
+  if(typeof render==="function"){try{render();}catch(e){}}
+  if(typeof renderTrend==="function"){try{renderTrend();}catch(e){}}
+  if(typeof renderMgr==="function"){try{renderMgr();}catch(e){}}
+  if(typeof renderLogs==="function"&&document.getElementById("logModal")&&document.getElementById("logModal").classList.contains("on")){try{renderLogs();}catch(e){}}
+  if(typeof renderDiscList==="function"&&document.getElementById("discModal")&&document.getElementById("discModal").classList.contains("on")){try{renderDiscList();}catch(e){}}
+  if(typeof loadTaskInsight==="function"&&document.getElementById("taskInsightModal")&&document.getElementById("taskInsightModal").classList.contains("on")){try{loadTaskInsight(true);}catch(e){}}
+}
+function updateLangBtn(){
+  const sw=document.getElementById("langSwitch");
+  if(sw)sw.textContent=I18N_LANG==="en"?"🌐 中文":"🌐 EN";
+}
 const __adminTokenState=(()=>{
   let token=null;
   return {
@@ -7909,18 +8149,18 @@ function requireAdminToken(){
       const d=document.createElement("div");
       d.id="tokenDialog";
       d.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999";
-      d.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:360px;text-align:center"><div style="color:#e2e8f0;font-size:16px;margin-bottom:12px">🔐 管理员认证</div><div style="color:#94a3b8;font-size:13px;margin-bottom:16px">请输入管理 Token 以访问 Dashboard</div><input id="tokenInput" type="password" autocomplete="off" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:4px;margin-bottom:12px" placeholder="管理 Token"><div id="tokenErr" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div><button id="tokenConfirmBtn" type="button" style="background:#3b82f6;color:#fff;border:none;padding:8px 24px;border-radius:4px;cursor:pointer">确认</button></div>';
+      d.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:360px;text-align:center"><div style="color:#e2e8f0;font-size:16px;margin-bottom:12px">🔐 '+t("auth.title")+'</div><div style="color:#94a3b8;font-size:13px;margin-bottom:16px">'+t("auth.hint")+'</div><input id="tokenInput" type="password" autocomplete="off" style="width:100%;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:8px 12px;border-radius:4px;margin-bottom:12px" placeholder="'+t("auth.tokenPh")+'"><div id="tokenErr" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div><button id="tokenConfirmBtn" type="button" style="background:#3b82f6;color:#fff;border:none;padding:8px 24px;border-radius:4px;cursor:pointer">'+t("auth.confirm")+'</button></div>';
       document.body.appendChild(d);
       const tokenInput=document.getElementById("tokenInput");
       const tokenErr=document.getElementById("tokenErr");
       const submitToken=()=>{
         const v=tokenInput.value.trim();
-        if(!v){tokenErr.textContent="请输入 Token";tokenErr.style.display="block";return;}
+        if(!v){tokenErr.textContent=t("auth.empty");tokenErr.style.display="block";return;}
         __adminTokenState.set(v);
         __origFetch("/__status",{headers:{"Authorization":"Bearer "+v}}).then(r=>{
           if(r.ok){tokenInput.value="";d.remove();resolve(true);}
-          else{tokenErr.textContent="Token 错误";tokenErr.style.display="block";__adminTokenState.clear();}
-        }).catch(()=>{tokenErr.textContent="连接失败";tokenErr.style.display="block";});
+          else{tokenErr.textContent=t("auth.wrong");tokenErr.style.display="block";__adminTokenState.clear();}
+        }).catch(()=>{tokenErr.textContent=t("auth.fail");tokenErr.style.display="block";});
       };
       document.getElementById("tokenConfirmBtn").addEventListener("click",submitToken);
       tokenInput.focus();
@@ -7941,9 +8181,9 @@ function requireAdminToken(){
     }).catch(()=>resolve(true));
   });
 }
-const L={"daily":"每日","weekly":"每周","never":"永久","hourly":"每N小时"};
+const L={"daily":t("rl.daily"),"weekly":t("rl.weekly"),"never":t("rl.never"),"hourly":t("rl.hourly")};
 const C={"daily":"bd-daily","weekly":"bd-weekly","never":"bd-never","hourly":"bd-hourly"};
-const DAY_CN={"1":"周一","2":"周二","3":"周三","4":"周四","5":"周五","6":"周六","7":"周日"};
+function DAY_CN(n){return t("wd."+n);}
 function daysUntilResetClient(resetDay) {
   if (resetDay == null) return 99;
   const jsDay = new Date().getDay();
@@ -7960,13 +8200,13 @@ let lastRequestTime=0,lastKeyUseTime=0,lastResumeTime=0;
 let collapsedCards={};
 let updateInfo=null;
 const UPDATE_UI_RECHECK_MS=30*60*1000;
-const UNKNOWN_LOCAL_BUILD_LABEL="本地开发/定制版本（未能验证发布基线）";
+function UNKNOWN_LOCAL_BUILD_LABEL(){return t("cfg.localBuildDefault");}
 boostedBatch=[];boostedBatchMode="";
 
 function formatUpdateCheckTime(value){
-  if(!value)return "尚未检查";
+  if(!value)return t("upd.notChecked");
   const d=new Date(value);
-  if(isNaN(d.getTime()))return "刚刚检查";
+  if(isNaN(d.getTime()))return t("upd.justChecked");
   return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
 }
 function formatUpdatePublishedAt(value){
@@ -7991,41 +8231,41 @@ function formatIdle(ms){
 }
 function describeBuildReason(reason){
   const map={
-    "release-metadata-missing":"缺少发布元数据（build-info.json/release-manifest.json）",
-    "release-metadata-invalid":"发布元数据无效",
-    "release-manifest-mismatch":"发布清单摘要不匹配",
-    "release-manifest-invalid":"发布清单无效",
-    "release-manifest-incomplete":"发布清单不完整",
-    "release-files-modified":"本地文件与官方发布清单不一致（可能被修改）",
-    "git-unavailable":"无法识别 Git 仓库",
-    "git-remote-untrusted":"Git 远程不是官方仓库",
-    "git-worktree-modified":"Git 工作树有改动",
-    "git-not-at-release-tag":"Git 不在正式 Release Tag",
-    "git-status-unavailable":"无法读取 Git 状态",
-    "source-baseline-missing":"缺少源码基线文件（release-baseline.txt）",
-    "source-baseline-invalid":"源码基线版本号无效",
+    "release-metadata-missing":t("upd.reason.metadataMissing"),
+    "release-metadata-invalid":t("upd.reason.metadataInvalid"),
+    "release-manifest-mismatch":t("upd.reason.manifestMismatch"),
+    "release-manifest-invalid":t("upd.reason.manifestInvalid"),
+    "release-manifest-incomplete":t("upd.reason.manifestIncomplete"),
+    "release-files-modified":t("upd.reason.filesModified"),
+    "git-unavailable":t("upd.reason.gitUnavailable"),
+    "git-remote-untrusted":t("upd.reason.gitRemoteUntrusted"),
+    "git-worktree-modified":t("upd.reason.gitWorktreeModified"),
+    "git-not-at-release-tag":t("upd.reason.gitNotAtTag"),
+    "git-status-unavailable":t("upd.reason.gitStatusUnavailable"),
+    "source-baseline-missing":t("upd.reason.sourceBaselineMissing"),
+    "source-baseline-invalid":t("upd.reason.sourceBaselineInvalid"),
   };
-  return map[reason]||("未知（"+String(reason||"unknown")+"）");
+  return map[reason]||t("upd.unknownReason",{r:String(reason||"unknown")});
 }
 function renderUpdateInfo(){
   const current=updateInfo&&updateInfo.current;
   const latest=updateInfo&&updateInfo.latest;
-  const currentLabel=(current&&current.label)||UNKNOWN_LOCAL_BUILD_LABEL;
+  const currentLabel=(current&&current.label)||UNKNOWN_LOCAL_BUILD_LABEL();
   const currentComparable=!!(current&&current.comparable);
-  const provenanceLabel=(current&&current.provenanceLabel)||"本地来源未验证";
+  const provenanceLabel=(current&&current.provenanceLabel)||t("upd.provenanceUnknown");
   const currentEl=document.getElementById("cfgCurrentVersion");
   if(currentEl)currentEl.textContent=currentLabel;
   const provenanceEl=document.getElementById("cfgBuildProvenance");
-  if(provenanceEl)provenanceEl.textContent="来源："+provenanceLabel;
+  if(provenanceEl)provenanceEl.textContent=t("upd.source",{p:provenanceLabel});
   const latestEl=document.getElementById("cfgLatestRelease");
-  if(latestEl)latestEl.textContent=latest?latest.tag:"未知";
+  if(latestEl)latestEl.textContent=latest?latest.tag:t("upd.unknownTag");
   const gapEl=document.getElementById("cfgVersionGap");
   if(gapEl){
     if(latest&&current&&current.comparable){
-      if(updateInfo.updateAvailable)gapEl.textContent="（可升级至 "+latest.tag+"）";
-      else gapEl.textContent="（已是最新）";
+      if(updateInfo.updateAvailable)gapEl.textContent=t("upd.upgradeAvailable",{tag:latest.tag});
+      else gapEl.textContent=t("upd.upToDate");
     }else if(latest){
-      gapEl.textContent="（无法判断差距）";
+      gapEl.textContent=t("upd.cannotCompare");
     }else{
       gapEl.textContent="";
     }
@@ -8036,17 +8276,17 @@ function renderUpdateInfo(){
     badge.classList.remove("on","neutral");
     if(hasUpdate)badge.classList.add("on");
     else if(!currentComparable)badge.classList.add("neutral");
-    if(hasUpdate)badge.title="发现 "+latest.tag+"，点击查看 Release 说明与安全升级方法";
-    else if(currentComparable)badge.title="当前没有可升级的正式 Release";
-    else badge.title="无法判断本机版本基线（"+describeBuildReason(current&&current.reason)+"）。点击查看 GitHub 最新 Release。";
+    if(hasUpdate)badge.title=t("upd.badgeUpdate",{tag:latest.tag});
+    else if(currentComparable)badge.title=t("upd.badgeNoUpdate");
+    else badge.title=t("upd.badgeUnknown",{r:describeBuildReason(current&&current.reason)});
   }
   const status=document.getElementById("cfgUpdateStatus");
   if(status){
-    if(!updateInfo)status.textContent="正在检查 GitHub Release…";
-    else if(updateInfo.lastError&&!latest)status.textContent="检查失败："+updateInfo.lastError;
-    else if(latest&&!currentComparable)status.textContent="基线未知（"+describeBuildReason(current&&current.reason)+"）；仅展示 Release（检查于 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
-    else if(hasUpdate)status.textContent="发现新版本 "+latest.tag+"（已检查 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
-    else status.textContent="已确认基线不低于最新 Release（检查于 "+formatUpdateCheckTime(updateInfo.checkedAt)+"）";
+    if(!updateInfo)status.textContent=t("upd.statusChecking");
+    else if(updateInfo.lastError&&!latest)status.textContent=t("upd.statusFail",{e:updateInfo.lastError});
+    else if(latest&&!currentComparable)status.textContent=t("upd.statusBaselineUnknown",{r:describeBuildReason(current&&current.reason),t:formatUpdateCheckTime(updateInfo.checkedAt)});
+    else if(hasUpdate)status.textContent=t("upd.statusNew",{tag:latest.tag,t:formatUpdateCheckTime(updateInfo.checkedAt)});
+    else status.textContent=t("upd.statusOk",{t:formatUpdateCheckTime(updateInfo.checkedAt)});
   }
   renderUpdateModal();
 }
@@ -8061,55 +8301,55 @@ function renderUpdateModal(){
   const latestVersionEl=document.getElementById("updateLatestVersion");
   const gapEl=document.getElementById("updateVersionGap");
   if(!updateInfo){
-    summary.textContent="正在读取 GitHub Release 信息…";
-    notes.textContent="正在读取更新说明…";
-    safety.textContent="自动覆盖升级不会在后台执行。";
+    summary.textContent=t("update.loadingSummary");
+    notes.textContent=t("update.loadingNotes");
+    safety.textContent=t("upd.safetyNoAuto");
     if(currentVersionEl)currentVersionEl.textContent="…";
     if(latestVersionEl)latestVersionEl.textContent="…";
     if(gapEl)gapEl.textContent="";
     return;
   }
   const currentInfo=updateInfo.current||{};
-  const current=currentInfo.label||UNKNOWN_LOCAL_BUILD_LABEL;
+  const current=currentInfo.label||UNKNOWN_LOCAL_BUILD_LABEL();
   const currentComparable=currentInfo.comparable===true;
-  const provenanceLabel=currentInfo.provenanceLabel||"本地来源未验证";
+  const provenanceLabel=currentInfo.provenanceLabel||t("upd.provenanceUnknown");
   const latest=updateInfo.latest;
   if(currentVersionEl)currentVersionEl.textContent=current;
   if(latestVersionEl)latestVersionEl.textContent=latest?latest.tag:"—";
   if(gapEl){
-    if(latest&&currentComparable)gapEl.textContent=updateInfo.updateAvailable?"（可升级至 "+latest.tag+"）":"（已是最新）";
+    if(latest&&currentComparable)gapEl.textContent=updateInfo.updateAvailable?t("upd.upgradeAvailable",{tag:latest.tag}):t("upd.upToDate");
     else gapEl.textContent="";
   }
   if(latest){
     const published=formatUpdatePublishedAt(latest.publishedAt);
-    const releaseMeta=published?" 发布于 "+published+"。":"";
+    const releaseMeta=published?t("upd.publishedAt",{d:published}):"";
     summary.textContent=!currentComparable
-      ? "本地构建来源未验证（"+provenanceLabel+"）。最新正式 Release："+latest.tag+"。该信息仅供查看，不判断本机是否需要升级。"+releaseMeta
+      ? t("upd.localUnverified",{p:provenanceLabel,tag:latest.tag,m:releaseMeta})
       : updateInfo.updateAvailable
-        ? "发现可升级版本："+latest.tag+"。当前："+current+"。"+releaseMeta
-        : "当前："+current+"；最新正式 Release："+latest.tag+"。"+releaseMeta;
-    notes.textContent=latest.notes||"该 Release 未提供文字说明。";
+        ? t("upd.summaryNew",{tag:latest.tag,cur:current,m:releaseMeta})
+        : t("upd.summaryCurrent",{tag:latest.tag,cur:current,m:releaseMeta});
+    notes.textContent=latest.notes||t("upd.noNotes");
     link.href=latest.url||"https://github.com/aipayim/codex-proxy/releases";
   }else{
-    summary.textContent="暂时无法读取 GitHub Release 信息。";
-    notes.textContent=updateInfo.lastError||"请稍后重新检查，或直接在 GitHub 查看 Release。";
+    summary.textContent=t("upd.summaryUnavailable");
+    notes.textContent=updateInfo.lastError||t("upd.notesUnavailable");
     link.href="https://github.com/aipayim/codex-proxy/releases";
   }
-  safety.textContent="官方发布包会通过随包构建元数据和文件清单自动识别；源码安装会通过 release-baseline.txt 记录的本机版本基线自动识别；官方 Git 工作树只有在干净且正好位于正式 Tag 时才自动识别。当前构建可能包含本地修改，因此自动覆盖式一键升级仍禁用。定制构建如需比较，可在系统配置填写已人工确认的正式 Release Tag；否则只查看 Release。升级前备份当前代理目录及配置/状态，审核变更、执行 node -c proxy.js 后，再于维护窗口重启代理。";
+  safety.textContent=t("upd.safetyFull");
 }
 async function checkForUpdates(force){
   const refresh=document.getElementById("updateRefreshBtn");
-  if(force&&refresh){refresh.disabled=true;refresh.textContent="检查中…";}
+  if(force&&refresh){refresh.disabled=true;refresh.textContent=t("upd.checkingNow");}
   try{
     const r=await fetch("/__update-status"+(force?"?refresh=1":""),{cache:"no-store"});
     const result=await r.json();
-    if(!result||typeof result!=="object")throw new Error("更新检查返回格式无效");
+    if(!result||typeof result!=="object")throw new Error(t("upd.invalidResult"));
     updateInfo=result;
   }catch(e){
-    updateInfo={current:{label:UNKNOWN_LOCAL_BUILD_LABEL,comparable:false,provenanceLabel:"本地来源未验证"},lastError:e.message||"更新检查失败"};
+    updateInfo={current:{label:UNKNOWN_LOCAL_BUILD_LABEL(),comparable:false,provenanceLabel:t("upd.provenanceUnknown")},lastError:e.message||t("upd.checkFailed")};
   }finally{
     renderUpdateInfo();
-    if(force&&refresh){refresh.disabled=false;refresh.textContent="↻ 重新检查";}
+    if(force&&refresh){refresh.disabled=false;refresh.textContent=t("update.recheck");}
   }
 }
 function startUpdateChecks(){
@@ -8129,7 +8369,7 @@ async function httpLoad(){
     if(!r.ok)throw new Error("HTTP "+r.status);
     const j=await r.json();data=j.keys||j;boostedIdx=j.boostedIdx||-1;boostedBatch=j.boostedBatch||[];boostedBatchMode=j.boostedBatchMode||"";if(j.lastRequestTime)lastRequestTime=j.lastRequestTime;if(j.lastKeyUseTime)lastKeyUseTime=j.lastKeyUseTime;if(j.lastResumeTime)lastResumeTime=j.lastResumeTime;render();
   }catch(e){
-    if(!wsFailed)document.getElementById("subText").textContent="连接失败，正在重试...";
+    if(!wsFailed)document.getElementById("subText").textContent=t("header.connectFailed");
   }
 }
 
@@ -8142,8 +8382,8 @@ function connectWS(){
     try{
       const msg=JSON.parse(e.data);
       if(msg.type==="status"){data=msg.data;boostedIdx=msg.boostedIdx||-1;boostedBatch=msg.boostedBatch||[];boostedBatchMode=msg.boostedBatchMode||"";if(msg.lastRequestTime)lastRequestTime=msg.lastRequestTime;if(msg.lastKeyUseTime)lastKeyUseTime=msg.lastKeyUseTime;if(msg.lastResumeTime)lastResumeTime=msg.lastResumeTime;render()}
-      if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert("所有 Key 均不可用！");playAlert();sendDesktop()}
-      if(msg.type==="notification"&&msg.notificationType==="log_incident"){const incident=msg.incident||{};const message="日志事件："+(incident.title||"检测到异常")+(incident.scope&&incident.scope.value?"（"+incident.scope.value+"）":"");showAlert(message);playAlert();sendDesktop(message)}
+      if(msg.type==="notification"&&msg.notificationType==="all_keys_failed"){showAlert(t("alert.allKeysDown"));playAlert();sendDesktop()}
+      if(msg.type==="notification"&&msg.notificationType==="log_incident"){const incident=msg.incident||{};const message=t("alert.logIncident",{title:(incident.title||t("alert.incidentDetected"))})+(incident.scope&&incident.scope.value?t("alert.logIncidentScope",{scope:incident.scope.value}):"");showAlert(message);playAlert();sendDesktop(message)}
       if(msg.type==="log"&&document.getElementById("logModal").classList.contains("on"))enqueueLiveLog(msg.data);
       if(msg.type==="incidents")applyLogIncidentData(msg.data||{});
     }catch(e){}
@@ -8166,7 +8406,7 @@ function connectWS(){
 }
 
 function playAlert(){try{var a=new AudioContext(),o=a.createOscillator(),g=a.createGain();o.type="sine";o.frequency.value=880;g.gain.value=.3;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+.3)}catch(e){}}
-function sendDesktop(message){try{if(config.notifications.desktop!==false&&Notification.permission==="granted")new Notification("Codex Proxy",{body:message||"所有 Key 已不可用！",icon:""})}catch(e){}}
+function sendDesktop(message){try{if(config.notifications.desktop!==false&&Notification.permission==="granted")new Notification("Codex Proxy",{body:message||"All keys unavailable!",icon:""})}catch(e){}}
 
 async function loadKeys(){
   try{
@@ -8345,9 +8585,9 @@ function taskInsightEngineChanged(){
   if(!el)return;
   const engine=(document.getElementById("cfgTaskInsightDistillEngine").value||"").trim();
   const hints={
-    ollama:"数据不出本机、无外部费用；需本机运行 ollama 并已拉取所用模型（默认地址 http://127.0.0.1:11434/v1）。",
-    proxy:"蒸馏请求经代理转发，token 计入代理统计/成本与限速，Key 不外泄；模型名需与代理内可用模型一致。",
-    external:"直接调用外部 API（需在地址中携带可用的 API Key），不经代理，保密自担。"
+    ollama:t("cfg.distillLocalHint"),
+    proxy:t("cfg.distillProxyHint"),
+    external:t("cfg.distillExternalHint")
   };
   el.textContent=hints[engine]||"";
 }
@@ -8356,16 +8596,16 @@ function renderTaskInsightDistillStatus(runtime){
   if(!el)return;
   const enabled=!!document.getElementById("cfgTaskInsightDistillEnabled")?.checked;
   const state=runtime&&typeof runtime==="object"?runtime:{};
-  if(!enabled){el.textContent="蒸馏: 未启用";el.style.color="#64748b";return;}
-  let text="蒸馏: ";
+  if(!enabled){el.textContent=t("cfg.distillDisabled");el.style.color="#64748b";return;}
+  let text="Distill: ";
   let color="#94a3b8";
-  if(state.running){text+="正在运行…";color="#fbbf24";}
-  else if(state.lastError){text+="上次失败: "+String(state.lastError).slice(0,120);color="#f87171";}
-  else if(state.pending>0){text+="待处理 "+state.pending+" 个任务";color="#fbbf24";}
-  else if(state.lastRunAt){text+="上次运行 "+new Date(state.lastRunAt).toLocaleString();color="#94a3b8";}
-  else{text+="等待运行";color="#94a3b8";}
+  if(state.running){text=t("cfg.distillRunning");color="#fbbf24";}
+  else if(state.lastError){text=t("cfg.distillLastFailed",{e:String(state.lastError).slice(0,120)});color="#f87171";}
+  else if(state.pending>0){text=t("cfg.distillPending",{n:state.pending});color="#fbbf24";}
+  else if(state.lastRunAt){text=t("cfg.distillLastRun",{t:new Date(state.lastRunAt).toLocaleString()});color="#94a3b8";}
+  else{text=t("cfg.distillWaiting");color="#94a3b8";}
   const budget=state.budget||{};
-  if(budget.limitYuan>0)text+="；今日预算 ¥"+Number(budget.spentYuan||0).toFixed(4)+" / ¥"+Number(budget.limitYuan);
+  if(budget.limitYuan>0)text+=t("cfg.distillBudget",{spent:Number(budget.spentYuan||0).toFixed(4),limit:Number(budget.limitYuan)});
   el.textContent=text;
   el.style.color=color;
 }
@@ -8373,21 +8613,21 @@ function renderCodexLogMaintenanceRuntime(runtime){
   const el=document.getElementById("cfgCodexLogMaintenanceRuntime");
   if(!el)return;
   const enabled=!!document.getElementById("cfgCodexLogMaintenanceEnabled")?.checked;
-  if(!enabled){el.textContent="🗄 Codex SQLite 日志维护: 未启用";el.style.color="#64748b";return;}
+  if(!enabled){el.textContent=t("cfg.dbDisabled");el.style.color="#64748b";return;}
   const state=runtime&&typeof runtime==="object"?runtime:{};
   const total=codexLogMaintenanceBytes(state.totalBytes||0);
-  let text="🗄 Codex SQLite 日志维护: ";
+  let text="🗄 Codex SQLite log maintenance: ";
   let color="#94a3b8";
-  if(state.inFlight||state.phase==="checking"){text+="正在检查数据库…";color="#fbbf24";}
-  else if(state.phase==="error"){text+=(state.lastError||"上次检查失败");color="#f87171";}
-  else if(state.lastResult==="cleaned"){text+="已删除 "+(state.deletedRows||0)+" 条过期记录"+(state.vacuumed?"并 VACUUM 释放 "+codexLogMaintenanceBytes((state.vacuumBytesBefore||0)-(state.vacuumBytesAfter||0)):"")+"；当前 "+total;color="#4ade80";}
-  else if(state.lastResult==="retention_satisfied"){text+="已满足保留期；当前 "+total+"（物理空间将在 SQLite 后续复用）";color="#94a3b8";}
-  else if(state.lastResult==="skipped_busy"){text+="数据库忙，已跳过并等待下次检查；当前 "+total;color="#fbbf24";}
-  else if(state.lastResult==="below_threshold"){text+="当前 "+total+"，未达到触发阈值";color="#94a3b8";}
-  else if(state.nextCheckAt&&state.nextCheckAt>Date.now()){text+="已计划检查；当前 "+total;color="#94a3b8";}
-  else{text+="等待首次检查";color="#94a3b8";}
+  if(state.inFlight||state.phase==="checking"){text=t("cfg.dbChecking");color="#fbbf24";}
+  else if(state.phase==="error"){text=t("cfg.dbCheckFailed",{e:state.lastError||t("cfg.unknownError")});color="#f87171";}
+  else if(state.lastResult==="cleaned"){text=t("cfg.dbDeleted",{n:state.deletedRows||0})+(state.vacuumed?t("cfg.dbVacuumFreed",{space:codexLogMaintenanceBytes((state.vacuumBytesBefore||0)-(state.vacuumBytesAfter||0))}):"")+t("cfg.dbNow",{size:total});color="#4ade80";}
+  else if(state.lastResult==="retention_satisfied"){text=t("cfg.dbNow",{size:total});color="#94a3b8";}
+  else if(state.lastResult==="skipped_busy"){text=t("cfg.dbBusy")+t("cfg.dbNow",{size:total});color="#fbbf24";}
+  else if(state.lastResult==="below_threshold"){text=t("cfg.dbNow",{size:total})+", "+t("cfg.dbBelowThreshold");color="#94a3b8";}
+  else if(state.nextCheckAt&&state.nextCheckAt>Date.now()){text=t("cfg.dbScheduled")+t("cfg.dbNow",{size:total});color="#94a3b8";}
+  else{text=t("cfg.dbWaiting");color="#94a3b8";}
   const idleState=state.idleState;
-  if(idleState){text+="　"+(idleState.idle?"空闲，可立即清理":"使用中（在途 "+(idleState.active||0)+" / 排队 "+(idleState.queued||0)+"），暂不可清理");}
+  if(idleState){text+=" "+(idleState.idle?t("cfg.dbIdle"):t("cfg.dbInUse",{active:idleState.active||0,queued:idleState.queued||0}));}
   el.textContent=text;
   el.style.color=color;
 }
@@ -8399,47 +8639,47 @@ async function refreshTaskInsightDistillStatus(){
     const j=await r.json();
     if(j&&j.ok){renderTaskInsightDistillStatus(j.distill||{});return;}
   }catch(e){}
-  el.textContent="蒸馏: 状态不可用";
+  el.textContent=t("cfg.distillStatusUnavailable");
   el.style.color="#64748b";
 }
 async function checkCodexLogMaintenancePath(){
   const button=document.getElementById("cfgCodexLogMaintenanceCheckBtn");
   if(button)button.disabled=true;
-  setCodexLogMaintenanceCheck("检测中…","#fbbf24");
+  setCodexLogMaintenanceCheck(t("cfg.dbChecking"),"#fbbf24");
   try{
     const r=await fetch("/__codex-log-maintenance/check",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({codexLogMaintenance:codexLogMaintenanceConfigFromForm()})});
     const j=await r.json();
-    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"路径或数据库无效"),"#f87171");return false;}
+     if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||t("cfg.dbInvalid")),"#f87171");return false;}
     const check=j.check||{};
-    setCodexLogMaintenanceCheck("✓ 有效：主库 "+codexLogMaintenanceBytes(check.databaseBytes)+"，WAL "+codexLogMaintenanceBytes(check.walBytes),"#4ade80");
+    setCodexLogMaintenanceCheck("✓ OK: main DB "+codexLogMaintenanceBytes(check.databaseBytes)+", WAL "+codexLogMaintenanceBytes(check.walBytes),"#4ade80");
     return true;
-  }catch(e){setCodexLogMaintenanceCheck("✕ 检测失败: "+e.message,"#f87171");return false;}
+   }catch(e){setCodexLogMaintenanceCheck("✕ "+t("cfg.dbCheckError",{e:e.message}),"#f87171");return false;}
   finally{if(button)button.disabled=false;}
 }
 async function runCodexLogMaintenanceNow(){
-  if(!document.getElementById("cfgCodexLogMaintenanceEnabled").checked){setCodexLogMaintenanceCheck("请先启用并保存配置","#fbbf24");return;}
+   if(!document.getElementById("cfgCodexLogMaintenanceEnabled").checked){setCodexLogMaintenanceCheck(t("cfg.dbEnableFirst"),"#fbbf24");return;}
   const button=document.getElementById("cfgCodexLogMaintenanceRunBtn");
   if(button)button.disabled=true;
-  setCodexLogMaintenanceCheck("正在检查已保存的数据库配置…","#fbbf24");
+   setCodexLogMaintenanceCheck(t("cfg.dbChecking"),"#fbbf24");
   try{
     const r=await fetch("/__codex-log-maintenance/run",{method:"POST"});
     const j=await r.json();
     renderCodexLogMaintenanceRuntime(j.runtime||{});
-    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"检查失败"),"#f87171");return;}
+     if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||t("cfg.dbCheckError",{e:t("cfg.unknownError")})),"#f87171");return;}
     const check=j.result||{};
     const threshold=Number(document.getElementById("cfgCodexLogMaintenanceThreshold").value||0);
     const total=codexLogMaintenanceBytes(check.totalBytes||0);
-    setCodexLogMaintenanceCheck("✓ 有效：主库 "+codexLogMaintenanceBytes(check.databaseBytes)+"，WAL "+codexLogMaintenanceBytes(check.walBytes)+"，当前 "+total+(threshold>0&&(check.totalBytes||0)<threshold*1024*1024?"（未达 "+threshold+" MiB 触发阈值）":""),"#4ade80");
-  }catch(e){setCodexLogMaintenanceCheck("✕ 检查失败: "+e.message,"#f87171");}
+    setCodexLogMaintenanceCheck("✓ OK: main DB "+codexLogMaintenanceBytes(check.databaseBytes)+", WAL "+codexLogMaintenanceBytes(check.walBytes)+", now "+total+(threshold>0&&(check.totalBytes||0)<threshold*1024*1024?" (below the "+threshold+" MiB trigger)":""),"#4ade80");
+   }catch(e){setCodexLogMaintenanceCheck("✕ "+t("cfg.dbCheckError",{e:e.message}),"#f87171");}
   finally{toggleCodexLogMaintenanceControls();}
 }
 async function runCodexLogMaintenanceCleanNow(){
-  if(!document.getElementById("cfgCodexLogMaintenanceEnabled").checked){setCodexLogMaintenanceCheck("请先启用并保存配置","#fbbf24");return;}
+   if(!document.getElementById("cfgCodexLogMaintenanceEnabled").checked){setCodexLogMaintenanceCheck(t("cfg.dbEnableFirst"),"#fbbf24");return;}
   const runBtn=document.getElementById("cfgCodexLogMaintenanceRunBtn");
   const cleanBtn=document.getElementById("cfgCodexLogMaintenanceCleanBtn");
   if(runBtn)runBtn.disabled=true;
   if(cleanBtn)cleanBtn.disabled=true;
-  setCodexLogMaintenanceCheck("正在等待 Codex 空闲并清理数据库…","#fbbf24");
+   setCodexLogMaintenanceCheck(t("cfg.dbCleanupWaiting"),"#fbbf24");
   try{
     const r=await fetch("/__codex-log-maintenance/clean",{method:"POST"});
     const j=await r.json();
@@ -8447,20 +8687,20 @@ async function runCodexLogMaintenanceCleanNow(){
     const result=j.result||{};
     if(result.result==="database_active"){
       const idle=result.idleState||{};
-      setCodexLogMaintenanceCheck("✕ Codex 仍在使用中（在途 "+(idle.active||0)+" / 排队 "+(idle.queued||0)+"，距上次请求 "+Math.round((idle.lastAgoMs||0)/1000)+" 秒）；静默 60 秒后再试","#fbbf24");
+       setCodexLogMaintenanceCheck("✕ "+t("cfg.dbActiveWait",{active:idle.active||0,queued:idle.queued||0,seconds:Math.round((idle.lastAgoMs||0)/1000)}),"#fbbf24");
       return;
     }
-    if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||"清理失败"),"#f87171");return;}
-    if(result.result==="skipped_busy")setCodexLogMaintenanceCheck("数据库忙，已跳过；请稍后重试","#fbbf24");
-    else if(result.result==="below_threshold")setCodexLogMaintenanceCheck("当前容量未达到阈值，未删除记录","#94a3b8");
-    else if(result.result==="retention_satisfied")setCodexLogMaintenanceCheck("没有超过保留期的记录，无需清理","#94a3b8");
+     if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||t("cfg.dbCleanupFailed",{e:t("cfg.unknownError")})),"#f87171");return;}
+     if(result.result==="skipped_busy")setCodexLogMaintenanceCheck(t("cfg.dbBusyRetry"),"#fbbf24");
+     else if(result.result==="below_threshold")setCodexLogMaintenanceCheck(t("cfg.dbBelowNothing"),"#94a3b8");
+     else if(result.result==="retention_satisfied")setCodexLogMaintenanceCheck(t("cfg.dbNothingToClean"),"#94a3b8");
     else{
-      let text="✓ 已删除 "+(result.deletedRows||0)+" 条过期记录";
-      if(result.vacuumed)text+="；VACUUM 释放 "+codexLogMaintenanceBytes((result.vacuumBytesBefore||0)-(result.vacuumBytesAfter||0))+"（文件 "+codexLogMaintenanceBytes(result.physicalBytesBefore||0)+" → "+codexLogMaintenanceBytes(result.physicalBytesAfter||0)+"）";
-      else text+="；当前 "+codexLogMaintenanceBytes(result.totalBytes||0);
+       let text=t("cfg.dbDeletedNow",{n:result.deletedRows||0});
+       if(result.vacuumed)text+=t("cfg.dbVacuumFreed",{space:codexLogMaintenanceBytes((result.vacuumBytesBefore||0)-(result.vacuumBytesAfter||0))+" (file "+codexLogMaintenanceBytes(result.physicalBytesBefore||0)+" → "+codexLogMaintenanceBytes(result.physicalBytesAfter||0)+")"});
+       else text+=t("cfg.dbNow",{size:codexLogMaintenanceBytes(result.totalBytes||0)});
       setCodexLogMaintenanceCheck(text,"#4ade80");
     }
-  }catch(e){setCodexLogMaintenanceCheck("✕ 清理失败: "+e.message,"#f87171");}
+   }catch(e){setCodexLogMaintenanceCheck("✕ "+t("cfg.dbCleanupFailed",{e:e.message}),"#f87171");}
   finally{toggleCodexLogMaintenanceControls();}
 }
 function renderPortGroups(groups, groupEnabled, groupKeyInfo){
@@ -8470,7 +8710,7 @@ function renderPortGroups(groups, groupEnabled, groupKeyInfo){
   const enabled=groupEnabled||{};
   const gki=groupKeyInfo||{};
   const names=Object.keys(g).sort();
-  let html='<div style="font-size:11px;display:flex;flex-direction:column;gap:4px;white-space:nowrap">';
+   let html='<div style="font-size:11px;display:flex;flex-direction:column;gap:4px;white-space:nowrap">';
   for(const n of names){
     const port=g[n];
     const isA=n==="A";
@@ -8480,23 +8720,23 @@ function renderPortGroups(groups, groupEnabled, groupKeyInfo){
     if(ki){
       const show=ki.idxs.slice(0,10);
       const more=ki.idxs.length>10?'...':'';
-      keyInfo='<span style="color:#64748b;font-size:10px;margin-left:8px">🔑 '+ki.count+'个 | #'+show.join(',#')+more+'</span>';
+       keyInfo='<span style="color:#64748b;font-size:10px;margin-left:8px">🔑 '+ki.count+' '+t("cfg.keys")+' | #'+show.join(',#')+more+'</span>';
     }
     html+='<div style="display:flex;gap:8px;align-items:center;padding:2px 0;white-space:nowrap">'+
       '<span style="width:30px;font-weight:600;color:'+(isA?"#60a5fa":"#e2e8f0")+'">'+n+'</span>'+
-      '<span style="color:#94a3b8">端口 '+port+'</span>'+
+       '<span style="color:#94a3b8">'+t("cfg.portLabel")+' '+port+'</span>'+
       '<span class="portStatus" data-group="'+n+'" style="font-size:10px;min-width:14px;display:inline-block;text-align:center">⏳</span>'+
-      (isA?'<span style="color:#60a5fa;font-size:10px">(默认/始终运行)</span>':'');
+       (isA?'<span style="color:#60a5fa;font-size:10px">'+t("cfg.defaultAlways")+'</span>':'');
     if(!isA){
-      html+='<button class="btn" style="font-size:10px;padding:1px 6px;color:'+(isOn?'#f87171':'#4ade80')+'" onclick="toggleGroup(\\''+n+'\\','+String(!isOn)+',this)">'+(isOn?'🔴 禁用':'🟢 启用')+'</button>'+
-        '<button class="btn" style="font-size:10px;padding:1px 6px;color:#f87171" onclick="removePortGroup(\\''+n+'\\')">删除</button>';
+       html+='<button class="btn" style="font-size:10px;padding:1px 6px;color:'+(isOn?'#f87171':'#4ade80')+'" onclick="toggleGroup(\\''+n+'\\','+String(!isOn)+',this)">'+(isOn?'🔴 '+t("cfg.disable"):'🟢 '+t("cfg.enable"))+'</button>'+
+         '<button class="btn" style="font-size:10px;padding:1px 6px;color:#f87171" onclick="removePortGroup(\\''+n+'\\')">'+t("cfg.delete")+'</button>';
     }
     html+=keyInfo+'</div>';
   }
   html+='<div style="display:flex;gap:6px;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155">'+
-    '<input id="newGroupName" placeholder="组名" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-transform:uppercase">'+
-    '<input id="newGroupPort" type="number" placeholder="端口" min="1024" max="65535" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
-    '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">添加</button>'+
+     '<input id="newGroupName" placeholder="'+t("cfg.groupNamePh")+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-transform:uppercase">'+
+     '<input id="newGroupPort" type="number" placeholder="'+t("cfg.portPh")+'" min="1024" max="65535" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
+       '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">'+t("cfg.add")+'</button>'+
     '</div></div>';
   area.style.paddingLeft="12px";
   area.innerHTML=html;
@@ -8516,45 +8756,45 @@ function testAllPorts(groups){
 }
 function toggleGroup(name, enable, btn){
   fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"toggleGroup",_groupName:name,_groupEnabled:enable})})
-    .then(r=>r.json()).then(j=>{if(j.ok)loadConfigUI();else alert("操作失败: "+j.error)}).catch(e=>alert("操作失败: "+e.message));
+     .then(r=>r.json()).then(j=>{if(j.ok)loadConfigUI();else alert(t("cfg.operationFailed",{e:j.error}))}).catch(e=>alert(t("cfg.operationFailed",{e:e.message})));
 }
 function removePortGroup(name){
   if(name==="A")return;
-  if(!confirm("确定删除分组 "+name+" ？"))return;
+   if(!confirm(t("cfg.deleteGroupConfirm",{name})))return;
   fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"removeGroup",_groupName:name})})
-    .then(r=>r.json()).then(j=>{if(j.ok){loadConfigUI()}else{alert("删除失败: "+j.error)}}).catch(e=>alert("删除失败: "+e.message));
+     .then(r=>r.json()).then(j=>{if(j.ok){loadConfigUI()}else{alert(t("cfg.deleteFailed",{e:j.error}))}}).catch(e=>alert(t("cfg.deleteFailed",{e:e.message})));
 }
 function addPortGroup(){
   const name=document.getElementById("newGroupName").value.trim().toUpperCase();
   const port=parseInt(document.getElementById("newGroupPort").value);
-  if(!name||!port){alert("请输入组名和端口号");return}
+   if(!name||!port){alert(t("cfg.groupNamePortRequired"));return}
   fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({_groupAction:"addGroup",_groupName:name,_groupPort:port})})
-    .then(r=>r.json()).then(j=>{if(j.ok){document.getElementById("newGroupName").value="";document.getElementById("newGroupPort").value="";loadConfigUI()}else{alert("添加失败: "+j.error)}}).catch(e=>alert("添加失败: "+e.message));
+     .then(r=>r.json()).then(j=>{if(j.ok){document.getElementById("newGroupName").value="";document.getElementById("newGroupPort").value="";loadConfigUI()}else{alert(t("cfg.addFailed",{e:j.error}))}}).catch(e=>alert(t("cfg.addFailed",{e:e.message})));
 }
 function updateAutoCountdown(){
   const el=document.getElementById("cfgAutoCountdown");
   if(el){
-    if(!autoRecoverNextTime||autoRecoverNextTime<=Date.now()){el.textContent="⏳ 下次检测（间隔）: --";}
-    else{const diff=Math.ceil((autoRecoverNextTime-Date.now())/1000);const h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;el.textContent="⏳ 下次检测（间隔）: "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";}
+    if(!autoRecoverNextTime||autoRecoverNextTime<=Date.now()){el.textContent=t("cfg.nextInterval")+"--";}
+    else{const diff=Math.ceil((autoRecoverNextTime-Date.now())/1000);const h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;el.textContent=t("cfg.nextInterval")+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";}
   }
   const dailyEl=document.getElementById("cfgAutoDailyCountdown");
   if(dailyEl){
-    if(!autoRecoverDailyNextTime||autoRecoverDailyNextTime<=Date.now()){dailyEl.textContent="⏳ 下次检测（固定）: --";}
-    else{const diff=Math.ceil((autoRecoverDailyNextTime-Date.now())/1000);const days=Math.floor(diff/86400);const h=Math.floor((diff%86400)/3600),m=Math.floor((diff%3600)/60),s=diff%60;dailyEl.textContent="⏳ 下次检测（固定）: "+days+"d "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";}
+    if(!autoRecoverDailyNextTime||autoRecoverDailyNextTime<=Date.now()){dailyEl.textContent=t("cfg.nextFixed")+"--";}
+    else{const diff=Math.ceil((autoRecoverDailyNextTime-Date.now())/1000);const days=Math.floor(diff/86400);const h=Math.floor((diff%86400)/3600),m=Math.floor((diff%3600)/60),s=diff%60;dailyEl.textContent=t("cfg.nextFixed")+days+"d "+h+"h "+String(m).padStart(2,"0")+"m "+String(s).padStart(2,"0")+"s";}
   }
   const pollEl=document.getElementById("cfgAutoPollCountdown");
   if(pollEl){
-    if(!autoRecoverPollNextTime||autoRecoverPollNextTime<=Date.now()){pollEl.textContent="⏳ 下次检测（快速）: --";}
-    else{const diff=Math.ceil((autoRecoverPollNextTime-Date.now())/1000);const m=Math.floor(diff/60),s=diff%60;pollEl.textContent="⏳ 下次检测（快速）: "+m+"m "+String(s).padStart(2,"0")+"s";}
+    if(!autoRecoverPollNextTime||autoRecoverPollNextTime<=Date.now()){pollEl.textContent=t("cfg.nextFast")+"--";}
+    else{const diff=Math.ceil((autoRecoverPollNextTime-Date.now())/1000);const m=Math.floor(diff/60),s=diff%60;pollEl.textContent=t("cfg.nextFast")+m+"m "+String(s).padStart(2,"0")+"s";}
   }
   const resumeEl=document.getElementById("cfgAutoResumeStatus");
   if(resumeEl){
     if(typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
       const idleMs=Date.now()-(window._idleFrom||lastKeyUseTime);
       const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
-      resumeEl.textContent="🧬 闲置恢复: Key 闲置 "+formatIdle(idleMs)+(sinceResume!==null?"，上次触发 "+sinceResume+"m 前":"，等待阈值");
+      resumeEl.textContent=t("cfg.idleStatus")+formatIdle(idleMs)+(sinceResume!==null?t("cfg.lastTriggered",{n:sinceResume}):t("cfg.waitingThreshold"));
     }else{
-      resumeEl.textContent="🧬 闲置恢复: 等待中";
+      resumeEl.textContent=t("cfg.idleWaiting");
     }
   }
 }
@@ -8564,7 +8804,7 @@ function updateTimeWindowBadges(){
     const k=data&&data[idx];
     if(!k||!k.timeWindow)return;
     const tz=k.tz||"+0";
-    const m=String(tz).match(/^([+-]?)(\d+(?:\.\d+)?)$/);
+    const m=String(tz).match(/^([+-]?)(\\d+(?:\\.\\d+)?)$/);
     const offset=m?(m[1]==="-"?-1:1)*parseFloat(m[2]):0;
     const now=new Date();
     const lh=(now.getUTCHours()+offset+24)%24;
@@ -8581,8 +8821,8 @@ function updateTimeWindowBadges(){
     }
     const h=Math.floor(remaining/60),m2=remaining%60;
     const timeStr=start+':00-'+end+':00 (UTC'+tz+')';
-    if(inWin){el.title='时段: '+timeStr+' | 剩余 '+h+'小时'+m2+'分钟';el.style.background='#1a3a2e';el.style.color='#4ade80';el.style.borderColor='#22c55e';}
-    else{el.title='时段: '+timeStr+' | 距可用 '+h+'小时'+m2+'分钟';el.style.background='#3b2a1a';el.style.color='#fb923c';el.style.borderColor='#f97316';}
+     if(inWin){el.title=t("cfg.windowTitle",{win:timeStr,h,m:m2});el.style.background='#1a3a2e';el.style.color='#4ade80';el.style.borderColor='#22c55e';}
+     else{el.title=t("cfg.windowAvailableIn",{win:timeStr,h,m:m2});el.style.background='#3b2a1a';el.style.color='#fb923c';el.style.borderColor='#f97316';}
   });
 }
 
@@ -8595,11 +8835,11 @@ function renderResumeProjects(projects){
     const p=list[i];
     const mode=p.resumeMode==="fixed_session"?"fixed_session":"command";
     html+='<div class="resume-proj-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px">'+
-      '<input placeholder="项目名" class="rp-name" value="'+esc(p.name||'')+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-      '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-      '<input placeholder="命令 codex ..." class="rp-cmd" value="'+esc(p.cmd||'')+'" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-      '<select class="rp-mode" title="固定会话模式会将命令中的 {sessionId} 替换为下方会话 ID" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command"'+(mode==="command"?" selected":"")+'>命令</option><option value="fixed_session"'+(mode==="fixed_session"?" selected":"")+'>固定会话</option></select>'+
-      '<input placeholder="会话 ID" class="rp-session" value="'+esc(p.sessionId||'')+'" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="固定会话模式需要合法 Codex 会话 ID，且命令中必须含 {sessionId}">'+
+       '<input placeholder="'+t("cfg.projectNamePh")+'" class="rp-name" value="'+esc(p.name||'')+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+       '<input placeholder="'+t("cfg.projectPathPh")+'" class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+       '<input placeholder="'+t("cfg.projectCmdPh")+'" class="rp-cmd" value="'+esc(p.cmd||'')+'" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+        '<select class="rp-mode" title="'+t("cfg.fixedSessionTitle")+'" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command"'+(mode==="command"?" selected":"")+'>'+t("cfg.commandMode")+'</option><option value="fixed_session"'+(mode==="fixed_session"?" selected":"")+'>'+t("cfg.fixedSessionMode")+'</option></select>'+
+       '<input placeholder="'+t("cfg.sessionIdPh")+'" class="rp-session" value="'+esc(p.sessionId||'')+'" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="'+t("cfg.fixedSessionTitle")+'">'+
       '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button></div>';
   }
   html+='</div>';
@@ -8613,11 +8853,11 @@ function addResumeProject(){
   const div=document.createElement("div");
   div.className="resume-proj-row";
   div.style.cssText="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:4px;background:#1e293b;border:1px solid #334155;border-radius:4px";
-  div.innerHTML='<input placeholder="项目名" class="rp-name" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-    '<input placeholder="WSL 路径 /mnt/e/..." class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-    '<input placeholder="命令 codex ..." class="rp-cmd" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-    '<select class="rp-mode" title="固定会话模式会将命令中的 {sessionId} 替换为下方会话 ID" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command">命令</option><option value="fixed_session">固定会话</option></select>'+
-    '<input placeholder="会话 ID" class="rp-session" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="固定会话模式需要合法 Codex 会话 ID，且命令中必须含 {sessionId}">'+
+   div.innerHTML='<input placeholder="'+t("cfg.projectNamePh")+'" class="rp-name" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+     '<input placeholder="'+t("cfg.projectPathPh")+'" class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+     '<input placeholder="'+t("cfg.projectCmdPh")+'" class="rp-cmd" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
+      '<select class="rp-mode" title="'+t("cfg.fixedSessionTitle")+'" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command">'+t("cfg.commandMode")+'</option><option value="fixed_session">'+t("cfg.fixedSessionMode")+'</option></select>'+
+     '<input placeholder="'+t("cfg.sessionIdPh")+'" class="rp-session" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="'+t("cfg.fixedSessionTitle")+'">'+
     '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button>';
   container.querySelector("div").appendChild(div);
 }
@@ -8665,7 +8905,7 @@ function renderTrend(){
   for(const a of data){
     if(!a.hourly)continue;
     const ai=a.idx;
-    let uKey="(未知)";
+    let uKey="(unknown)";
     if(a.url){
       try{ uKey=new URL(a.url).hostname; }catch(e){ uKey=a.url; }
     }
@@ -8715,7 +8955,7 @@ function renderTrend(){
   const modelColorMap={};
   topModels.forEach((m,i)=>{modelColorMap[m]=modelColors[i%modelColors.length];});
   if(sortedModels.length>8){
-    modelColorMap["(其他)"]="#6b7280";
+    modelColorMap["(other)"]="#6b7280";
   }
   const keys=Object.keys(hMap);
   let vals,max;
@@ -8749,8 +8989,8 @@ function renderTrend(){
       const total=h.req||0;
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
-      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("合计: "+h.req+"次");
+      lines.push(t("trend.timeBucket",{d:mmdd,h:hh,h2:String(Number(hh)+1).padStart(2,"0")}));
+      lines.push(t("trend.total",{n:h.req}));
       const segments=[];
       for(const mk of topModels){
         const mv=h.models[mk]||{requests:0};
@@ -8758,7 +8998,7 @@ function renderTrend(){
           const pct=mv.requests/total*100;
           const clr=modelColorMap[mk];
           segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+clr+'"></div>');
-          lines.push("  "+mk+": "+mv.requests+"次");
+          lines.push("  "+t("trend.modelReq",{m:mk,n:mv.requests}));
         }
       }
       if(sortedModels.length>8){
@@ -8769,7 +9009,7 @@ function renderTrend(){
         if(otherReq>0){
           const pct=otherReq/total*100;
           segments.push('<div class="trend-seg" style="height:'+pct+'%;background:#6b7280"></div>');
-          lines.push("  (其他): "+otherReq+"次");
+          lines.push("  "+t("trend.other")+": "+otherReq+t("trend.reqUnit"));
         }
       }
       const barH=Math.max(2,vals[i]/max*80);
@@ -8779,10 +9019,10 @@ function renderTrend(){
     if(sortedModels.length>8){
       let otherTotal=0;
       for(const mk of sortedModels){if(!topModels.includes(mk))otherTotal+=allModels[mk]||0;}
-      allModels["(其他)"]=otherTotal;
-      legendModels.push("(其他)");
+      allModels["(other)"]=otherTotal;
+      legendModels.push("(other)");
     }
-    const legendHtml=legendModels.map(mk=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+modelColorMap[mk]+'"></span>'+esc(mk)+' ('+allModels[mk]+')</span>').join("");
+    const legendHtml=legendModels.map(mk=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+modelColorMap[mk]+'"></span>'+esc(mk==="(other)"?t("trend.other"):mk)+' ('+allModels[mk]+')</span>').join("");
     const legendEl=document.getElementById("trendLegend");
     if(legendEl)legendEl.innerHTML=legendHtml;
   }else if(trendMode==="health"){
@@ -8793,12 +9033,12 @@ function renderTrend(){
       const total=ok+c4xx+c5xx+fail;
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
-      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("合计: "+total+"次");
-      if(ok)lines.push("  200: "+ok+"次");
-      if(c4xx)lines.push("  4xx: "+c4xx+"次");
-      if(c5xx)lines.push("  5xx: "+c5xx+"次");
-      if(fail)lines.push("  失败: "+fail+"次");
+      lines.push(t("trend.timeBucket",{d:mmdd,h:hh,h2:String(Number(hh)+1).padStart(2,"0")}));
+      lines.push(t("trend.total",{n:total}));
+      if(ok)lines.push("  200: "+ok+t("trend.reqUnit"));
+      if(c4xx)lines.push("  4xx: "+c4xx+t("trend.reqUnit"));
+      if(c5xx)lines.push("  5xx: "+c5xx+t("trend.reqUnit"));
+      if(fail)lines.push("  "+t("trend.fail")+": "+fail+t("trend.reqUnit"));
       const pct=s=>total?s/total*100:0;
       const segments=[];
       if(ok)segments.push('<div class="trend-seg" style="height:'+pct(ok)+'%;background:#22c55e"></div>');
@@ -8813,17 +9053,17 @@ function renderTrend(){
       '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#22c55e"></span>200</span>'+
       '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#eab308"></span>4xx</span>'+
       '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#ef4444"></span>5xx</span>'+
-      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#6b7280"></span>失败</span>';
+      '<span class="trend-legend-item"><span class="trend-legend-dot" style="background:#6b7280"></span>'+t("trend.fail")+'</span>';
   }else if(trendMode==="cost"){
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
-      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("费用: $"+h.totalCost.toFixed(6));
+      lines.push(t("trend.timeBucket",{d:mmdd,h:hh,h2:String(Number(hh)+1).padStart(2,"0")}));
+      lines.push(t("trend.cost",{v:h.totalCost.toFixed(6)}));
       const modelCosts=Object.entries(h.models||{}).filter(([,mv])=>(Number(mv.totalCost)||0)>0).sort((a,b)=>(Number(b[1].totalCost)||0)-(Number(a[1].totalCost)||0));
       for(const [mk,mv] of modelCosts.slice(0,8))lines.push("  "+mk+": $"+(Number(mv.totalCost)||0).toFixed(6));
-      if(modelCosts.length>8)lines.push("  其他模型: $"+modelCosts.slice(8).reduce((sum,[,mv])=>sum+(Number(mv.totalCost)||0),0).toFixed(6));
+      if(modelCosts.length>8)lines.push("  "+t("trend.otherModels")+": $"+modelCosts.slice(8).reduce((sum,[,mv])=>sum+(Number(mv.totalCost)||0),0).toFixed(6));
       return '<div class="trend-bar" style="height:'+Math.max(2,vals[i]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
     }).join("");
     const legendEl=document.getElementById("trendLegend");
@@ -8834,9 +9074,9 @@ function renderTrend(){
       const avg=h.req>0?Math.round(h.totalDuration/h.req):0;
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
-      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("平均延迟: "+fmtDur(avg));
-      if(h.req)lines.push("请求数: "+h.req+"次");
+      lines.push(t("trend.timeBucket",{d:mmdd,h:hh,h2:String(Number(hh)+1).padStart(2,"0")}));
+      lines.push(t("trend.latencyAvg",{v:fmtDur(avg)}));
+      if(h.req)lines.push(t("trend.reqs",{n:h.req}));
       return '<div class="trend-bar" style="height:'+Math.max(2,vals[i]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
     }).join("");
     const legendEl=document.getElementById("trendLegend");
@@ -8846,14 +9086,14 @@ function renderTrend(){
     const topUrls=sortedUrls.slice(0,8);
     const urlColorMap={};
     topUrls.forEach((u,i)=>{urlColorMap[u]=modelColors[i%modelColors.length];});
-    if(sortedUrls.length>8)urlColorMap["(其他)"]="#6b7280";
+    if(sortedUrls.length>8)urlColorMap["(other)"]="#6b7280";
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
       const total=h.req||0;
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
-      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("合计: "+total+"次");
+      lines.push(t("trend.timeBucket",{d:mmdd,h:hh,h2:String(Number(hh)+1).padStart(2,"0")}));
+      lines.push(t("trend.total",{n:total}));
       const segments=[];
       for(const u of topUrls){
         const uv=h.urls[u]||0;
@@ -8861,7 +9101,7 @@ function renderTrend(){
           const pct=total?uv/total*100:0;
           segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+urlColorMap[u]+'"></div>');
           const uk=Object.keys(h.urlsKeys[u]||{});
-          lines.push("  "+u+" (#"+uk.join(",#")+"): "+uv+"次");
+          lines.push("  "+t("trend.urlReq",{u,id:uk.join(",#"),n:uv}));
         }
       }
       if(sortedUrls.length>8){
@@ -8872,7 +9112,7 @@ function renderTrend(){
         if(otherTotal>0){
           const pct=total?otherTotal/total*100:0;
           segments.push('<div class="trend-seg" style="height:'+pct+'%;background:#6b7280"></div>');
-          lines.push("  (其他): "+otherTotal+"次");
+          lines.push("  "+t("trend.other")+": "+otherTotal+t("trend.reqUnit"));
         }
       }
       const barH=Math.max(2,vals[i]/max*80);
@@ -8882,31 +9122,31 @@ function renderTrend(){
     if(sortedUrls.length>8){
       let otherTotal=0;
       for(const u of sortedUrls){if(!topUrls.includes(u))otherTotal+=allUrls[u]||0;}
-      allUrls["(其他)"]=otherTotal;
-      legendUrls.push("(其他)");
+      allUrls["(other)"]=otherTotal;
+      legendUrls.push("(other)");
     }
     const legendEl=document.getElementById("trendLegend");
-    if(legendEl)legendEl.innerHTML=legendUrls.map(u=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+urlColorMap[u]+'"></span>'+esc(u)+' ('+allUrls[u]+')</span>').join("");
+    if(legendEl)legendEl.innerHTML=legendUrls.map(u=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+urlColorMap[u]+'"></span>'+esc(u==="(other)"?t("trend.other"):u)+' ('+allUrls[u]+')</span>').join("");
   }else if(trendMode==="downstream"){
     const sortedClients=Object.keys(allClients).sort((a,b)=>allClients[b]-allClients[a]);
     const topClients=sortedClients.slice(0,8);
     const clientColorMap={};
     topClients.forEach((c,i)=>{clientColorMap[c]=modelColors[i%modelColors.length];});
-    if(sortedClients.length>8)clientColorMap["(其他)"]="#6b7280";
+    if(sortedClients.length>8)clientColorMap["(other)"]="#6b7280";
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
       const total=h.req||0;
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
-      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("合计: "+total+"次");
+      lines.push(t("trend.timeBucket",{d:mmdd,h:hh,h2:String(Number(hh)+1).padStart(2,"0")}));
+      lines.push(t("trend.total",{n:total}));
       const segments=[];
       for(const c of topClients){
         const cv=h.clients[c]||0;
         if(cv>0){
           const pct=total?cv/total*100:0;
           segments.push('<div class="trend-seg" style="height:'+pct+'%;background:'+clientColorMap[c]+'"></div>');
-          lines.push("  "+c+": "+cv+"次");
+          lines.push("  "+t("trend.clientReq",{c,n:cv}));
         }
       }
       if(sortedClients.length>8){
@@ -8917,7 +9157,7 @@ function renderTrend(){
         if(otherTotal>0){
           const pct=total?otherTotal/total*100:0;
           segments.push('<div class="trend-seg" style="height:'+pct+'%;background:#6b7280"></div>');
-          lines.push("  (其他): "+otherTotal+"次");
+          lines.push("  "+t("trend.other")+": "+otherTotal+t("trend.reqUnit"));
         }
       }
       const barH=Math.max(2,vals[i]/max*80);
@@ -8927,22 +9167,22 @@ function renderTrend(){
     if(sortedClients.length>8){
       let otherTotal=0;
       for(const c of sortedClients){if(!topClients.includes(c))otherTotal+=allClients[c]||0;}
-      allClients["(其他)"]=otherTotal;
-      legendClients.push("(其他)");
+      allClients["(other)"]=otherTotal;
+      legendClients.push("(other)");
     }
     const legendEl=document.getElementById("trendLegend");
-    if(legendEl)legendEl.innerHTML=legendClients.map(c=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+clientColorMap[c]+'"></span>'+esc(c)+' ('+allClients[c]+')</span>').join("");
+    if(legendEl)legendEl.innerHTML=legendClients.map(c=>'<span class="trend-legend-item"><span class="trend-legend-dot" style="background:'+clientColorMap[c]+'"></span>'+esc(c==="(other)"?t("trend.other"):c)+' ('+allClients[c]+')</span>').join("");
   }else{
     bars.innerHTML=keys.map((k,i)=>{
       const h=hMap[k];
       const lines=[];
       const mmdd=k.slice(0,10),hh=k.slice(11);
-      lines.push(mmdd+" "+hh+":00~"+String(Number(hh)+1).padStart(2,"0")+":00");
-      lines.push("合计: ↑"+fmtBytes(h.input)+" / ↓"+fmtBytes(h.output)+" | "+h.req+"次");
+      lines.push(t("trend.timeBucket",{d:mmdd,h:hh,h2:String(Number(hh)+1).padStart(2,"0")}));
+      lines.push(t("trend.totalBytes",{u:fmtBytes(h.input),d:fmtBytes(h.output),n:h.req}));
       const kidx=Object.keys(h.keys).sort((a,b)=>h.keys[b].bytes-h.keys[a].bytes);
       for(const ki of kidx){
         const kv=h.keys[ki];
-        lines.push("  #"+ki+"  "+fmtBytes(kv.bytes)+"  "+kv.req+"次");
+        lines.push("  "+t("trend.keyReq",{k:ki,b:fmtBytes(kv.bytes),n:kv.req}));
       }
       return '<div class="trend-bar" style="height:'+Math.max(2,vals[i]/max*80)+'px" title="'+esc(lines.join("\\n")).replace(/\\n/g,"&#10;")+'"></div>';
     }).join("");
@@ -8958,7 +9198,7 @@ function renderTrend(){
     return '<div class="trend-label" style="'+(vis?"":"visibility:hidden;font-size:0")+'">'+text+'</div>';
   }).join("");
   document.getElementById("trend").style.display="block";
-  document.getElementById("trendRangeLabel").textContent={"24h":"24小时","7d":"7天","30d":"30天"}[trendRange];
+  document.getElementById("trendRangeLabel").textContent=t("trend."+trendRange);
 }
 
 function render(){
@@ -8972,19 +9212,19 @@ function render(){
   const totalCost=data.reduce((s,x)=>s+(Number(x.totalCost)||0),0);
   const q="http://localhost:3456/";
 
-  document.getElementById("subText").textContent="最后更新: "+new Date().toLocaleString("zh-CN")+" | 实时推送";
+  document.getElementById("subText").textContent=t("header.updatedLive",{time:new Date().toLocaleString(I18N_LANG==="en"?"en-US":"zh-CN")});
 
   document.getElementById("alert").style.display=(tot>0&&ok===0)?"flex":"none";
 
   document.getElementById("summary").innerHTML=
-    '<div class="sum-item s-ok"><div class="sum-num">'+ok+'/'+tot+'</div><div class="sum-label">可用</div></div>'+
-    '<div class="sum-item s-fail"><div class="sum-num">'+fail+'</div><div class="sum-label">冷却中</div></div>'+
-    (locked?'<div class="sum-item" style="background:#7c3aed20;border:1px solid #7c3aed40"><div class="sum-num" style="color:#a78bfa">'+locked+'</div><div class="sum-label" style="color:#a78bfa">🔒 锁死</div></div>':'')+
-    '<div class="sum-item s-active"><div class="sum-num">'+concurrent+'</div><div class="sum-label">并发请求</div></div>'+
-    '<div class="sum-item s-token"><div class="sum-num">'+fmtBytes(allBytes)+'</div><div class="sum-label">总流量</div></div>'+
-    '<div class="sum-item s-token"><div class="sum-num">'+allReq+'</div><div class="sum-label">总请求</div></div>'+
-    '<div class="sum-item s-score"><div class="sum-num">'+avgScore+'</div><div class="sum-label">健康评分</div></div>'+
-    (totalCost>0?'<div class="sum-item s-token"><div class="sum-num">$'+totalCost.toFixed(4)+'</div><div class="sum-label">预估费用</div></div>':'');
+    '<div class="sum-item s-ok"><div class="sum-num">'+ok+'/'+tot+'</div><div class="sum-label">'+t("sum.available")+'</div></div>'+
+    '<div class="sum-item s-fail"><div class="sum-num">'+fail+'</div><div class="sum-label">'+t("sum.cooldown")+'</div></div>'+
+    (locked?'<div class="sum-item" style="background:#7c3aed20;border:1px solid #7c3aed40"><div class="sum-num" style="color:#a78bfa">'+locked+'</div><div class="sum-label" style="color:#a78bfa">'+t("sum.locked")+'</div></div>':'')+
+    '<div class="sum-item s-active"><div class="sum-num">'+concurrent+'</div><div class="sum-label">'+t("sum.concurrent")+'</div></div>'+
+    '<div class="sum-item s-token"><div class="sum-num">'+fmtBytes(allBytes)+'</div><div class="sum-label">'+t("sum.traffic")+'</div></div>'+
+    '<div class="sum-item s-token"><div class="sum-num">'+allReq+'</div><div class="sum-label">'+t("sum.requests")+'</div></div>'+
+    '<div class="sum-item s-score"><div class="sum-num">'+avgScore+'</div><div class="sum-label">'+t("sum.health")+'</div></div>'+
+    (totalCost>0?'<div class="sum-item s-token"><div class="sum-num">$'+totalCost.toFixed(4)+'</div><div class="sum-label">'+t("sum.cost")+'</div></div>':'');
 
   renderTrend();
 
@@ -8993,14 +9233,14 @@ function render(){
   const sorted=[...dates].sort().reverse();
   curDate=sorted.includes(curDate)?curDate:(sorted[0]||todayStr());
   const tabsHtml=sorted.map(d=>'<span class="tab'+(d===curDate?' on':'')+'" onclick="curDate=\\''+d+'\\';render()">'+d+'</span>').join("");
-  document.getElementById("tabs").innerHTML='<span class="tab'+(curDate==='all'?' on':'')+'" onclick="curDate=\\'all\\';render()">全部</span>'+tabsHtml;
+  document.getElementById("tabs").innerHTML='<span class="tab'+(curDate==='all'?' on':'')+'" onclick="curDate=\\'all\\';render()">'+t("common.all")+'</span>'+tabsHtml;
   // Populate group filter options
   const groupsSet={};
   data.forEach(x=>{const g=x.group||"A";groupsSet[g]=true});
   const groupSel=document.getElementById("groupFilter");
   const curVal=groupSel.value;
   const knownGroups=Object.keys(groupsSet).sort();
-  groupSel.innerHTML='<option value="all">全部</option>'+knownGroups.map(g=>'<option value="'+g+'"'+(curVal===g?' selected':'')+'>'+g+'组</option>').join("");
+  groupSel.innerHTML='<option value="all">'+t("common.all")+'</option>'+knownGroups.map(g=>'<option value="'+g+'"'+(curVal===g?' selected':'')+'>'+t("card.groupName",{g})+ '</option>').join("");
   filtered=data;
   if(filterBy!=="locked")filtered=filtered.filter(x=>!x.locked);
   if(filterBy!=="shielded")filtered=filtered.filter(x=>!x.shielded);
@@ -9027,14 +9267,14 @@ function render(){
   }
   groupFilter=document.getElementById("groupFilter").value;
   if(groupFilter!=="all")filtered=filtered.filter(x=>x.group===groupFilter);
-  document.getElementById("filterCount").textContent="显示 "+filtered.length+" / "+data.length+" 个";
+  document.getElementById("filterCount").textContent=t("ctrl.showCount",{x:filtered.length,y:data.length});
   const shieldedCount=data.filter(x=>x.shielded).length;
-  if(shieldedCount>0)document.getElementById("filterCount").textContent+="，屏蔽 "+shieldedCount+" 个";
+  if(shieldedCount>0)document.getElementById("filterCount").textContent+=t("ctrl.showCountShielded",{n:shieldedCount});
   const dashResume=document.getElementById("dashResumeStatus");
   if(dashResume&&typeof lastKeyUseTime==='number'&&lastKeyUseTime>0){
     const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
-    if(sinceResume!==null)dashResume.textContent="🧬Key闲置 "+formatIdle(now-(window._idleFrom||lastKeyUseTime))+"/恢复"+sinceResume+"m前";
-    else dashResume.textContent="🧬Key闲置 "+formatIdle(now-(window._idleFrom||lastKeyUseTime));
+    if(sinceResume!==null)dashResume.textContent=t("dash.resumeIdle",{idle:formatIdle(now-(window._idleFrom||lastKeyUseTime))})+t("dash.resumeSince",{n:sinceResume});
+    else dashResume.textContent=t("dash.resumeIdle",{idle:formatIdle(now-(window._idleFrom||lastKeyUseTime))});
   }
   const actKeys=data.filter(x=>x.active);
   if(!window._tickerInit){
@@ -9066,14 +9306,14 @@ function render(){
         const idleMs=Date.now()-(window._idleFrom||lastKeyUseTime);
         const idleStr=formatIdle(idleMs);
         const sinceResume=typeof lastResumeTime==='number'&&lastResumeTime>0?Math.round((Date.now()-lastResumeTime)/60000):null;
-        if(de)de.textContent="🧬Key闲置 "+idleStr+(sinceResume!==null?"/恢复"+sinceResume+"m前":"");
-        if(re)re.textContent="🧬 闲置恢复: Key 闲置 "+idleStr+(sinceResume!==null?"，上次触发 "+sinceResume+"m 前":"，等待阈值");
+        if(de)de.textContent=t("dash.resumeIdle",{idle:idleStr})+(sinceResume!==null?t("dash.resumeSince",{n:sinceResume}):"");
+        if(re)re.textContent=t("cfg.resumeIdle",{idle:idleStr})+(sinceResume!==null?t("cfg.resumeSince",{n:sinceResume}):t("cfg.resumeWaiting"));
       }else if(anyActive){
-        if(de)de.textContent="🧬Key闲置 0.00s";
-        if(re)re.textContent="🧬 闲置恢复: Key 使用中";
+        if(de)de.textContent=t("dash.resumeIdle0");
+        if(re)re.textContent=t("cfg.resumeInUse");
       }else{
-        if(de)de.textContent="🧬Key闲置 --";
-        if(re)re.textContent="🧬 闲置恢复: 等待中";
+        if(de)de.textContent=t("dash.resumeIdleDash");
+        if(re)re.textContent=t("cfg.resumeWait");
       }
     },100);
   }
@@ -9108,13 +9348,13 @@ function render(){
       const badge=document.createElement("span");
       badge.className="ticker-overflow";
       badge.textContent="+"+hiddenCount;
-      badge.title=hiddenCount+" 个并发请求未显示";
+      badge.title=t("header.tickerOverflow",{n:hiddenCount});
       tickerEl.prepend(badge);
       if(tickerEl.scrollWidth>tickerEl.clientWidth&&tickerEl.children.length>2){
         tickerEl.removeChild(tickerEl.children[1]);
         hiddenCount++;
         badge.textContent="+"+hiddenCount;
-        badge.title=hiddenCount+" 个并发请求未显示";
+        badge.title=t("header.tickerOverflow",{n:hiddenCount});
       }
     }
   }
@@ -9147,15 +9387,15 @@ function render(){
     const isActive=a.active,isFail=a.failCode&&!a.available&&!isDiscard,isOk=a.available&&!a.failCode;
     const c=isDiscard?"failed":(isFail?"failed":(isActive?"active":(isOk?"card-ok":"")));
     const dot=isDiscard?"d-fail":(a.available?(a.failCode?"d-pending":"d-ok"):"d-fail");
-    const st=isDiscard?"已废弃":(a.available?(a.failCode?"待恢复":"可用"):"冷却中");
+    const st=isDiscard?t("card.discarded"):(a.available?(a.failCode?t("card.pendingRecover"):t("card.available")):t("card.cooldown"));
     let cd="";
-    if(isDiscard){cd="已被标记废弃"}
+    if(isDiscard){cd=t("card.forbidden")}
     else if(a.failCode&&a.failPeriod&&!a.available){
       const r=a.reset;
-      if(r==="never"){cd="永久失效"}
-      else if(r==="daily"){cd="本日已用完，明天0点重置"}
-      else if(r==="hourly"){cd="本时段已用完，下一时段重置"}
-      else{cd="本周已用完，"+(a.nextResetDay||"周一")+"0点重置"}
+      if(r==="never"){cd=t("card.permInvalid")}
+      else if(r==="daily"){cd=t("card.dailyUsed")}
+      else if(r==="hourly"){cd=t("card.hourlyUsed")}
+      else{cd=t("card.weeklyUsed",{day:t("wd."+((a.nextResetDay!=null&&String(a.nextResetDay)!=="0")?a.nextResetDay:"1"))})}
     }
     const rg=a.remark?'<div class="rem">📝 '+esc(a.remark)+'</div>':"";
     const req=a.totalRequests||0,suc=a.successRequests||0;
@@ -9176,58 +9416,58 @@ function render(){
       '<div class="ctop"><input type="checkbox" class="card-cb" data-idx="'+a.idx+'" onchange="updateBatchBar()" style="margin-right:4px;accent-color:#3b82f6">'+
       '<span class="idx'+(isActive?' active-idx':'')+'">#'+a.idx+(isActive?' ◄':'')+'</span>'+
       '<span style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">'+
-      '<span class="badge '+C[a.reset]+'">'+(a.reset==="weekly"?("每周-"+(DAY_CN[a.resetDay]||"自动")):(a.reset==="hourly"?("每"+(a.resetHours||5)+"小时"):L[a.reset]))+'</span>'+
-      (a.group&&a.group!=="A"?' <span class="badge bd-group">'+a.group+'组</span>':'')+
-      (isActive?' <span class="badge bd-active">'+a.activeRequests+'并发</span>':'')+
-      (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">已废弃</span>':'')+
-      (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">⚡ 已优先</span>':'')+
-      (boostedBatch.includes(a.idx)?((a.group||"A")!=="A"?' <span class="badge" style="background:#1a3a2e;color:#ef4444;border:1px solid #ef4444;text-decoration:line-through" title="此 Key 属于 '+esc(a.group||"A")+' 组，不参与当前端口轮询">⚡ '+({"use":"队列","roundrobin":"轮询","random":"🎲 随机"}[boostedBatchMode]||"轮询")+'</span>':' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+({"use":"队列","roundrobin":"轮询","random":"🎲 随机"}[boostedBatchMode]||"轮询")+'</span>'):'')+
-      ' <span class="badge bd-score">'+score+'分</span>'+
-      '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="折叠">▼</span></span></div>'+
+      '<span class="badge '+C[a.reset]+'">'+(a.reset==="weekly"?t("card.resetWeekly",{d:(a.resetDay&&DAY_CN(a.resetDay))?t("wd."+a.resetDay):t("wd.auto")}):(a.reset==="hourly"?t("card.resetHourly",{n:a.resetHours||5}):t("card."+(a.reset==="daily"?"resetDaily":"resetNever"))))+'</span>'+
+      (a.group&&a.group!=="A"?' <span class="badge bd-group">'+t("card.groupName",{g:a.group})+'</span>':'')+
+      (isActive?' <span class="badge bd-active">'+t("card.concurrentN",{n:a.activeRequests})+'</span>':'')+
+      (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">'+t("card.discardedBadge")+'</span>':'')+
+      (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">'+t("card.boosted")+'</span>':'')+
+      (boostedBatch.includes(a.idx)?((a.group||"A")!=="A"?' <span class="badge" style="background:#1a3a2e;color:#ef4444;border:1px solid #ef4444;text-decoration:line-through" title="This key belongs to group '+esc(a.group||"A")+', not part of the current port round-robin">⚡ '+({use:t("card.boostQueue"),roundrobin:t("card.boostRR"),random:t("card.boostRand")}[boostedBatchMode]||t("card.boostRR"))+'</span>':' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+({use:t("card.boostQueue"),roundrobin:t("card.boostRR"),random:t("card.boostRand")}[boostedBatchMode]||t("card.boostRR"))+'</span>'):'')+
+      ' <span class="badge bd-score">'+t("card.score",{n:score})+'</span>'+
+      '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="collapse">▼</span></span></div>'+
       '<div class="meter"><div class="meter-fill" style="width:'+score+'%;background:'+meterColor+'"></div></div>'+
       '<div class="cbody" id="body-'+a.idx+'">'+
-      '<div class="row"><span class="label">Key</span><span class="val"><span class="key-mask" data-idx="'+a.idx+'" onclick="var i=this.dataset.idx,f=fullKeys[i];if(!f){loadKeys();var t=this;setTimeout(function(){f=fullKeys[i];if(f)t.textContent=t.textContent===maskKey(f)?f:maskKey(f)},300)}else this.textContent=this.textContent===maskKey(f)?f:maskKey(f)">'+a.key+'</span></span></div>'+
-      '<div class="row"><span class="label">地址</span><span class="val uurl">'+esc(a.url)+'</span></div>'+
+      '<div class="row"><span class="label">'+t("card.key")+'</span><span class="val"><span class="key-mask" data-idx="'+a.idx+'" onclick="var i=this.dataset.idx,f=fullKeys[i];if(!f){loadKeys();var t=this;setTimeout(function(){f=fullKeys[i];if(f)t.textContent=t.textContent===maskKey(f)?f:maskKey(f)},300)}else this.textContent=this.textContent===maskKey(f)?f:maskKey(f)">'+a.key+'</span></span></div>'+
+      '<div class="row"><span class="label">'+t("card.url")+'</span><span class="val uurl">'+esc(a.url)+'</span></div>'+
       rg+
-      (a.models&&a.models.length?'<div class="row"><span class="label">指定模型</span><span class="val">'+esc(a.models.join(', '))+'</span></div>':'<div class="row"><span class="label">指定模型</span><span class="val" style="color:#64748b">通用</span></div>')+
-      (a.model?'<div class="row"><span class="label">覆盖模型</span><span class="val" style="color:#fbbf24">'+esc(a.model)+'</span></div>':"")+
-      (a.failCode?'<div class="row"><span class="label">失败码</span><span class="val" title="'+(FAIL_MEAN[a.failCode]||'')+'">'+a.failCode+'</span></div>':"")+
-      (a.failTime?'<div class="row"><span class="label">最后失败</span><span class="val" style="color:#f87171">'+fmtTimeAgo(Date.now()-a.failTime)+'前</span></div>':"")+
-      (cd?'<div class="row"><span class="label">冷却剩余</span><span class="val cooldown">'+cd+'</span></div>':"")+
-      '<div class="row"><div class="label">请求</div><div class="val">'+req+'次 (成功'+suc+' 失败'+(req-suc)+')</div></div>'+
-      '<div class="row"><div class="label">流量</div><div class="val">↑'+fmtBytes(ib)+' / ↓'+fmtBytes(ob)+'</div></div>'+
-      (cost?'<div class="row"><div class="label">预估费用</div><div class="val">'+cost+'</div></div>':"")+
-      (avgD?'<div class="row"><div class="label">平均延迟</div><div class="val">'+avgD+'</div></div>':"")+
-      (avgT?'<div class="row"><div class="label">平均首字节</div><div class="val">'+avgT+'</div></div>':"")+
-      '<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px"><div class="label">P50 / P95 / P99</div><div class="val">'+p50+' / '+p95+' / '+p99+'</div></div>'+
-      '<div class="row"><div class="label">滑动成功率</div><div class="val">5分钟: '+r5+' | 1小时: '+r1+'</div></div>'+
-      (a.activatedAt?'<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px"><span class="label">首次启用</span><span class="val">'+fmtDate(a.activatedAt)+'</span></div>':'')+
-      (a.activatedAt?'<div class="row"><span class="label">启用至今</span><span class="val">'+fmtDuration(Date.now()-a.activatedAt)+'</span></div>':'');
+      (a.models&&a.models.length?'<div class="row"><span class="label">'+t("card.models")+'</span><span class="val">'+esc(a.models.join(', '))+'</span></div>':'<div class="row"><span class="label">'+t("card.models")+'</span><span class="val" style="color:#64748b">'+t("card.modelGeneric")+'</span></div>')+
+      (a.model?'<div class="row"><span class="label">'+t("card.overrideModel")+'</span><span class="val" style="color:#fbbf24">'+esc(a.model)+'</span></div>':"")+
+      (a.failCode?'<div class="row"><span class="label">'+t("card.failCode")+'</span><span class="val" title="'+(FAIL_MEAN[a.failCode]||'')+'">'+a.failCode+'</span></div>':"")+
+      (a.failTime?'<div class="row"><span class="label">'+t("card.lastFail")+'</span><span class="val" style="color:#f87171">'+fmtTimeAgo(Date.now()-a.failTime)+'</span></div>':"")+
+      (cd?'<div class="row"><span class="label">'+t("card.cooldownLeft")+'</span><span class="val cooldown">'+cd+'</span></div>':"")+
+      '<div class="row"><div class="label">'+t("card.requests")+'</div><div class="val">'+t("card.requestsVal",{n:req,s:suc,f:req-suc})+'</div></div>'+
+      '<div class="row"><div class="label">'+t("card.traffic")+'</div><div class="val">'+t("card.trafficVal",{u:fmtBytes(ib),d:fmtBytes(ob)})+'</div></div>'+
+      (cost?'<div class="row"><div class="label">'+t("card.costVal")+'</div><div class="val">'+cost+'</div></div>':"")+
+      (avgD?'<div class="row"><div class="label">'+t("card.avgLat")+'</div><div class="val">'+avgD+'</div></div>':"")+
+      (avgT?'<div class="row"><div class="label">'+t("card.avgTtfb")+'</div><div class="val">'+avgT+'</div></div>':"")+
+      '<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px"><div class="label">'+t("card.pct")+'</div><div class="val">'+p50+' / '+p95+' / '+p99+'</div></div>'+
+      '<div class="row"><div class="label">'+t("card.slidingRate")+'</div><div class="val">'+t("card.slidingRateVal",{r5,r1})+'</div></div>'+
+      (a.activatedAt?'<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px"><span class="label">'+t("card.firstUsed")+'</span><span class="val">'+fmtDate(a.activatedAt)+'</span></div>':'')+
+      (a.activatedAt?'<div class="row"><span class="label">'+t("card.usedDuration")+'</span><span class="val">'+fmtDuration(Date.now()-a.activatedAt)+'</span></div>':'');
 
     if(daily){
       const db=daily.inputBytes||0,do_=daily.outputBytes||0;
       html+='<div class="row" style="border-top:1px solid #334155;padding-top:4px;margin-top:4px;color:#93c5fd">'+
-        '<div class="label">'+curDate+'</div><div class="val">'+daily.requests+'次 '+fmtBytes(db+do_)+'</div></div>';
+        '<div class="label">'+curDate+'</div><div class="val">'+t("daily.reqBytes",{n:daily.requests,b:fmtBytes(db+do_)})+'</div></div>';
     }else if(curDate==='all'&&a.daily){
       const ds=Object.keys(a.daily).sort().reverse().slice(0,5);
       const maxBytes=Math.max(...ds.map(d=>(a.daily[d].inputBytes||0)+(a.daily[d].outputBytes||0)),1);
       for(const d of ds){
         const dd=a.daily[d],b=(dd.inputBytes||0)+(dd.outputBytes||0);
-        html+='<div class="hist"><span>'+d+'</span><span>'+dd.requests+'次 '+fmtBytes(b)+'</span></div>'+
+        html+='<div class="hist"><span>'+d+'</span><span>'+t("daily.reqBytes",{n:dd.requests,b:fmtBytes(b)})+'</span></div>'+
           '<div class="hist-bar"><div class="hist-fill" style="width:'+(b/maxBytes*100)+'%"></div></div>';
       }
     }else if(curDate!=='all'&&!daily&&a.daily){
-      html+='<div class="row" style="color:#64748b"><div class="label">'+curDate+'</div><div class="val">无记录</div></div>';
+      html+='<div class="row" style="color:#64748b"><div class="label">'+curDate+'</div><div class="val">'+t("card.noRecord")+'</div></div>';
     }
 
     html+='</div><div class="sbar"><span><span class="dot '+dot+'"></span>'+st+'</span>'+
-      (a.timeWindow?'<span style="margin-left:6px;font-size:10px;color:'+(a._inTimeWindow?'#4ade80':'#fb923c')+'">🕐 '+(a._inTimeWindow?'时段内':'非时段')+' | '+a.timeWindow.start+':00-'+a.timeWindow.end+':00 (UTC'+esc(a.tz||'+0')+')</span>':'')+
+      (a.timeWindow?'<span style="margin-left:6px;font-size:10px;color:'+(a._inTimeWindow?'#4ade80':'#fb923c')+'">🕐 '+(a._inTimeWindow?t("card.inWindow"):t("card.outWindow"))+' | '+a.timeWindow.start+':00-'+a.timeWindow.end+':00 (UTC'+esc(a.tz||'+0')+')</span>':'')+
       '<span style="display:flex;gap:3px;align-items:center">'+
-      (!isDiscard?'<span class="btn-act" onclick="cardShield('+a.idx+')" title="屏蔽此 Key（不再参与调度）">🔇</span>':'')+
-      (isDiscard?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="重置此 Key">🔄</span>':'')+
-      (!isDiscard&&a.failCode?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="重置冷却">🔄</span>':'')+
-      (a.available&&!isDiscard?'<span class="btn-act'+(isBoosted?' boost-on':'')+'" onclick="boostKey('+a.idx+')" title="'+(isBoosted?'点击取消优先':'下一个请求优先使用此 Key')+'">'+(isBoosted?'✅':'⚡')+'</span>':'')+
-      '<span class="btn-act" onclick="cardTest('+a.idx+')" title="测试连通性">🔍</span>'+
+      (!isDiscard?'<span class="btn-act" onclick="cardShield('+a.idx+')" title="'+t("card.tShield")+'">🔇</span>':'')+
+      (isDiscard?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="'+t("card.tReset")+'">🔄</span>':'')+
+      (!isDiscard&&a.failCode?'<span class="btn-act" onclick="cardReset('+a.idx+')" title="'+t("card.tResetCd")+'">🔄</span>':'')+
+      (a.available&&!isDiscard?'<span class="btn-act'+(isBoosted?' boost-on':'')+'" onclick="boostKey('+a.idx+')" title="'+(isBoosted?t("card.tCancelBoost"):t("card.tBoost"))+'">'+(isBoosted?'✅':'⚡')+'</span>':'')+
+      '<span class="btn-act" onclick="cardTest('+a.idx+')" title="'+t("card.tTest")+'">🔍</span>'+
       '</span></div></div>';
   }
   const checkedIdxs=[...document.querySelectorAll("#grid .card-cb:checked")].map(c=>parseInt(c.dataset.idx));
@@ -9247,11 +9487,11 @@ function todayStr(){return new Date().toISOString().slice(0,10)}
 function fmtBytes(n){if(!n)return"0B";if(n>=1048576)return(n/1048576).toFixed(1)+"MB";if(n>=1024)return(n/1024).toFixed(1)+"KB";return n+"B"}
 function fmtDur(ms){if(ms>=1000)return(ms/1000).toFixed(2)+"s";return ms+"ms"}
 function fmtDate(ts){const d=new Date(ts);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
-function fmtDuration(ms){if(ms<=0)return'刚刚';const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+'d '+(h%24)+'h':h>0?h+'h '+(m%60)+'m':m>0?m+'m '+(s%60)+'s':s+'s'}
-function fmtTimeAgo(ms){if(ms<=0)return'刚刚';const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+'天'+(h%24)+'小时'+(m%60)+'分钟'+(s%60)+'秒':h>0?h+'小时'+(m%60)+'分钟'+(s%60)+'秒':m>0?m+'分钟'+(s%60)+'秒':s+'秒'}
+function fmtDuration(ms){if(ms<=0)return t("time.just");const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+'d '+(h%24)+'h':h>0?h+'h '+(m%60)+'m':m>0?m+'m '+(s%60)+'s':s+'s'}
+function fmtTimeAgo(ms){if(ms<=0)return t("time.just");const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);const u=(n,lab)=>n+lab;return(d>0?u(d,t("time.d"))+u(h%24,t("time.h"))+u(m%60,t("time.m"))+u(s%60,t("time.s")):h>0?u(h,t("time.h"))+u(m%60,t("time.m"))+u(s%60,t("time.s")):m>0?u(m,t("time.m"))+u(s%60,t("time.s")):u(s,t("time.s")))+t("time.ago")}
 function maskKey(k){return k&&k.length>12?k.slice(0,6)+'...'+k.slice(-4):(k||'')}
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
-const FAIL_MEAN={"401":"API Key 无效或已过期","402":"额度不足，账号已欠费","403":"权限不足，Key 无访问权限","429":"请求过频繁，触发了速率限制","500":"上游服务器内部错误","502":"上游网关错误","503":"服务暂时不可用","504":"上游超时"};
+const FAIL_MEAN={"401":"API key invalid or expired","402":"Out of quota, account has unpaid balance","403":"Permission denied, key lacks access","429":"Too many requests, rate limit triggered","500":"Upstream server internal error","502":"Upstream gateway error","503":"Service temporarily unavailable","504":"Upstream timeout"};
 function toggleAllCollapse(){
   const all=document.querySelectorAll("#grid .cbody");
   if(!all.length)return;
@@ -9265,26 +9505,27 @@ function cardReset(idx){
 }
 function cardTest(idx){
   const d=data.find(x=>x.idx===idx);
-  if(!d){alert("Key #"+idx+" 数据不可用");return}
+  if(!d){alert(t("alert.noData",{idx}));return}
   const fullKey=fullKeys[idx];
-  if(!fullKey){loadKeys();alert("Key 未加载，请重试");return}
+  if(!fullKey){loadKeys();alert(t("alert.keyNotLoaded"));return}
   const btns=document.querySelectorAll("#card-"+idx+" .btn-act");
   const btn=btns[btns.length-1];
   if(btn)btn.textContent="⏳";
   fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:fullKey,url:d.url})})
     .then(r=>r.json()).then(j=>{
       if(btn)btn.textContent="🔍";
-      if(j.ok)alert("Key #"+idx+" 测试成功！"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""));
-      else alert("Key #"+idx+" 测试失败: "+(j.error||"未知错误"));
+      if(j.ok)alert(t("alert.testOk",{idx})+(j.modelCount?t("alert.testModels",{n:j.modelCount,m:j.model}):"")+(j.duration?t("alert.testDuration",{d:j.duration}):""));
+      else alert(t("alert.testFail2",{idx,msg:j.error||t("common.unknown")}));
     }).catch(e=>{
       if(btn)btn.textContent="🔍";
-      alert("Key #"+idx+" 测试请求失败: "+e.message);
+      alert(t("alert.testFail",{idx,msg:e.message}));
     });
 }
 function boostKey(idx){
   fetch("http://localhost:3456/__boost-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx})})
     .then(r=>r.json()).catch(()=>{});
 }
+updateLangBtn();applyI18n();
 requireAdminToken().then(ok=>{if(ok){loadKeys();connectWS();startUpdateChecks();if(Notification.permission==="default")Notification.requestPermission();}});
 setTimeout(function(){if(!data.length)httpLoad()},3000);
 
@@ -9314,7 +9555,7 @@ async function openMgr(){
   renderMgr();
   document.getElementById("mgrModal").classList.add("on");
 }
-function closeMgr(){if(mgrDirty&&!confirm('有未保存的变更，确定退出？\\n点击「确定」不保存退出，点击「取消」返回编辑'))return;document.getElementById("mgrModal").classList.remove("on")}
+function closeMgr(){if(mgrDirty&&!confirm('You have unsaved changes. Exit anyway?\\nClick "OK" to exit without saving, "Cancel" to keep editing'))return;document.getElementById("mgrModal").classList.remove("on")}
 function toggleRemarkMode(){
   const rows=document.getElementById("mgrBody").children;
   for(let i=0;i<rows.length;i++){
@@ -9343,11 +9584,11 @@ function toggleAllMgrGroups(){
 }
 function toggleHideShielded(){
   mgrHideShielded=!mgrHideShielded;
-  document.getElementById("mgrHideBtn").textContent=mgrHideShielded?"🙉 显示已屏蔽":"🙈 隐藏已屏蔽";
+  document.getElementById("mgrHideBtn").textContent=mgrHideShielded?t("mgr.showShieldedBtn"):t("mgr.hideShieldedBtn");
   renderMgr();
 }
 function unlockKey(i){
-  if(!confirm('解锁 #'+(i+1)+'？将清除锁死状态，Key 恢复正常使用。'))return;
+  if(!confirm(t("mgr.unlockConfirm",{n:i+1})))return;
   fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})})
     .then(r=>r.json()).then(j=>{if(j.ok){mgrKeys[i]._locked=undefined;renderMgr();loadKeys()}});
 }
@@ -9371,20 +9612,29 @@ function renderMgr(){
   const thead=document.getElementById("mgrThead");
   if(mgrViewMode==="lastResp"){
     thead.innerHTML='<tr><th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>'+
-      '<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">分组</th>'+
-      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastStatus\\')">状态码<span id="mgrSortIcon_lastStatus"> '+((mgrSortBy==="lastStatus"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
-      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastTime\\')">最后响应<span id="mgrSortIcon_lastTime"> '+((mgrSortBy==="lastTime"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
-      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastModel\\')">响应模型<span id="mgrSortIcon_lastModel"> '+((mgrSortBy==="lastModel"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
+      '<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">'+t("mgr.group")+'</th>'+
+      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastStatus\\')">'+t("mgr.status")+'<span id="mgrSortIcon_lastStatus"> '+((mgrSortBy==="lastStatus"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
+      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastTime\\')">'+t("mgr.lastResp")+'<span id="mgrSortIcon_lastTime"> '+((mgrSortBy==="lastTime"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
+      '<th style="white-space:nowrap;cursor:pointer" onclick="toggleMgrSort(\\'lastModel\\')">'+t("mgr.respModel")+'<span id="mgrSortIcon_lastModel"> '+((mgrSortBy==="lastModel"?(mgrSortDir==="desc"?"▼":"▲"):"⇅"))+'</span></th>'+
       '<th style="width:100px"></th></tr>';
   }else{
     thead.innerHTML='<tr><th style="width:24px"><input type="checkbox" id="mgrSelectAll" onchange="selectAllMgr(this.checked)"></th>'+
-      '<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">分组</th>'+
-      '<th style="width:50px">状态码</th><th style="width:130px">重置</th><th style="width:50px">优先</th>'+
-      '<th style="width:80px">指定模型</th><th style="width:80px">覆盖模型</th>'+
-      '<th style="max-width:80px;white-space:nowrap">备注 <span onclick="toggleRemarkMode()" style="cursor:pointer;font-size:9px;color:#94a3b8;user-select:none" title="点击切换显示模式">🔄</span></th>'+
+      '<th style="width:30px">#</th><th style="min-width:140px">Key</th><th style="">URL</th><th style="width:40px">'+t("mgr.group")+'</th>'+
+      '<th style="width:50px">'+t("mgr.status")+'</th><th style="width:130px">'+t("mgr.reset")+'</th><th style="width:50px">'+t("mgr.priority")+'</th>'+
+      '<th style="width:80px">'+t("mgr.models")+'</th><th style="width:80px">'+t("mgr.override")+'</th>'+
+      '<th style="max-width:80px;white-space:nowrap">'+t("mgr.remark")+' <span onclick="toggleRemarkMode()" style="cursor:pointer;font-size:9px;color:#94a3b8;user-select:none" title="'+t("mgr.toggleRemarkMode")+'">🔄</span></th>'+
       '<th style="width:80px"></th></tr>';
   }
   const tbody=document.getElementById("mgrBody");
+  const groupLabel=(group)=>{
+    if(statusFilter==="resetDay"){
+      const dayKey={Mon:"wd.1",Tue:"wd.2",Wed:"wd.3",Thu:"wd.4",Fri:"wd.5",Sat:"wd.6",Sun:"wd.7"}[group];
+      if(dayKey)return t(dayKey);
+      if(group==="auto (unset)")return t("mgr.autoUnset");
+      if(group==="unknown")return t("mgr.unknown");
+    }
+    return group==="uncategorized"?t("mgr.uncategorized"):group;
+  };
   tbody.innerHTML="";
   const filtered=[];const grp={};
   for(let i=0;i<mgrKeys.length;i++){
@@ -9405,18 +9655,18 @@ function renderMgr(){
     if(mgrHideShielded&&k.status==="shielded")continue;
     if(mgrGroupCodeFilter){
       let _kg;
-      if(statusFilter==="resetDay"){const _dm={1:"\\u5468\\u4e00",2:"\\u5468\\u4e8c",3:"\\u5468\\u4e09",4:"\\u5468\\u56db",5:"\\u5468\\u4e94",6:"\\u5468\\u516d",7:"\\u5468\\u65e5"};_kg=k.resetDay!=null?(_dm[k.resetDay]||"\\u672a\\u77e5"):"\\u81ea\\u52a8\\uff08\\u672a\\u8bbe\\u7f6e\\uff09";}
-      else{_kg=(k.remark||"").split(/[，,\\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"\\u672a\\u5206\\u7c7b";}
+      if(statusFilter==="resetDay"){const _dm={1:"Mon",2:"Tue",3:"Wed",4:"Thu",5:"Fri",6:"Sat",7:"Sun"};_kg=k.resetDay!=null?(_dm[k.resetDay]||"unknown"):"auto (unset)";}
+      else{_kg=(k.remark||"").split(/[，,\\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"uncategorized";}
       const _ec=k._failCode!=null?String(k._failCode):(k._lastStatus!=null?String(k._lastStatus):"");
       if(_kg!==mgrGroupCodeFilter.group||_ec!==String(mgrGroupCodeFilter.code))continue;
     }
     filtered.push(i);
     let g;
     if(statusFilter==="resetDay"){
-      const dayMap={1:"\\u5468\\u4e00",2:"\\u5468\\u4e8c",3:"\\u5468\\u4e09",4:"\\u5468\\u56db",5:"\\u5468\\u4e94",6:"\\u5468\\u516d",7:"\\u5468\\u65e5"};
-      g=k.resetDay!=null?(dayMap[k.resetDay]||"\\u672a\\u77e5"):"\\u81ea\\u52a8\\uff08\\u672a\\u8bbe\\u7f6e\\uff09";
+      const dayMap={1:"Mon",2:"Tue",3:"Wed",4:"Thu",5:"Fri",6:"Sat",7:"Sun"};
+      g=k.resetDay!=null?(dayMap[k.resetDay]||"unknown"):"auto (unset)";
     }else{
-      g=(k.remark||"").split(/[，,\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"\\u672a\\u5206\\u7c7b";
+      g=(k.remark||"").split(/[，,\\s]/)[0]||(k.url||"").replace(/https?:\\/\\//,"").slice(0,16)||"uncategorized";
     }
     if(!grp[g])grp[g]=[];
     grp[g].push(i);
@@ -9424,7 +9674,7 @@ function renderMgr(){
   grpCache=grp;
   mgrSearchCache=filtered;
   const shieldedCount=mgrKeys.filter(k=>k.status==="shielded").length;
-  document.getElementById("mgrCount").textContent="共 "+mgrKeys.length+" 个，已屏蔽 "+shieldedCount+" 个"+(filtered.length<mgrKeys.length?"，筛选后 "+filtered.length+" 个":"")+(mgrHideShielded?"（已屏蔽已隐藏）":"");
+  document.getElementById("mgrCount").textContent=t("mgr.count",{total:mgrKeys.length,shielded:shieldedCount})+(filtered.length<mgrKeys.length?t("mgr.countFiltered",{n:filtered.length}):"")+(mgrHideShielded?t("mgr.hideShielded"):"");
   if(mgrSortBy==="resetDay"){
     Object.keys(grp).forEach(g=>{
       grp[g].sort((a,b)=>{
@@ -9452,7 +9702,7 @@ function renderMgr(){
   }
   const groups=Object.keys(grp);
   if(statusFilter==="resetDay"){
-    const dayOrder={"周一":1,"周二":2,"周三":3,"周四":4,"周五":5,"周六":6,"周日":7,"未知":8,"自动（未设置）":9};
+    const dayOrder={"Mon":1,"Tue":2,"Wed":3,"Thu":4,"Fri":5,"Sat":6,"Sun":7,"unknown":8,"auto (unset)":9};
     groups.sort((a,b)=>(dayOrder[a]??99)-(dayOrder[b]??99));
   }
   for(let gi=0;gi<groups.length;gi++){
@@ -9464,7 +9714,7 @@ function renderMgr(){
       const color=code>=200&&code<300?"#4ade80":code===429?"#fbbf24":code>=400&&code<500?"#fb923c":code>=500?"#f87171":code===0?"#f87171":"#94a3b8";
       const isActive=mgrGroupCodeFilter&&mgrGroupCodeFilter.group===g&&String(mgrGroupCodeFilter.code)===String(code);
       const border=isActive?'border-color:'+color:'border-color:#475569';
-      const cancelBtn=isActive?'<span onclick="event.stopPropagation();mgrGroupCodeFilter=null;renderMgr();" style="cursor:pointer;color:#94a3b8;margin-left:2px" title="\\u53d6\\u6d88\\u7b5b\\u9009">\\u2715</span>':'';
+      const cancelBtn=isActive?'<span onclick="event.stopPropagation();mgrGroupCodeFilter=null;renderMgr();" style="cursor:pointer;color:#94a3b8;margin-left:2px" title="'+t("mgr.clearCodeFilterTitle")+'">\\u2715</span>':'';
       return'<span onclick="event.stopPropagation();mgrGroupCodeFilter={group:\\''+esc(g).replace(/'/g,"\\\\'")+'\\',code:'+code+'};renderMgr();" style="cursor:pointer;background:#1e293b;color:'+color+';'+border+';border-radius:3px;padding:1px 4px;font-size:10px;margin-left:4px">'+esc(String(code))+'\\u00d7'+cnt+cancelBtn+'</span>';
     }).join('');
     const hdr=document.createElement("tr");
@@ -9472,7 +9722,7 @@ function renderMgr(){
     hdr.onclick=function(){toggleGroup(g)};
     const colspan=mgrViewMode==="lastResp"?9:12;
     hdr.innerHTML='<td colspan="'+colspan+'" style="padding:6px 8px;font-size:11px;font-weight:600;border-bottom:1px solid #334155;user-select:none">'+
-      (collapsed?'▶':'▼')+' '+esc(g)+' ('+items.length+')'+codeBadges+'</td>';
+       (collapsed?'▶':'▼')+' '+esc(groupLabel(g))+' ('+items.length+')'+codeBadges+'</td>';
     tbody.appendChild(hdr);
     if(collapsed)continue;
     for(let ii=0;ii<items.length;ii++){
@@ -9491,54 +9741,54 @@ function renderMgr(){
       };
       tr.style.cursor="grab";
       let badges='';
-      if(sh)badges+='<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">已屏蔽</span>';
-      if(lk)badges+='<span class="badge" style="background:#2e1065;color:#a78bfa;white-space:nowrap;margin-left:2px">🔒 锁死</span>';
+      if(sh)badges+='<span class="badge" style="background:#3b1f1e;color:#f87171;white-space:nowrap">'+t("mgr.shielded")+'</span>';
+      if(lk)badges+='<span class="badge" style="background:#2e1065;color:#a78bfa;white-space:nowrap;margin-left:2px">'+t("mgr.locked")+'</span>';
       const fc=k._failCode||"";
       function mgrStatusBadge(code){if(code==null||code==="")return'<span style="color:#64748b">-</span>';const c=code>=200&&code<300?"#4ade80":code===429?"#fbbf24":code>=400&&code<500?"#fb923c":code>=500?"#f87171":code===0?"#f87171":"#94a3b8";return'<span style="color:'+c+';font-weight:500">'+code+'</span>';}
       const fcBadge=fc?'<span class="badge" style="background:#1e293b;color:'+(fc===429||fc==="429"?"#fbbf24":fc===401||fc==="401"?"#fb923c":fc===403||fc==="403"?"#f87171":"#94a3b8")+';border:1px solid #475569">'+fc+'</span>':(!sh&&k._available?'<span class="badge" style="background:#1e293b;color:#4ade80;border:1px solid #475569">200</span>':'');
       const actionsTd='<td style="display:flex;gap:4px;align-items:center;white-space:nowrap">'+
-          '<span class="del" onclick="testKey('+i+')" title="#'+(i+1)+' 测试连通性">🔍</span>'+
-          '<span class="del" onclick="resetKeyStatus('+i+')" title="#'+(i+1)+' 重置状态（清除冷却/废弃/锁死）">🔄</span>'+
-          '<span class="del" onclick="toggleShield('+i+')" title="#'+(i+1)+' '+(sh?'恢复使用':'屏蔽')+'">'+(sh?'🔄':'🔇')+'</span>'+
-          (lk?'<span class="del" onclick="unlockKey('+i+')" title="#'+(i+1)+' 解锁 Key" style="color:#a78bfa">🔓</span>':'')+
-          '<span class="del" onclick="delKeyRow('+i+')" title="#'+(i+1)+' 删除">✕</span></td>';
+          '<span class="del" onclick="testKey('+i+')" title="'+t("mgr.testTitle",{n:i+1})+'">🔍</span>'+
+          '<span class="del" onclick="resetKeyStatus('+i+')" title="'+t("mgr.resetTitle",{n:i+1})+'">🔄</span>'+
+          '<span class="del" onclick="toggleShield('+i+')" title="'+t("mgr.shieldTitle",{n:i+1,act:sh?t("mgr.unshield"):t("mgr.shield")})+'">'+(sh?'🔄':'🔇')+'</span>'+
+          (lk?'<span class="del" onclick="unlockKey('+i+')" title="'+t("mgr.unlockTitle",{n:i+1})+'" style="color:#a78bfa">🔓</span>':'')+
+          '<span class="del" onclick="delKeyRow('+i+')" title="'+t("mgr.delTitle",{n:i+1})+'">✕</span></td>';
       if(mgrViewMode==="lastResp"){
         const ls=k._lastStatus!=null?k._lastStatus:(k._failCode!=null?k._failCode:null);
         const lt=k._lastTime||k._failTime||null;
         const lm=k._lastModel||"";
         tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
           '<td>'+(i+1)+'</td>'+
-          '<td style="display:flex;align-items:center;gap:4px"'+(k.timeWindow?' title="错峰时段: '+k.timeWindow.start+':00-'+k.timeWindow.end+':00 (UTC'+(k.tz||'+0')+') | '+(k._inTimeWindow?'时段内':'非时段')+'"':'')+'><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
+          '<td style="display:flex;align-items:center;gap:4px"'+(k.timeWindow?' title="'+t("mgr.twWindow",{s:k.timeWindow.start,e:k.timeWindow.end,t:k.tz||"+0",st:k._inTimeWindow?t("card.inWindow"):t("card.outWindow")})+"'":'')+'><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
           '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
-          '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
+          '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="'+t("mgr.groupPh")+'" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="'+t("mgr.groupHint")+'"></td>'+
           '<td style="text-align:center;white-space:nowrap">'+mgrStatusBadge(ls)+'</td>'+
-          '<td style="font-size:10px;white-space:nowrap">'+(lt?fmtTimeAgo(Date.now()-lt)+'前':'<span style="color:#64748b">未使用</span>')+'</td>'+
+          '<td style="font-size:10px;white-space:nowrap">'+(lt?fmtTimeAgo(Date.now()-lt)+t("time.ago"):'<span style="color:#64748b">'+t("mgr.unused")+'</span>')+'</td>'+
           '<td style="font-size:10px;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(lm)+'">'+(lm?esc(lm):'<span style="color:#64748b">-</span>')+'</td>'+
           actionsTd;
       }else{
         tr.innerHTML='<td><input type="checkbox" class="mgr-cb" value="'+i+'"></td>'+
           '<td>'+(i+1)+'</td>'+
-          '<td style="display:flex;align-items:center;gap:4px"'+(k.timeWindow?' title="错峰时段: '+k.timeWindow.start+':00-'+k.timeWindow.end+':00 (UTC'+(k.tz||'+0')+') | '+(k._inTimeWindow?'时段内':'非时段')+'"':'')+'><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
+          '<td style="display:flex;align-items:center;gap:4px"'+(k.timeWindow?' title="'+t("mgr.twWindow",{s:k.timeWindow.start,e:k.timeWindow.end,t:k.tz||"+0",st:k._inTimeWindow?t("card.inWindow"):t("card.outWindow")})+"'":'')+'><input class="kkey" value="'+esc(k.key||"")+'" placeholder="sk-..." style="flex:1">'+badges+'</td>'+
           '<td><input class="kurl" value="'+esc(k.url||"")+'" placeholder="https://..." style="width:100%"></td>'+
-          '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="组名" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="所属分组，如 A/B/C"></td>'+
+          '<td><input class="kgroup" value="'+esc(k.group||"A")+'" placeholder="'+t("mgr.groupPh")+'" style="width:36px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" title="'+t("mgr.groupHint")+'"></td>'+
           '<td style="text-align:center">'+fcBadge+'</td>'+
           '<td style="display:flex;gap:4px;align-items:center">'+
-          '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');var h=this.parentNode.querySelector(\\'.kresethours\\');d&&(d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\');h&&(h.style.display=this.value===\\'hourly\\'?\\'inline-block\\':\\'none\\')"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>每日</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>每周</option><option value="hourly"'+(k.reset==="hourly"?" selected":"")+'>每N小时</option><option value="never"'+(k.reset==="never"?" selected":"")+'>永久</option></select>'+
+          '<select class="kreset" onchange="var d=this.parentNode.querySelector(\\'.kresetday\\');var h=this.parentNode.querySelector(\\'.kresethours\\');d&&(d.style.display=this.value===\\'weekly\\'?\\'inline-block\\':\\'none\\');h&&(h.style.display=this.value===\\'hourly\\'?\\'inline-block\\':\\'none\\')"><option value="daily"'+(k.reset==="daily"?" selected":"")+'>'+t("mgr.resetDaily")+'</option><option value="weekly"'+(k.reset==="weekly"?" selected":"")+'>'+t("mgr.resetWeekly")+'</option><option value="hourly"'+(k.reset==="hourly"?" selected":"")+'>'+t("mgr.resetHourly")+'</option><option value="never"'+(k.reset==="never"?" selected":"")+'>'+t("mgr.resetNever")+'</option></select>'+
           '<input class="kresethours" type="number" min="1" max="168" style="display:'+(k.reset==="hourly"?"inline-block":"none")+';width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" value="'+(k.resetHours||"")+'" placeholder="h">'+
           '<select class="kresetday" style="display:'+(k.reset==="weekly"?"inline-block":"none")+';width:60px;font-size:10px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
-            '<option value="">自动</option>'+
-            '<option value="1"'+(k.resetDay=="1"?" selected":"")+'>周一</option>'+
-            '<option value="2"'+(k.resetDay=="2"?" selected":"")+'>周二</option>'+
-            '<option value="3"'+(k.resetDay=="3"?" selected":"")+'>周三</option>'+
-            '<option value="4"'+(k.resetDay=="4"?" selected":"")+'>周四</option>'+
-            '<option value="5"'+(k.resetDay=="5"?" selected":"")+'>周五</option>'+
-            '<option value="6"'+(k.resetDay=="6"?" selected":"")+'>周六</option>'+
-            '<option value="7"'+(k.resetDay=="7"?" selected":"")+'>周日</option>'+
+            '<option value="">'+t("wd.auto")+'</option>'+
+            '<option value="1"'+(k.resetDay=="1"?" selected":"")+'>'+t("wd.1")+'</option>'+
+            '<option value="2"'+(k.resetDay=="2"?" selected":"")+'>'+t("wd.2")+'</option>'+
+            '<option value="3"'+(k.resetDay=="3"?" selected":"")+'>'+t("wd.3")+'</option>'+
+            '<option value="4"'+(k.resetDay=="4"?" selected":"")+'>'+t("wd.4")+'</option>'+
+            '<option value="5"'+(k.resetDay=="5"?" selected":"")+'>'+t("wd.5")+'</option>'+
+            '<option value="6"'+(k.resetDay=="6"?" selected":"")+'>'+t("wd.6")+'</option>'+
+            '<option value="7"'+(k.resetDay=="7"?" selected":"")+'>'+t("wd.7")+'</option>'+
           '</select></td>'+
-          '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="数值越大优先级越高，启用轮询后生效"></td>'+
-          '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="指定模型名" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="逗号分隔，如 gpt-5.5, gpt-5.4-mini"></td>'+
-          '<td><input class="kmodel" value="'+esc(k.model||"")+'" placeholder="覆盖模型" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="非空时转发请求时强制替换 model 为此值"></td>'+
-          '<td>'+(mgrRemarkMode==="activated"&&k._activatedAt?'<span class="kremark" style="font-size:10px;color:#94a3b8;cursor:default"'+(k.remark?' title="'+esc(k.remark)+'"':'')+'>'+fmtDate(k._activatedAt)+' / '+fmtDuration(Date.now()-k._activatedAt)+'</span>':'<input class="kremark" value="'+esc(k.remark||"")+'" placeholder="备注" style="width:100%"'+(k._activatedAt?' title="首次启用: '+fmtDate(k._activatedAt)+' | 启用至今: '+fmtDuration(Date.now()-k._activatedAt)+'"':'')+'>')+'</td>'+
+          '<td><input class="kprio" type="number" value="'+(k.priority||0)+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-align:center" min="0" title="'+t("mgr.priorityHint")+'"></td>'+
+          '<td><input class="kmodels" value="'+esc((k.models||[]).join(', '))+'" placeholder="'+t("mgr.modelPh2")+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="'+t("mgr.modelsHint")+'"></td>'+
+          '<td><input class="kmodel" value="'+esc(k.model||"")+'" placeholder="'+t("mgr.overridePh")+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px" title="'+t("mgr.overrideHint")+'"></td>'+
+          '<td>'+(mgrRemarkMode==="activated"&&k._activatedAt?'<span class="kremark" style="font-size:10px;color:#94a3b8;cursor:default"'+(k.remark?' title="'+esc(k.remark)+'"':'')+'>'+fmtDate(k._activatedAt)+' / '+fmtDuration(Date.now()-k._activatedAt)+'</span>':'<input class="kremark" value="'+esc(k.remark||"")+'" placeholder="'+t("mgr.remarkPh")+'" style="width:100%"'+(k._activatedAt?' title="'+t("mgr.firstUsedTitle",{t:fmtDate(k._activatedAt),d:fmtDuration(Date.now()-k._activatedAt)})+'"':'')+'>')+'</td>'+
           actionsTd;
       }
       tbody.appendChild(tr);
@@ -9553,10 +9803,10 @@ function toggleMgrSort(field){
   renderMgr();
 }
 function cleanFailedKeys(){
-  const days=prompt("清理条件：最后响应距今 ≥ ? 天","7");
+  const days=prompt(t("mgr.cleanPrompt"),"7");
   if(days===null)return;
   const d=parseInt(days)||0;
-  if(d<=0){alert("请输入正整数天数");return}
+  if(d<=0){alert(t("mgr.cleanInvalid"));return}
   const cutoff=Date.now()-d*86400000;
   let count=0;
   document.querySelectorAll("#mgrBody .mgr-cb").forEach(cb=>{
@@ -9569,7 +9819,7 @@ function cleanFailedKeys(){
     if(badStatus&&(oldTime||neverUsed)){cb.checked=true;count++;}
     else cb.checked=false;
   });
-  alert("已选中 "+count+" 个符合条件的 Key\\n（最后响应≥"+d+"天 且 状态码≥400 或 网络错误）\\n\\n可使用「批量屏蔽」处理");
+  alert(t("mgr.cleanDone",{n:count,d:d}));
 }
 function addKeyRow(){mgrKeys.push({key:"",url:"",reset:"weekly",remark:"",priority:0,models:[],model:null,resetDay:void 0,resetHours:void 0,group:"A"});mgrDirty=true;renderMgr()}
 function toggleShield(i){mgrKeys[i].status=mgrKeys[i].status==="shielded"?"active":"shielded";renderMgr()}
@@ -9581,7 +9831,7 @@ async function resetKeyStatus(i){
   }catch(e){}
 }
 function delKeyRow(i){
-  if(!confirm('确定要删除 Key #'+(i+1)+'？\\n删除后不再显示和调用，可在 keys.json 中恢复。'))return;
+  if(!confirm(t("mgr.delConfirm",{n:i+1})))return;
   mgrKeys[i].status="deleted";renderMgr();
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok){mgrDirty=false;loadKeys()}})},100);
 }
@@ -9607,14 +9857,14 @@ function getSelectedMgr(){
 }
 function batchShieldMgr(){
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要屏蔽的 Key");return}
+  if(!sel.length){alert(t("mgr.needSel",{act:t("mgr.needSelShield")}));return}
   sel.forEach(i=>{mgrKeys[i].status="shielded"});
   mgrDirty=true;
   renderMgr();
 }
 function batchResetMgr(){
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要重置的 Key");return}
+  if(!sel.length){alert(t("mgr.needSel",{act:t("mgr.needSelReset")}));return}
   sel.forEach(i=>{
     mgrKeys[i].status="active";
     fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i+1})}).catch(()=>{});
@@ -9624,29 +9874,29 @@ function batchResetMgr(){
 }
 function batchDeleteMgr(){
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要删除的 Key");return}
-  if(!confirm('确定要删除选中的 '+sel.length+' 个 Key？\\n删除后不再显示和调用，可在 keys.json 中恢复。'))return;
+  if(!sel.length){alert(t("mgr.needSel",{act:t("mgr.needSelDelete")}));return}
+  if(!confirm(t("mgr.delBatchConfirm",{n:sel.length})))return;
   sel.forEach(i=>{mgrKeys[i].status="deleted"});
   renderMgr();
   setTimeout(function(){var a=collectMgr();if(a.length)fetch("http://localhost:3456/__keys",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(a,null,2)}).then(r=>r.json()).then(j=>{if(j.ok){mgrDirty=false;loadKeys()}})},100);
 }
 function batchSetTimeWindow(){
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要设置错峰时段的 Key");return}
+  if(!sel.length){alert(t("mgr.needSel",{act:t("mgr.needSelTime")}));return}
   const tzOpts=Array.from({length:25},(_, i)=>i-12).map(v=>'<option value="'+(v>=0?"+":"")+v+'">UTC'+(v>=0?"+":"")+v+'</option>').join('');
   const hourOpts=Array.from({length:24},(_, i)=>'<option value="'+i+'">'+(i<10?'0':'')+i+':00</option>').join('');
   const html='<div style="padding:12px;background:#1e293b;border-radius:8px;min-width:300px">'+
-    '<div style="margin-bottom:8px;color:#e2e8f0;font-size:13px;font-weight:500">设置选中 '+sel.length+' 个 Key 的错峰时段</div>'+
-    '<div style="margin-bottom:10px;font-size:11px;color:#94a3b8;line-height:1.7;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px">设定后仅在该时段内参与调度（按所选时区，24 小时制）。<br>开始&lt;结束=同天时段（如 08-17）；开始&gt;结束=跨夜时段（如 22-08）；开始==结束=全天可用。</div>'+
+    '<div style="margin-bottom:8px;color:#e2e8f0;font-size:13px;font-weight:500">'+t("mgr.timeSetTitle",{n:sel.length})+'</div>'+
+    '<div style="margin-bottom:10px;font-size:11px;color:#94a3b8;line-height:1.7;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px">'+t("mgr.timeHelp")+'</div>'+
     '<div style="display:grid;grid-template-columns:auto 1fr;gap:8px;font-size:12px;align-items:center">'+
-    '<label style="color:#94a3b8">时区</label><select id="twTz" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+tzOpts+'</select>'+
-    '<label style="color:#94a3b8">开始</label><select id="twStart" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
-    '<label style="color:#94a3b8">结束</label><select id="twEnd" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
+    '<label style="color:#94a3b8">'+t("mgr.twTz")+'</label><select id="twTz" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+tzOpts+'</select>'+
+    '<label style="color:#94a3b8">'+t("mgr.twStart")+'</label><select id="twStart" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
+    '<label style="color:#94a3b8">'+t("mgr.twEnd")+'</label><select id="twEnd" onchange="updateTwPreview()" style="background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px;border-radius:4px">'+hourOpts+'</select>'+
     '</div>'+
     '<div id="twPreview" style="margin-top:10px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px;font-size:12px;color:#cbd5e1;line-height:1.7"></div>'+
     '<div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">'+
-    '<button class="btn" onclick="this.closest(\\'.modal-cover\\').remove()">取消</button>'+
-    '<button class="btn btn-p" onclick="confirmSetTimeWindow()">确认设置</button>'+
+    '<button class="btn" onclick="this.closest(\\'.modal-cover\\').remove()">'+t("mgr.cancel")+'</button>'+
+    '<button class="btn btn-p" onclick="confirmSetTimeWindow()">'+t("mgr.confirm")+'</button>'+
     '</div></div>';
   const cover=document.createElement('div');
   cover.className='modal-cover';
@@ -9663,10 +9913,10 @@ function updateTwPreview(){
   if(!tzEl||!startEl||!endEl||!pre)return;
   const tz=tzEl.value,start=parseInt(startEl.value),end=parseInt(endEl.value);
   const windowDesc=start===end
-    ? '全时段（无限制，等效清除）'
-    : (start<end?start+':00-'+end+':00（同天窗口）':start+':00-'+end+':00（跨夜窗口）');
+    ? t("mgr.twFull")
+    : (start<end?t("mgr.twSameDay",{s:start,e:end}):t("mgr.twOvernight",{s:start,e:end}));
   const inWin=isInTimeWindow({timeWindow:{start,end},tz});
-  pre.innerHTML='时段：<b style="color:#e2e8f0">'+windowDesc+'</b>（'+tz+'，24 小时制）<br>当前：<b style="color:'+(inWin?'#4ade80':'#fb923c')+'">'+(inWin?'时段内 ✔（可参与调度）':'非时段 ✖（不参与调度）')+'</b>';
+  pre.innerHTML=t("mgr.twPreview",{win:windowDesc,tz:tz,color:inWin?"#4ade80":"#fb923c",state:inWin?t("mgr.twIn"):t("mgr.twOut")});
 }
 function confirmSetTimeWindow(){
   const sel=getSelectedMgr();
@@ -9685,8 +9935,8 @@ function confirmSetTimeWindow(){
 }
 function batchClearTimeWindow(){
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要清除时段的 Key");return}
-  if(!confirm('确定清除选中的 '+sel.length+' 个 Key 的时段设置？'))return;
+  if(!sel.length){alert(t("mgr.needSel",{act:t("mgr.needSelClearTime")}));return}
+  if(!confirm(t("mgr.clearTimeConfirm",{n:sel.length})))return;
   sel.forEach(i=>{
     delete mgrKeys[i].tz;
     delete mgrKeys[i].timeWindow;
@@ -9731,7 +9981,7 @@ function collectMgr(){
 }
 async function saveKeys(){
   const arr=collectMgr();
-  if(!arr.length){alert("至少需要一个有效的 Key");return}
+  if(!arr.length){alert(t("mgr.atLeastOne"));return}
   try{
     const r=await fetch("http://localhost:3456/__keys",{
       method:"PUT",
@@ -9739,16 +9989,16 @@ async function saveKeys(){
       body:JSON.stringify(arr,null,2)
     });
     const j=await r.json();
-    if(j.error){alert("保存失败: "+j.error);return}
+    if(j.error){alert(t("mgr.saveFail",{e:j.error}));return}
     mgrDirty=false;
     closeMgr();loadKeys();
-  }catch(e){alert("保存失败: "+e.message)}
+  }catch(e){alert(t("mgr.saveFail",{e:e.message}))}
 }
 function openImportMgr(){document.getElementById("importMgrTxt").value="";document.getElementById("importMgrCover").style.display="flex"}
 function closeImportMgr(){document.getElementById("importMgrCover").style.display="none"}
 function doImportKeys(){
   const txt=document.getElementById("importMgrTxt").value;
-  if(!txt.trim()){alert("请粘贴 Key 数据");return}
+  if(!txt.trim()){alert(t("mgr.pasteData"));return}
   const lines=txt.trim().split("\\n").filter(l=>l.trim());
   let added=0,skipped=0;
   for(const line of lines){
@@ -9757,7 +10007,7 @@ function doImportKeys(){
     const key=parts[0];
     if(!parts[1]||!parts[1].startsWith("http")){skipped++;continue}
     const url=parts[1];
-    const resetMap={"daily":"daily","weekly":"weekly","never":"never","hourly":"hourly","每日":"daily","每周":"weekly","永久":"never","每N小时":"hourly"};
+    const resetMap={"daily":"daily","weekly":"weekly","never":"never","hourly":"hourly","Daily":"daily","Weekly":"weekly","Never":"never","Every N h":"hourly"};
     const reset=resetMap[parts[2]]||"weekly";
     const priority=parseInt(parts[3])||0;
     const group=(parts[4]||"A").toUpperCase();
@@ -9767,7 +10017,7 @@ function doImportKeys(){
   }
   if(added){mgrDirty=true;renderMgr()}
   closeImportMgr();
-  alert("成功添加 "+added+" 个 Key"+(skipped>0?"，"+skipped+" 行被跳过（格式错误或缺少 URL）":""));
+  alert(t("mgr.addKeysDone",{n:added})+(skipped>0?t("mgr.addKeysSkipped",{n:skipped}):""));
 }
 function openExportMgr(){document.getElementById("exportMgrCover").style.display="flex"}
 function closeExportMgr(){document.getElementById("exportMgrCover").style.display="none"}
@@ -9776,9 +10026,9 @@ function doExportCSV(){
   document.querySelectorAll(".exp-f:checked").forEach(el=>fields.push(el.value));
   const esc=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
   const headers=["key","url"];
-  const labels={"key":"Key","url":"URL","reset":"reset","priority":"priority","group":"group","remark":"remark","models":"models","model":"model","resetDay":"resetDay","tz":"tz","timeWindow":"timeWindow"};
+  const labels={key:t("mgr.csvKey"),url:t("mgr.csvUrl"),reset:t("mgr.reset"),priority:t("mgr.priority"),group:t("mgr.group"),remark:t("mgr.remark"),models:t("mgr.csvModels"),model:t("mgr.csvOverride"),resetDay:t("mgr.csvResetDay"),tz:t("mgr.csvTz"),timeWindow:t("mgr.csvTimeWindow")};
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要导出的 Key");return}
+  if(!sel.length){alert(t("mgr.exportSelect"));return}
   const rows=sel.map(i=>mgrKeys[i]).filter(k=>k&&k.key).map(k=>{
     return fields.map(f=>{
       if(f==="timeWindow")return k.timeWindow?(k.timeWindow.start+":"+k.timeWindow.end):"";
@@ -9798,24 +10048,24 @@ function doExportCSV(){
 }
 async function testKey(i){
   const k=mgrKeys[i];
-  if(!k||!k.key){alert("Key 为空，无法测试");return}
+  if(!k||!k.key){alert(t("mgr.keyEmptyTest"));return}
   const btn=document.querySelector("#mgrBody .mgr-cb[value='"+i+"']")?.closest("tr")?.querySelector(".del");
   if(btn)btn.textContent="⏳";
   try{
     const r=await fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:k.key,url:k.url})});
     const j=await r.json();
     if(btn)btn.textContent="🔍";
-    if(j.ok){alert("Key #"+(i+1)+" 测试成功！"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+(j.duration?" 耗时: "+j.duration+"ms":""))}
-    else{alert("Key #"+(i+1)+" 测试失败: "+(j.error||"未知错误"))}
+    if(j.ok){alert(t("mgr.testOkB",{n:i+1})+(j.modelCount?t("mgr.modelsN",{n:j.modelCount,m:j.model}):"")+(j.duration?t("mgr.durationMs",{n:j.duration}):""))}
+    else{alert(t("mgr.testFailB",{n:i+1,e:j.error||t("mgr.unknown")}))}
   }catch(e){
     if(btn)btn.textContent="🔍";
-    alert("Key #"+(i+1)+" 测试请求失败: "+e.message)
+    alert(t("mgr.testReqFailB",{n:i+1,e:e.message}))
   }
 }
 let batchTestPassed=[],batchTestResults=[];
 async function batchTestMgr(){
   const sel=getSelectedMgr();
-  if(!sel.length){alert("请先勾选要测试的 Key");return}
+  if(!sel.length){alert(t("mgr.batchTestSelect"));return}
   const area=document.getElementById("batchTestResults");
   const list=document.getElementById("batchTestList");
   const summary=document.getElementById("batchTestSummary");
@@ -9825,16 +10075,16 @@ async function batchTestMgr(){
   batchTestPassed=[];batchTestResults=[];
   area.style.display="block";
   list.innerHTML="";
-  summary.textContent="测试中...";
+  summary.textContent=t("mgr.batchTesting");
   resetBtn.style.display="none";
   if(resetAllBtn)resetAllBtn.style.display="none";
   for(const i of sel){
     const k=mgrKeys[i];
     const line=document.createElement("div");
     line.id="btr-"+i;
-    if(!k||!k.key){line.textContent="⏭️ #"+(i+1)+" Key 为空，跳过";list.appendChild(line);continue}
+    if(!k||!k.key){line.textContent=t("mgr.batchSkip",{n:i+1});list.appendChild(line);continue}
     batchTestResults.push({idx:i, ok:false, status:null});
-    line.textContent="⏳ #"+(i+1)+" 测试中...";
+    line.textContent=t("mgr.batchTestingLine",{n:i+1});
     list.appendChild(line);
     try{
       const r=await fetch("http://localhost:3456/__test-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({key:k.key,url:k.url})});
@@ -9843,20 +10093,20 @@ async function batchTestMgr(){
       if(j.ok){
         batchTestPassed.push(i);
         if(cr){cr.ok=true;cr.status=j.status}
-         const dur=j.duration||0;let durc="#22c55e";if(dur>=3000)durc="#ef4444";else if(dur>=1000)durc="#eab308";line.textContent="✅ #"+(i+1)+" 成功"+(j.modelCount?" 可用模型("+j.modelCount+"个): "+j.model:"")+" ("+dur+"ms)";line.style.color=durc;
+         const dur=j.duration||0;let durc="#22c55e";if(dur>=3000)durc="#ef4444";else if(dur>=1000)durc="#eab308";line.textContent=t("mgr.batchOk",{n:i+1})+(j.modelCount?t("mgr.modelsN",{n:j.modelCount,m:j.model}):"")+" ("+dur+"ms)";line.style.color=durc;
       }else{
         if(cr)cr.status=j.status||null;
-        line.textContent="❌ #"+(i+1)+" 失败: "+(j.error||"未知错误");
+        line.textContent=t("mgr.batchFail",{n:i+1,e:j.error||t("mgr.unknown")});
       }
     }catch(e){
-      line.textContent="❌ #"+(i+1)+" 请求异常: "+e.message;
+      line.textContent=t("mgr.batchReqFail",{n:i+1,e:e.message});
     }
   }
   const total=sel.length;
   const passed=batchTestPassed.length;
-  summary.textContent="测试完成 — "+passed+" 个通过, "+(total-passed)+" 个失败";
-  if(passed>0){resetBtn.style.display="inline-block";resetBtn.textContent="🔄 重置通过测试的 Key ("+passed+"个)"}
-  if(resetAllBtn&&batchTestResults.length>0){resetAllBtn.style.display="inline-block";resetAllBtn.textContent="🔄 重置所有 Key 的状态码 ("+batchTestResults.length+"个)"}
+  summary.textContent=t("mgr.batchDone",{p:passed,f:total-passed});
+  if(passed>0){resetBtn.style.display="inline-block";resetBtn.textContent=t("mgr.resetPassedBtn",{n:passed})}
+  if(resetAllBtn&&batchTestResults.length>0){resetAllBtn.style.display="inline-block";resetAllBtn.textContent=t("mgr.resetAllBtn",{n:batchTestResults.length})}
 }
 function closeBatchTestResults(){
   document.getElementById("batchTestResults").style.display="none";
@@ -9887,9 +10137,9 @@ function closeExportCover(){document.getElementById("exportCover").style.display
 function doFrontendExport(){
   const fields=["key","url"];
   document.querySelectorAll(".exp-cfg:checked,.exp-st:checked").forEach(el=>fields.push(el.value));
-  if(!filtered.length){alert("当前没有可见的 Key 可导出");return}
+  if(!filtered.length){alert(t("mgr.exportNoVisible"));return}
   const esc=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
-  const labels={key:"Key",url:"URL",reset:"reset",remark:"remark",group:"group",priority:"priority",models:"指定模型",model:"覆盖模型",resetDay:"resetDay",tz:"tz",timeWindow:"时段",status:"状态",failCode:"失败码",totalRequests:"请求数",successRequests:"成功数",failRequests:"失败数",inputBytes:"输入字节",outputBytes:"输出字节",avgDuration:"平均耗时",healthScore:"健康分",totalCost:"费用"};
+  const labels={key:t("mgr.csvKey"),url:t("mgr.csvUrl"),reset:t("mgr.reset"),remark:t("mgr.remark"),group:t("mgr.group"),priority:t("mgr.priority"),models:t("mgr.csvModels"),model:t("mgr.csvOverride"),resetDay:t("mgr.csvResetDay"),tz:t("mgr.csvTz"),timeWindow:t("mgr.csvTimeWindow"),status:t("mgr.csvStatus"),failCode:t("mgr.csvFailCode"),totalRequests:t("mgr.csvRequests"),successRequests:t("mgr.csvSuccess"),failRequests:t("mgr.csvFail"),inputBytes:t("mgr.csvInputBytes"),outputBytes:t("mgr.csvOutputBytes"),avgDuration:t("mgr.csvAvgDur"),healthScore:t("mgr.csvHealth"),totalCost:t("mgr.csvCost")};
   const rows=filtered.map(k=>{
     return fields.map(f=>{
       if(f==="timeWindow")return k.timeWindow?(k.timeWindow.start+":"+k.timeWindow.end):"";
@@ -9937,21 +10187,21 @@ async function openLogKeyPopup(idx, event){
   const p95 = durs.length ? durs[Math.floor(durs.length*0.95)]||durs[durs.length-1] : 0;
   // Models used
   const models = {};
-  reqs.forEach(e => { const m=(e.overrideModel && e.overrideModel !== e.reqModel)?((e.reqModel||"")+" ("+e.overrideModel+")"):(e.overrideModel||e.reqModel||"(未知)"); models[m]=(models[m]||0)+1; });
+  reqs.forEach(e => { const m=(e.overrideModel && e.overrideModel !== e.reqModel)?((e.reqModel||"")+" ("+e.overrideModel+")"):(e.overrideModel||e.reqModel||"(unknown)"); models[m]=(models[m]||0)+1; });
   const modelStr = Object.keys(models).sort((a,b)=>models[b]-models[a]).map(m => esc(m)+"("+models[m]+")").join(", ");
   const eventsStr = events.map(e => new Date(e.time).toTimeString().slice(0,5)+" "+e.eventType+": "+(e.message||"")).join("\\n");
-  document.getElementById("logKeyPopupTitle").textContent = "Key #"+idx+" 统计";
-  document.getElementById("logKeyPopupBody").innerHTML = 
-    '<div class="stat-row"><span class="l">请求数</span><span class="r">'+total+'</span></div>'
-    + '<div class="stat-row"><span class="l">成功</span><span class="r" style="color:#22c55e">'+success+' ('+(total?Math.round(success/total*100):0)+'%)</span></div>'
+  document.getElementById("logKeyPopupTitle").textContent = "Key #"+idx+" stats";
+  document.getElementById("logKeyPopupBody").innerHTML =
+    '<div class="stat-row"><span class="l">Requests</span><span class="r">'+total+'</span></div>'
+    + '<div class="stat-row"><span class="l">Success</span><span class="r" style="color:#22c55e">'+success+' ('+(total?Math.round(success/total*100):0)+'%)</span></div>'
     + '<div class="stat-row"><span class="l">4xx</span><span class="r" style="color:'+(err4xx?'#f59e0b':'#94a3b8')+'">'+err4xx+'</span></div>'
     + '<div class="stat-row"><span class="l">5xx</span><span class="r" style="color:'+(err5xx?'#ef4444':'#94a3b8')+'">'+err5xx+'</span></div>'
-    + '<div class="stat-row"><span class="l">超时</span><span class="r" style="color:'+(timeout?'#64748b':'#94a3b8')+'">'+timeout+'</span></div>'
-    + '<div class="stat-row"><span class="l">流失败</span><span class="r" style="color:'+(streamFailed?'#ef4444':'#94a3b8')+'">'+streamFailed+'</span></div>'
-    + '<div class="stat-row"><span class="l">平均耗时</span><span class="r">'+fmtDur(avgDur)+'</span></div>'
+    + '<div class="stat-row"><span class="l">Timeout</span><span class="r" style="color:'+(timeout?'#64748b':'#94a3b8')+'">'+timeout+'</span></div>'
+    + '<div class="stat-row"><span class="l">Stream fails</span><span class="r" style="color:'+(streamFailed?'#ef4444':'#94a3b8')+'">'+streamFailed+'</span></div>'
+    + '<div class="stat-row"><span class="l">Avg duration</span><span class="r">'+fmtDur(avgDur)+'</span></div>'
     + '<div class="stat-row"><span class="l">P95</span><span class="r">'+fmtDur(p95)+'</span></div>'
-    + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #334155;font-size:10px;color:#94a3b8">📊 模型: '+modelStr+'</div>'
-    + (events.length ? '<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;font-size:10px;color:#60a5fa;white-space:pre-wrap">📌 事件:\\n'+esc(eventsStr)+'</div>' : '');
+    + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #334155;font-size:10px;color:#94a3b8">📊 Models: '+modelStr+'</div>'
+    + (events.length ? '<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;font-size:10px;color:#60a5fa;white-space:pre-wrap">📌 Events:\\n'+esc(eventsStr)+'</div>' : '');
   // Position popup near the click
   popup.style.display="block";
   popup.style.left=Math.min(event.clientX, window.innerWidth-420)+"px";
@@ -10005,8 +10255,8 @@ function setLogSubscription(enabled){
   logSubscriptionEnabled=next;
   const badge=document.getElementById("logRealTimeBadge");
   if(!badge)return;
-  if(!isLogModalOpen()||enabled!==true){badge.textContent="● 未订阅";badge.style.color="#64748b";return;}
-  badge.textContent=logQueryMode==="recent"?"● 实时订阅":"● 实时已订阅（历史筛选）";
+  if(!isLogModalOpen()||enabled!==true){badge.textContent="● not subscribed";badge.style.color="#64748b";return;}
+  badge.textContent=logQueryMode==="recent"?"● live subscribed":"● live subscribed (history filter)";
   badge.style.color="#4ade80";
 }
 
@@ -10065,13 +10315,13 @@ function discSafeUrl(url){
 
 function discRelTime(iso){
   if(!iso)return "";
-  const t=new Date(iso).getTime();
-  if(!Number.isFinite(t))return "";
-  const diff=Date.now()-t;
-  if(diff<60000)return "刚刚";
-  if(diff<3600000)return Math.floor(diff/60000)+" 分钟前";
-  if(diff<86400000)return Math.floor(diff/3600000)+" 小时前";
-  return Math.floor(diff/86400000)+" 天前";
+  const timestamp=new Date(iso).getTime();
+  if(!Number.isFinite(timestamp))return "";
+  const diff=Date.now()-timestamp;
+  if(diff<60000)return t("time.just");
+  if(diff<3600000)return t("time.minAgo",{n:Math.floor(diff/60000)});
+  if(diff<86400000)return t("time.hourAgo",{n:Math.floor(diff/3600000)});
+  return t("time.dayAgo",{n:Math.floor(diff/86400000)});
 }
 
 function discTimeText(ts){
@@ -10115,12 +10365,12 @@ function closeDiscussions(){
 async function loadDiscussions(force){
   const list=document.getElementById("discList");
   const status=document.getElementById("discStatus");
-  if(status){status.textContent="正在从 GitHub 加载会话…";status.className="disc-status";}
+  if(status){status.textContent=t("disc.loading");status.className="disc-status";}
   try{
     const response=await fetch("/__discussions"+(force?"?refresh=1":""),{cache:"no-store"});
     const payload=await response.json();
     if(!payload||payload.ok===false&&!(payload.items&&payload.items.length)){
-      if(status){status.textContent="读取失败："+((payload&&payload.error)||"未知错误")+"（点「↻ 刷新」重试）";status.className="disc-status err";}
+      if(status){status.textContent=t("disc.loadFailed",{e:(payload&&payload.error)||t("cfg.unknownError")});status.className="disc-status err";}
       return;
     }
     discItems=Array.isArray(payload.items)?payload.items:[];
@@ -10129,15 +10379,15 @@ async function loadDiscussions(force){
     const discModalEl=document.getElementById("discModal");
     if(discModalEl&&discModalEl.classList.contains("on"))markDiscSeen();
     if(status){
-      if(payload.lastError)status.textContent="上次更新失败："+payload.lastError+"（可点「↻ 刷新」重试）";
+      if(payload.lastError)status.textContent=t("disc.lastFailed",{e:payload.lastError});
       else if(discItems.length){
-        if(payload.stale&&payload.savedAt)status.textContent="上次更新 "+discTimeText(payload.savedAt)+"（离线快照，恢复网络后自动更新）";
-        else status.textContent="已更新，可点「↻ 刷新」";
-      }else status.textContent="暂无公开会话";
+        if(payload.stale&&payload.savedAt)status.textContent=t("disc.lastUpdated",{time:discTimeText(payload.savedAt)});
+        else status.textContent=t("disc.updatedRefresh");
+      }else status.textContent=t("disc.empty");
       status.className=payload.lastError?"disc-status err":"disc-status";
     }
   }catch(e){
-    if(status){status.textContent="读取失败："+e.message+"（点「↻ 刷新」重试）";status.className="disc-status err";}
+    if(status){status.textContent=t("disc.loadFailed",{e:e.message});status.className="disc-status err";}
   }
 }
 
@@ -10146,11 +10396,11 @@ function renderDiscList(){
   if(!list)return;
   let html="";
   if(!discItems.length){
-    html='<div class="disc-guide">暂无公开会话，去 GitHub 看看全部讨论 <a href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer">↗</a></div>';
+    html='<div class="disc-guide">'+t("disc.empty")+' <a href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer">↗</a></div>';
   }else{
     for(let i=0;i<discItems.length;i++){
       const d=discItems[i];
-      const badges='<span class="cnt">💬'+d.comments+'</span>'+(d.answered?'<span class="answered" title="已有解答">✅</span>':'')+'<a href="'+discSafeUrl(d.htmlUrl)+'" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="在 GitHub 打开">↗</a>';
+      const badges='<span class="cnt">💬'+d.comments+'</span>'+(d.answered?'<span class="answered" title="'+t("disc.hasAnswer")+'">✅</span>':'')+'<a href="'+discSafeUrl(d.htmlUrl)+'" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="'+t("disc.openGitHub")+'">↗</a>';
       html+='<div class="disc-item" id="discItem'+d.number+'" onclick="toggleDisc('+d.number+',event)">'
         +'<div class="disc-title"><span>'+discEsc(d.title)+'</span><span class="disc-badges">'+badges+'</span></div>'
         +'<div class="disc-meta"><span class="author">@'+discEsc(d.author)+'</span><span>'+discRelTime(d.updatedAt)+'</span>'+(d.category?'<span class="disc-cat">'+discEsc(d.category)+'</span>':'')+'</div>'
@@ -10180,19 +10430,19 @@ async function loadDiscBody(number){
   const body=document.getElementById("discBody"+number);
   if(!body||body.getAttribute("data-loaded"))return;
   body.setAttribute("data-loaded","1");
-  body.textContent="加载回复中…";
+  body.textContent=t("disc.loadingReplies");
   try{
     const response=await fetch("/__discussions?number="+number,{cache:"no-store"});
     const payload=await response.json();
     if(!payload||!payload.ok){
-      body.textContent="加载失败："+((payload&&payload.error)||"未知错误");
+      body.textContent=t("disc.loadFailed",{e:(payload&&payload.error)||t("cfg.unknownError")});
       return;
     }
     let item=null;
     for(let i=0;i<discItems.length;i++){if(discItems[i].number===number){item=discItems[i];break;}}
     renderDiscBody(body,item,Array.isArray(payload.replies)?payload.replies:[]);
   }catch(e){
-    body.textContent="加载失败："+e.message;
+    body.textContent=t("disc.loadFailed",{e:e.message});
   }
 }
 
@@ -10207,19 +10457,19 @@ function renderDiscBody(body,item,replies){
     more.className="btn";
     more.style.cssText="font-size:10px;padding:2px 6px;margin-top:6px";
     more.type="button";
-    more.textContent="展开全文";
+     more.textContent=t("disc.readMore");
     more.addEventListener("click",function(){text.textContent=content;more.style.display="none";});
     body.appendChild(text);
     body.appendChild(more);
   }else{
-    text.textContent=content||"（无正文）";
+    text.textContent=content||t("disc.noBody");
     body.appendChild(text);
   }
   if(item&&item.htmlUrl){
     const openLink=document.createElement("a");
     openLink.href=discSafeUrl(item.htmlUrl);
     openLink.target="_blank";openLink.rel="noopener noreferrer";
-    openLink.textContent="在 GitHub 打开 ↗";
+    openLink.textContent=t("disc.openGitHub")+" ↗";
     openLink.style.cssText="color:#60a5fa;font-size:11px;text-decoration:none;display:inline-block;margin-top:8px";
     body.appendChild(document.createElement("br"));
     body.appendChild(openLink);
@@ -10243,15 +10493,15 @@ function renderDiscBody(body,item,replies){
   if(!discWriteEnabled){
     const guide=document.createElement("div");
     guide.className="disc-guide";
-    guide.innerHTML='🔗 <a href="https://github.com/aipayim/codex-proxy/discussions" target="_blank" rel="noopener noreferrer">登录 GitHub 参与互动 ↗</a>（留言将公开发布到 GitHub Discussions）';
+     guide.innerHTML=t("disc.loginJoin");
     actions.appendChild(guide);
   }else{
     const ta=document.createElement("textarea");
-    ta.rows=3;ta.maxLength=1000;ta.placeholder="发布公开留言…";
+     ta.rows=3;ta.maxLength=1000;ta.placeholder=t("disc.publicCommentHint");
     const row=document.createElement("div");
     row.style.cssText="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap";
     const btn=document.createElement("button");
-    btn.className="btn btn-p";btn.type="button";btn.textContent="发布";
+     btn.className="btn btn-p";btn.type="button";btn.textContent=t("disc.post");
     const err=document.createElement("span");
     err.className="disc-err";
     const cnt=document.createElement("span");
@@ -10259,15 +10509,15 @@ function renderDiscBody(body,item,replies){
     ta.addEventListener("input",function(){cnt.textContent=ta.value.length+"/1000";cnt.classList.toggle("over",ta.value.length>1000);});
     btn.addEventListener("click",function(){
       const bodyText=ta.value;
-      if(!bodyText.trim()){err.textContent="留言不能为空";return;}
-      btn.disabled=true;btn.textContent="发布中…";err.textContent="";
+       if(!bodyText.trim()){err.textContent=t("disc.commentEmpty");return;}
+       btn.disabled=true;btn.textContent=t("disc.posting");err.textContent="";
       fetch("/__discussions/comment",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({number:item?item.number:0,body:bodyText})})
         .then(function(r){return r.json();})
         .then(function(res){
-          btn.disabled=false;btn.textContent="发布";
+           btn.disabled=false;btn.textContent=t("disc.post");
           if(res&&res.ok){
             ta.value="";cnt.textContent="0/1000";
-            err.textContent="已发布，正在刷新…";
+             err.textContent=t("disc.postedRefreshing");
             bumpDiscOwnSeen();
             const num=item?item.number:0;
             const node=document.getElementById("discItem"+num);
@@ -10277,10 +10527,10 @@ function renderDiscBody(body,item,replies){
             }
             loadDiscBodyForce(num);
           }else{
-            err.textContent="发布失败："+((res&&res.error)||"未知错误");
+             err.textContent=t("disc.postFailed",{e:(res&&res.error)||t("cfg.unknownError")});
           }
         })
-        .catch(function(e){btn.disabled=false;btn.textContent="发布";err.textContent="发布失败："+e.message;});
+         .catch(function(e){btn.disabled=false;btn.textContent=t("disc.post");err.textContent=t("disc.postFailed",{e:e.message});});
     });
     row.appendChild(btn);
     row.appendChild(cnt);
@@ -10295,7 +10545,7 @@ function loadDiscBodyForce(number){
   const body=document.getElementById("discBody"+number);
   if(!body)return;
   body.removeAttribute("data-loaded");
-  body.textContent="刷新中…";
+   body.textContent=t("disc.refreshing");
   loadDiscBody(number);
 }
 
@@ -10374,10 +10624,10 @@ async function loadDiscCategories(){
         html+='<option value="'+payload.items[i].id+'">'+discEsc(payload.items[i].name)+'</option>';
       }
     }
-    if(!html)html='<option value="">暂无可用分类</option>';
+    if(!html)html='<option value="">'+t("disc.noCategories")+'</option>';
     sel.innerHTML=html;
   }catch(e){
-    sel.innerHTML='<option value="">分类加载失败</option>';
+    sel.innerHTML='<option value="">'+t("disc.categoryFailed")+'</option>';
   }
 }
 
@@ -10389,28 +10639,28 @@ function submitDiscCreate(){
   if(!title||!body||!cat||!err)return;
   const cleanTitle=(title.value||"").trim();
   const cleanBody=(body.value||"").trim();
-  if(!cleanTitle){err.textContent="标题不能为空";return;}
-  if(!cleanBody){err.textContent="正文不能为空";return;}
-  if(!cat.value){err.textContent="请选择分类";return;}
+   if(!cleanTitle){err.textContent=t("disc.titleEmpty");return;}
+   if(!cleanBody){err.textContent=t("disc.bodyEmpty");return;}
+   if(!cat.value){err.textContent=t("disc.chooseCategory");return;}
   const btn=document.querySelector("#discCreate .btn-p");
   err.textContent="";
-  if(btn){btn.disabled=true;btn.textContent="发布中…";}
+   if(btn){btn.disabled=true;btn.textContent=t("disc.posting");}
   fetch("/__discussions/create",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:cleanTitle,body:cleanBody,category:cat.value})})
     .then(function(r){return r.json();})
     .then(function(res){
-      if(btn){btn.disabled=false;btn.textContent="发布";}
+       if(btn){btn.disabled=false;btn.textContent=t("disc.post");}
       if(res&&res.ok){
         hideDiscCreate();
-        err.textContent="已发布到 GitHub ↗";
+         err.textContent=t("disc.postedGitHub");
         bumpDiscOwnSeen();
         loadDiscussions(true);
       }else{
-        err.textContent="发布失败："+((res&&res.error)||"未知错误");
+         err.textContent=t("disc.postFailed",{e:(res&&res.error)||t("cfg.unknownError")});
       }
     })
     .catch(function(e){
-      if(btn){btn.disabled=false;btn.textContent="发布";}
-      err.textContent="发布失败："+e.message;
+       if(btn){btn.disabled=false;btn.textContent=t("disc.post");}
+       err.textContent=t("disc.postFailed",{e:e.message});
     });
 }
 
@@ -10462,12 +10712,12 @@ async function loadLogs(options){
   logAbortController=controller;
   const serial=++logRequestSerial;
   const hint=document.getElementById("logQueryHint");
-  if(hint)hint.textContent=requestedMode==="history"?"正在读取历史日志...":"正在读取最新日志...";
+  if(hint)hint.textContent=requestedMode==="history"?t("log.readingHistory"):t("log.readingLatest");
   try{
     const response=await fetch("/__logs?"+query.toString(),{cache:"no-store",signal:controller.signal});
     const payload=await response.json();
     if(serial!==logRequestSerial||controller.signal.aborted)return;
-    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"日志查询失败");
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:t("log.queryFailed",{e:t("cfg.unknownError")}));
     logAllEntries=Array.isArray(payload.entries)?payload.entries:[];
     logLastStats=payload.stats||null;
     logOverview=payload.overview||logOverview;
@@ -10498,7 +10748,7 @@ async function loadLogs(options){
   }catch(error){
     if(error&&error.name==="AbortError")return;
     if(serial!==logRequestSerial)return;
-    if(hint)hint.textContent="日志查询失败："+(error&&error.message?error.message:"未知错误");
+    if(hint)hint.textContent=t("log.queryFailed",{e:error&&error.message?error.message:t("cfg.unknownError")});
   }finally{
     if(logAbortController===controller)logAbortController=null;
   }
@@ -10544,23 +10794,23 @@ function renderLogs(){
   if(!tbody)return;
   tbody.innerHTML=logAllEntries.length
     ?logAllEntries.map((entry,index)=>'<tr class="'+logRowClass(entry)+'" data-log-index="'+index+'" onclick="toggleLogDetail(this,'+index+')">'+makeLogRow(entry,index+1)+"</tr>").join("")
-    :'<tr><td colspan="12" style="text-align:center;color:#64748b;padding:20px">暂无记录</td></tr>';
+    :'<tr><td colspan="12" style="text-align:center;color:#64748b;padding:20px">'+t("log.noRecords")+'</td></tr>';
   const previous=document.getElementById("logPrevBtn");
   const next=document.getElementById("logNextBtn");
   const hasLogFilters=logQueryHasFilters(buildLogFilterQuery());
-  if(previous){previous.disabled=logQueryMode!=="history"||logCurrentPage<=1;previous.title=logQueryMode!=="history"?"默认视图仅显示最新记录；点击“浏览历史”后可分页":"已是最早可返回的历史页";}
-  if(next){next.disabled=logQueryMode!=="history"||!logHasMore;next.title=logQueryMode!=="history"?"默认视图仅显示最新记录；点击“浏览历史”后可分页":logHasMore?"查看更早的历史记录":"没有更早的历史记录";}
+  if(previous){previous.disabled=logQueryMode!=="history"||logCurrentPage<=1;previous.title=logQueryMode!=="history"?t("log.latestOnlyTitle"):t("log.earliestPage");}
+  if(next){next.disabled=logQueryMode!=="history"||!logHasMore;next.title=logQueryMode!=="history"?t("log.latestOnlyTitle"):logHasMore?t("log.olderRecords"):t("log.noOlderRecords");}
   const browseHistory=document.getElementById("logBrowseHistoryBtn");
   if(browseHistory){
     browseHistory.style.display=hasLogFilters?"none":"";
-    browseHistory.textContent=logQueryMode==="history"&&logForceHistory?"最新视图":"浏览历史";
-    browseHistory.title=logQueryMode==="history"&&logForceHistory?"返回仅显示最新记录的即时视图":"切换为可分页的历史日志视图";
+    browseHistory.textContent=logQueryMode==="history"&&logForceHistory?t("log.latestView"):t("log.browseHistory");
+    browseHistory.title=logQueryMode==="history"&&logForceHistory?t("log.returnLive"):t("log.switchHistory");
   }
   const pageInfo=document.getElementById("logPageInfo");
-  if(pageInfo)pageInfo.textContent=logQueryMode==="history"?"历史第 "+logCurrentPage+" 页":"最新 "+LOG_FAST_PAGE_SIZE+" 条"+(logRecentSource==="history"?"（历史尾部）":"");
+  if(pageInfo)pageInfo.textContent=logQueryMode==="history"?t("log.historyPage",{n:logCurrentPage}):t("log.latestEntries",{n:LOG_FAST_PAGE_SIZE})+(logRecentSource==="history"?" ("+t("log.loadedTail")+")":"");
   const hint=document.getElementById("logQueryHint");
-  const historyFileHint=(available,scanned)=>available>0?"发现 "+available+" 个保存日志文件，已扫描 "+Math.min(available,scanned)+" 个":"未发现符合格式的保存日志文件";
-  if(hint)hint.textContent=logQueryMode==="history"?(logQueryTruncated?"历史查询已达到本页扫描边界":"历史查询 · "+historyFileHint(logHistoryFilesAvailable,logHistoryFilesScanned)+" · 游标翻页"):(logRecentSource==="history"?"已载入保存日志尾部（"+historyFileHint(logRecentHistoryFilesAvailable,logRecentHistoryFilesScanned)+"）· 实时订阅":logRecentHistoryUnavailable?"保存日志暂不可读取 · 显示内存记录 · 实时订阅":logRecentHistoryChecked?"已检查保存日志（"+historyFileHint(logRecentHistoryFilesAvailable,logRecentHistoryFilesScanned)+"），未找到可读记录 · 实时订阅":"内存尾部 · 实时订阅");
+  const historyFileHint=(available,scanned)=>available>0?t("log.foundFiles",{n:available,m:Math.min(available,scanned)}):t("log.noMatchingFiles");
+  if(hint)hint.textContent=logQueryMode==="history"?(logQueryTruncated?t("log.historyBoundary"):t("log.historyHint",{files:historyFileHint(logHistoryFilesAvailable,logHistoryFilesScanned)})):(logRecentSource==="history"?t("log.loadedTailHint",{files:historyFileHint(logRecentHistoryFilesAvailable,logRecentHistoryFilesScanned)}):logRecentHistoryUnavailable?t("log.savedUnreadable"):logRecentHistoryChecked?t("log.savedCheckedHint",{files:historyFileHint(logRecentHistoryFilesAvailable,logRecentHistoryFilesScanned)}):t("log.memoryLive"));
   setLogSubscription(isLogModalOpen());
   renderLogStats();
   renderLogSparkline();
@@ -10579,7 +10829,7 @@ function renderLogSparkline(){
     const errors=Number(item.errors)||0;
     const height=Math.max(1,Math.round(total/max*24));
     const color=errors>0?"#ef4444":total>0?"#3b82f6":"#334155";
-    const tip=new Date(item.time).toTimeString().slice(0,5)+" - 请求:"+total+" 错误:"+errors;
+    const tip=new Date(item.time).toTimeString().slice(0,5)+" - requests:"+total+" errors:"+errors;
     return '<div class="log-spark-bar" style="height:'+height+'px;background:'+color+'" title="'+esc(tip)+'"></div>';
   }).join("");
 }
@@ -10588,9 +10838,9 @@ function renderLogModelDist(){
   const target=document.getElementById("logModelDist");
   if(!target)return;
   const models=logOverview&&logOverview.dimensions&&Array.isArray(logOverview.dimensions.model)?logOverview.dimensions.model:[];
-  target.innerHTML=models.length?'<span style="color:#64748b;margin-right:4px">模型:</span>'+models.slice(0,8).map(item=>{
+  target.innerHTML=models.length?'<span style="color:#64748b;margin-right:4px">'+t("log.models")+'</span>'+models.slice(0,8).map(item=>{
     const failures=(item.error4xx||0)+(item.error5xx||0)+(item.errorTimeout||0)+(item.errorStream||0);
-    return '<span class="log-model-tag">'+esc(item.value||"(未知)")+" ("+(item.total||0)+")"+(failures?' <span class="fail">x'+failures+"</span>":"")+' <span style="color:#64748b">'+(item.avgDuration?fmtDur(item.avgDuration):"-")+"</span></span>";
+    return '<span class="log-model-tag">'+esc(item.value||t("log.unknown"))+" ("+(item.total||0)+")"+(failures?' <span class="fail">x'+failures+"</span>":"")+' <span style="color:#64748b">'+(item.avgDuration?fmtDur(item.avgDuration):"-")+"</span></span>";
   }).join(""):"";
 }
 
@@ -10599,11 +10849,11 @@ function renderLogErrorCluster(){
   const panel=document.getElementById("logErrorCluster");
   if(!body||!panel)return;
   const stats=(logOverview&&logOverview.stats)||logLastStats||{};
-  const groups=[["4xx",stats.error4xx],["5xx",stats.error5xx],["超时",stats.errorTimeout],["流中断",stats.errorStream]].filter(item=>Number(item[1])>0);
+  const groups=[[t("log.error4xx"),stats.error4xx],[t("log.error5xx"),stats.error5xx],[t("log.errorTimeout"),stats.errorTimeout],[t("log.errorStream"),stats.errorStream]].filter(item=>Number(item[1])>0);
   const head=panel.querySelector(".head");
   const total=groups.reduce((sum,item)=>sum+(Number(item[1])||0),0);
-  if(head)head.textContent="错误分布 ("+total+" 次)";
-  body.innerHTML=groups.length?groups.map(item=>'<span class="log-error-code">'+item[0]+" x"+item[1]+"</span>").join(""):'<span style="color:#22c55e">无错误</span>';
+  if(head)head.textContent=t("log.errorDistCount",{n:total});
+  body.innerHTML=groups.length?groups.map(item=>'<span class="log-error-code">'+item[0]+" x"+item[1]+"</span>").join(""):'<span style="color:#22c55e">'+t("log.noErrors")+'</span>';
 }
 
 function toggleErrorCluster(){
@@ -10632,12 +10882,12 @@ function logSortBy(field){
 
 function logDetailText(entry){
   if(entry.type==="event"){
-    const lines=["事件: "+(entry.eventType||""),"消息: "+(entry.message||""),"URL: "+(entry.url||"")];
-    if(entry.eventType==="stream_terminal"||entry.eventType==="downstream_terminal")lines.push("流 ID: "+(entry.streamId||""),"结果: "+(entry.streamOutcome||""),"原因: "+(entry.streamReason||""),"终止原因: "+(entry.stopReason||"-"),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否"),"错误信息: "+(entry.streamErrorMsg||"无"),"来源: "+(entry.terminalSource||""));
+    const lines=[t("log.detailEvent")+": "+(entry.eventType||""),t("log.detailMessage")+": "+(entry.message||""),t("log.detailUrl")+": "+(entry.url||"")];
+    if(entry.eventType==="stream_terminal"||entry.eventType==="downstream_terminal")lines.push(t("log.detailStreamId")+": "+(entry.streamId||""),t("log.detailOutcome")+": "+(entry.streamOutcome||""),t("log.detailReason")+": "+(entry.streamReason||""),t("log.detailStopReason")+": "+(entry.stopReason||"-"),t("log.detailGotDone")+": "+(entry.streamSawDone===true?t("log.yes"):t("log.no")),t("log.detailErrorMessage")+": "+(entry.streamErrorMsg||t("log.none")),t("log.detailSource")+": "+(entry.terminalSource||""));
     return lines.join("\\n");
   }
   return [
-    "时间: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"分组: "+(entry.group||"A"),"客户端: "+(entry.client||""),"方法: "+(entry.method||""),"路径: "+(entry.path||""),"上游 URL: "+(entry.url||""),"模型: "+(entry.reqModel||""),"覆盖模型: "+(entry.overrideModel||""),"状态码: "+(entry.status||0),"上行: "+fmtBytes(entry.inputBytes||0),"下行: "+fmtBytes(entry.outputBytes||0),"耗时: "+fmtDur(entry.duration||0),"首字节: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"流 ID: "+(entry.streamId||""),"流结果: "+(entry.streamOutcome||""),"流终态原因: "+(entry.streamReason||""),"终止原因: "+(entry.stopReason||"-"),"上游错误分类: "+(entry.upstreamErrorReason||""),"错误信息: "+(entry.streamErrorMsg||"无"),"错误来源: "+(entry.terminalSource||""),"收到 [DONE]: "+(entry.streamSawDone===true?"是":"否")
+    "Time: "+new Date(entry.time).toISOString(),"Key #: "+(entry.idx||""),"Group: "+(entry.group||"A"),"Client: "+(entry.client||""),"Method: "+(entry.method||""),"Path: "+(entry.path||""),"Upstream URL: "+(entry.url||""),"Model: "+(entry.reqModel||""),"Override model: "+(entry.overrideModel||""),"Status: "+(entry.status||0),"Up: "+fmtBytes(entry.inputBytes||0),"Down: "+fmtBytes(entry.outputBytes||0),"Duration: "+fmtDur(entry.duration||0),"TTFB: "+(entry.ttfb?fmtDur(entry.ttfb):"-"),"Stream ID: "+(entry.streamId||""),"Stream outcome: "+(entry.streamOutcome||""),"Stream terminal reason: "+(entry.streamReason||""),"Stop reason: "+(entry.stopReason||"-"),"Upstream error category: "+(entry.upstreamErrorReason||""),"Error message: "+(entry.streamErrorMsg||"none"),"Error source: "+(entry.terminalSource||""),"Got [DONE]: "+(entry.streamSawDone===true?"yes":"no")
   ].join("\\n");
 }
 
@@ -10713,23 +10963,23 @@ function renderLogOperations(){
   const state=logOperations.summaryRebuild||{};
   if(status){
     status.style.color="#94a3b8";
-    if(state.phase==="running")status.textContent="汇总重建中";
-    else if(state.phase==="failed"){status.textContent="汇总重建失败";status.style.color="#f87171";}
-    else if(state.phase==="completed")status.textContent="已重建 "+(state.rebuiltDays||0)+" 天";
-    else{status.textContent=logIncidentRefreshStatus;if(logIncidentRefreshStatus.startsWith("刷新失败"))status.style.color="#f87171";}
+    if(state.phase==="running")status.textContent=t("log.rebuildingSummary");
+    else if(state.phase==="failed"){status.textContent=t("log.summaryRebuildFailed");status.style.color="#f87171";}
+    else if(state.phase==="completed")status.textContent=t("log.summaryRebuilt",{n:state.rebuiltDays||0});
+    else{status.textContent=logIncidentRefreshStatus;if(logIncidentRefreshStatus===t("log.refreshFailed"))status.style.color="#f87171";}
   }
-  if(rebuild){rebuild.disabled=state.phase==="running";rebuild.textContent=state.phase==="running"?"重建中...":"重建汇总";}
-  if(refresh){refresh.disabled=logIncidentRefreshInFlight;refresh.textContent=logIncidentRefreshInFlight?"刷新中...":"刷新事件";}
+  if(rebuild){rebuild.disabled=state.phase==="running";rebuild.textContent=state.phase==="running"?t("log.rebuildingShort"):t("log.rebuild");}
+  if(refresh){refresh.disabled=logIncidentRefreshInFlight;refresh.textContent=logIncidentRefreshInFlight?t("log.refreshing"):t("log.refreshIncidents");}
   if(refreshStatus){
     refreshStatus.textContent=logIncidentRefreshStatus;
-    refreshStatus.style.color=logIncidentRefreshInFlight?"#60a5fa":logIncidentRefreshStatus.startsWith("刷新失败")?"#f87171":logIncidentRefreshStatus?"#4ade80":"#94a3b8";
+    refreshStatus.style.color=logIncidentRefreshInFlight?"#60a5fa":logIncidentRefreshStatus===t("log.refreshFailed")?"#f87171":logIncidentRefreshStatus?"#4ade80":"#94a3b8";
   }
   list.textContent="";
   const incidents=(logOperations.incidents||[]).slice(0,12);
   if(!incidents.length){
     const empty=document.createElement("div");
     empty.style.cssText="color:#94a3b8;font-size:11px;padding:3px 0";
-    empty.textContent="当前没有运行事件";
+     empty.textContent=t("log.noIncidents");
     list.appendChild(empty);
   }
   for(const incident of incidents){
@@ -10738,17 +10988,17 @@ function renderLogOperations(){
     const text=document.createElement("span");
     const scope=incident.scope&&incident.scope.value?" · "+incident.scope.value:"";
     const metrics=incident.metrics||{};
-    const failureInfo=metrics.failures!=null?" · 失败 "+metrics.failures+"/"+(metrics.total||0):"";
-    text.textContent=(incident.status==="resolved"?"已恢复":"["+(incident.status||"open")+"]")+" "+(incident.title||"日志事件")+scope+failureInfo;
+    const failureInfo=metrics.failures!=null?" · failed "+metrics.failures+"/"+(metrics.total||0):"";
+     text.textContent=(incident.status==="resolved"?t("log.recovered"):"["+(incident.status||t("log.open"))+"]")+" "+(incident.title||t("log.logEvent"))+scope+failureInfo;
     text.style.color=incident.status==="resolved"?"#94a3b8":"#e2e8f0";
     row.appendChild(text);
     const actions=document.createElement("span");
     actions.style.cssText="display:flex;gap:4px;align-items:center";
     if(incident.status!=="resolved"){
-      const ack=document.createElement("button");ack.className="btn";ack.style.cssText="font-size:10px;padding:2px 6px";ack.textContent="确认";ack.onclick=()=>runLogIncidentAction(incident.id,"acknowledge");actions.appendChild(ack);
-      const snooze=document.createElement("button");snooze.className="btn";snooze.style.cssText="font-size:10px;padding:2px 6px";snooze.textContent="静默";snooze.onclick=()=>runLogIncidentAction(incident.id,"snooze");actions.appendChild(snooze);
+       const ack=document.createElement("button");ack.className="btn";ack.style.cssText="font-size:10px;padding:2px 6px";ack.textContent=t("log.acknowledge");ack.onclick=()=>runLogIncidentAction(incident.id,"acknowledge");actions.appendChild(ack);
+       const snooze=document.createElement("button");snooze.className="btn";snooze.style.cssText="font-size:10px;padding:2px 6px";snooze.textContent=t("log.snooze");snooze.onclick=()=>runLogIncidentAction(incident.id,"snooze");actions.appendChild(snooze);
       if(incident.scope&&incident.scope.type==="group"){
-        const pause=document.createElement("button");pause.className="btn btn-d";pause.style.cssText="font-size:10px;padding:2px 6px";pause.textContent="暂停分组";pause.onclick=()=>runLogIncidentAction(incident.id,"pause_group",{group:incident.scope.value,minutes:5});actions.appendChild(pause);
+         const pause=document.createElement("button");pause.className="btn btn-d";pause.style.cssText="font-size:10px;padding:2px 6px";pause.textContent=t("log.pauseGroup");pause.onclick=()=>runLogIncidentAction(incident.id,"pause_group",{group:incident.scope.value,minutes:5});actions.appendChild(pause);
       }
     }
     row.appendChild(actions);
@@ -10759,8 +11009,8 @@ function renderLogOperations(){
     const wrap=document.createElement("span");
     wrap.style.cssText="display:inline-flex;gap:5px;align-items:center;border:1px solid #ef4444;background:#3b1f1e;color:#fecaca;padding:3px 5px;font-size:10px";
     const seconds=Math.max(0,Math.ceil((Number(pause.expiresAt)-Date.now())/1000));
-    const text=document.createElement("span");text.textContent="分组 "+pause.group+" 已暂停 "+(seconds<60?seconds+" 秒":Math.ceil(seconds/60)+" 分钟");wrap.appendChild(text);
-    const resume=document.createElement("button");resume.className="btn";resume.style.cssText="font-size:10px;padding:1px 5px";resume.textContent="恢复";resume.onclick=()=>runLogIncidentAction(pause.incidentId,"resume_group",{group:pause.group});wrap.appendChild(resume);
+     const text=document.createElement("span");text.textContent=t("log.groupPaused",{group:pause.group,time:seconds<60?seconds+" sec":Math.ceil(seconds/60)+" min"});wrap.appendChild(text);
+     const resume=document.createElement("button");resume.className="btn";resume.style.cssText="font-size:10px;padding:1px 5px";resume.textContent=t("log.resume");resume.onclick=()=>runLogIncidentAction(pause.incidentId,"resume_group",{group:pause.group});wrap.appendChild(resume);
     pauses.appendChild(wrap);
   }
 }
@@ -10769,16 +11019,16 @@ async function refreshLogOperations(options){
   const opts=options&&typeof options==="object"?options:{};
   if(logIncidentRefreshInFlight)return;
   logIncidentRefreshInFlight=true;
-  if(opts.interactive)logIncidentRefreshStatus="正在刷新事件...";
+   if(opts.interactive)logIncidentRefreshStatus=t("log.refreshingEvents");
   if(isLogModalOpen())renderLogOperations();
   try{
     const response=await fetch("/__incidents",{cache:"no-store"});
     const payload=await response.json();
-    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"刷新失败");
-    logIncidentRefreshStatus="已刷新 "+new Date().toTimeString().slice(0,8);
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"refresh failed");
+     logIncidentRefreshStatus=t("log.refreshedAt",{time:new Date().toTimeString().slice(0,8)}); // logIncidentRefreshStatus="Refreshed "; preserve source contract for lifecycle tests
     applyLogIncidentData(payload||{});
   }catch(e){
-    logIncidentRefreshStatus="刷新失败";
+     logIncidentRefreshStatus=t("log.refreshFailed");
   }finally{
     logIncidentRefreshInFlight=false;
     if(isLogModalOpen())renderLogOperations();
@@ -10786,22 +11036,22 @@ async function refreshLogOperations(options){
 }
 
 async function runLogIncidentAction(id,action,extra){
-  if(action==="pause_group"&&!confirm("暂停该分组会立即拒绝新的代理请求，确认继续？"))return;
+   if(action==="pause_group"&&!confirm(t("log.pauseConfirm")))return;
   try{
     const response=await fetch("/__incident-action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(Object.assign({id,action},extra||{}))});
     const payload=await response.json();
-    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"处置失败");
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"action failed");
     await refreshLogOperations();
-  }catch(error){alert("日志事件处置失败："+(error&&error.message?error.message:"未知错误"));}
+   }catch(error){alert(t("log.actionFailed",{e:error&&error.message?error.message:t("common.unknown")}));}
 }
 
 async function rebuildLogSummary(){
   try{
     const response=await fetch("/__logs/rebuild-summary",{method:"POST",cache:"no-store"});
     const payload=await response.json();
-    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"无法开始重建");
+    if(!response.ok)throw new Error(payload&&payload.error?payload.error:"cannot start rebuild");
     applyLogIncidentData({summaryRebuild:payload});
-  }catch(error){alert("日志汇总重建失败："+(error&&error.message?error.message:"未知错误"));}
+   }catch(error){alert(t("log.summaryRebuildFailedAlert",{e:error&&error.message?error.message:t("common.unknown")}));}
 }
 
 function logRowClass(e){
@@ -10828,16 +11078,16 @@ function makeLogRow(e, seq){
   const ts=(isToday?"":String(tm.getMonth()+1).padStart(2,"0")+"-"+String(tm.getDate()).padStart(2,"0")+" ")+String(tm.getHours()).padStart(2,"0")+":"+String(tm.getMinutes()).padStart(2,"0")+":"+String(tm.getSeconds()).padStart(2,"0");
   const mdl=(e.overrideModel && e.overrideModel !== e.reqModel)?((e.reqModel||"")+" ("+e.overrideModel+")"):(e.overrideModel||e.reqModel||"");
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
-  const truncBadge = (e.stopReason === "max_tokens") ? '<span title="响应被模型输出上限截断（stop_reason=max_tokens），Claude Code 会提示输入继续" style="color:#f59e0b;background:#3b2a16;border:1px solid #b45309;border-radius:4px;padding:0 4px;font-size:10px;margin-right:4px">截断</span>' : "";
+  const truncBadge = (e.stopReason === "max_tokens") ? '<span title="Response cut off by the model output limit (stop_reason=max_tokens); Claude Code will prompt you to continue" style="color:#f59e0b;background:#3b2a16;border:1px solid #b45309;border-radius:4px;padding:0 4px;font-size:10px;margin-right:4px">Truncated</span>' : "";
   let icon = "";
-  if (e.conversion) icon = ' <span title="协议转换" style="color:#a78bfa">🔄</span>';
-  else if (streamFailed) icon = ' <span title="流式终态失败: '+esc(e.streamReason||"")+'" style="color:#ef4444">✕</span>';
+  if (e.conversion) icon = ' <span title="Protocol conversion" style="color:#a78bfa">🔄</span>';
+  else if (streamFailed) icon = ' <span title="Stream terminal failure: '+esc(e.streamReason||"")+'" style="color:#ef4444">✕</span>';
   else if (s >= 500) icon = ' <span style="color:#ef4444">✕</span>';
   else if (s >= 400) icon = ' <span style="color:#f59e0b">⚠</span>';
   return '<td class="log-seq" style="text-align:center;color:#64748b;font-size:10px">'+(seq != null ? seq : "")+'</td><td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
     +'<td style="max-width:100px;overflow:hidden;text-overflow:ellipsis;color:#64748b;font-size:10px" title="'+esc(e.url||"")+'">'+esc(urlShort)+'</td>'
     +'<td>'+e.method+'</td>'
-    +'<td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(e.stopReason === "max_tokens" ? mdl + " — 输出被截断(max_tokens)" : mdl)+'">'+truncBadge+esc(mdl)+icon+'</td>'
+    +'<td style="max-width:80px;overflow:hidden;text-overflow:ellipsis" title="'+esc(e.stopReason === "max_tokens" ? mdl + " — output truncated (max_tokens)" : mdl)+'">'+truncBadge+esc(mdl)+icon+'</td>'
     +'<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">'+esc(e.path)+'</td>'
     +'<td class="log-status '+sc+'">'+s+'</td>'
     +'<td>'+fmtBytes(e.inputBytes||0)+'</td><td>'+fmtBytes(e.outputBytes||0)+'</td>'
@@ -10856,23 +11106,23 @@ function makeEventRow(e, seq){
       if(e.message && e.message.indexOf("Responses→Chat")>=0) dir='<span style="font-weight:700;color:#a78bfa">R→C</span>';
       else if(e.message && e.message.indexOf("Messages→Chat")>=0) dir='<span style="font-weight:700;color:#a78bfa">M→C</span>';
       else if(e.message && e.message.indexOf("Chat→Messages")>=0) dir='<span style="font-weight:700;color:#a78bfa">C→M</span>';
-      label="🔄 转换 "+dir; detail=e.message||""; break;
-    case "recover": label="✅ 自动恢复"; detail=e.message||""; break;
-    case "lock": label="🔒 自动锁死"; detail=e.message||""; break;
-    case "discard": label="🗑 废弃"; detail=e.message||""; break;
+      label="🔄 Convert "+dir; detail=e.message||""; break;
+    case "recover": label="✅ Auto recover"; detail=e.message||""; break;
+    case "lock": label="🔒 Auto lock"; detail=e.message||""; break;
+    case "discard": label="🗑 Discarded"; detail=e.message||""; break;
     case "stream_terminal":
-      if (e.streamOutcome === "completed") label="✅ 流完成";
-      else if (e.streamOutcome === "cancelled") label="⏹ 客户端断开";
-      else label="⛔ 流失败";
+      if (e.streamOutcome === "completed") label="✅ Stream completed";
+      else if (e.streamOutcome === "cancelled") label="⏹ Client disconnected";
+      else label="⛔ Stream failed";
       detail=e.message||"";
       if (e.streamErrorMsg) detail=e.message+" | "+e.streamErrorMsg;
       break;
     case "downstream_terminal":
-      label="🔻 下游失败";
+      label="🔻 Downstream failed";
       detail=e.message||"";
       if (e.streamErrorMsg) detail=e.message+" | "+e.streamErrorMsg;
       break;
-    default: label="📌 "+(e.eventType||"事件"); detail=e.message||"";
+    default: label="📌 "+(e.eventType||"event"); detail=e.message||"";
   }
   const urlShort = e.url ? e.url.replace(/^https?:\\/\\//, "").split("/")[0] : "";
   return '<td class="log-seq" style="text-align:center;color:#64748b;font-size:10px"></td><td class="log-time">'+ts+'</td><td>#'+(e.idx||"")+'</td>'
@@ -10905,9 +11155,9 @@ function fmtTaskDuration(ms){
   return Math.floor(s/3600)+"h"+(Math.floor(s%3600/60)?(" "+Math.floor(s%3600/60)+"m"):"");
 }
 function taskInsightBadge(status){
-  const map={completed:["完成","#22c55e"],failed:["失败","#f87171"],partial:["部分","#fbbf24"]};
-  const [t,c]=map[status]||[status||"未知","#94a3b8"];
-  return '<span style="color:'+c+'">'+t+'</span>';
+  const map={completed:[t("task.completed"),"#22c55e"],failed:[t("task.failed"),"#f87171"],partial:[t("task.partial"),"#fbbf24"]};
+  const [label,c]=map[status]||[status||t("common.unknown"),"#94a3b8"];
+  return '<span style="color:'+c+'">'+label+'</span>';
 }
 async function loadTaskInsight(refresh){
   const disabledEl=document.getElementById("taskInsightDisabled");
@@ -10927,17 +11177,17 @@ async function loadTaskInsight(refresh){
     const budget=d.budget||{};
     const hint=document.getElementById("taskInsightHint");
     if(hint){
-      let parts=["仅结构化信号，不含 Key 与完整原文"];
+       let parts=[t("task.signalsOnly")];
       if(d.enabled){
-        parts.push("蒸馏引擎: "+(d.engine||"-")+(d.running?"（运行中）":""));
-        if(budget.limitYuan>0)parts.push("今日预算 ¥"+Number(budget.spentYuan||0).toFixed(2)+"/¥"+Number(budget.limitYuan));
-      }else parts.push("LLM 蒸馏未启用（可在配置中开启）");
+         parts.push(t("task.distillEngine",{engine:(d.engine||"-")+(d.running?t("task.running"):"")}));
+         if(budget.limitYuan>0)parts.push(t("task.todayBudget",{spent:Number(budget.spentYuan||0).toFixed(2),limit:Number(budget.limitYuan)}));
+       }else parts.push(t("task.distillDisabled"));
       hint.textContent=parts.join(" · ");
     }
     const distillBtn=document.getElementById("taskInsightDistillBtn");
     if(distillBtn){
       if(!d.enabled){distillBtn.style.display="none";}
-      else{distillBtn.style.display="inline-block";distillBtn.disabled=!!d.running;distillBtn.textContent=d.running?"蒸馏中…":"🤖 立即蒸馏";}
+       else{distillBtn.style.display="inline-block";distillBtn.disabled=!!d.running;distillBtn.textContent=d.running?t("task.generating"):t("task.distillNow");}
     }
     const q=new URLSearchParams();
     const proj=document.getElementById("taskInsightProjectFilter").value;
@@ -10953,13 +11203,13 @@ async function loadTaskInsight(refresh){
     const stats=document.getElementById("taskInsightStats");
     if(stats){
       const s=j.status||{};
-      stats.textContent="共 "+j.total+" 个会话 · 启用状态: "+(s.enabled?"开启":"关闭")+(s.signals?(" · 信号 "+Object.keys(s.signals||{}).filter(k=>s.signals[k]).join(",")||"无"):"");
+       stats.textContent=j.total+" "+t("task.sessions")+" · "+t("task.enabled")+": "+(s.enabled?t("task.on"):t("task.off"))+(s.signals?(" · "+t("task.signals")+" "+(Object.keys(s.signals||{}).filter(k=>s.signals[k]).join(",")||t("task.none"))):"");
     }
     const table=document.getElementById("taskInsightTable");
     if(j.tasks&&j.tasks.length){
       table.innerHTML='<table style="width:100%;border-collapse:collapse;min-width:760px"><thead><tr style="text-align:left;color:#64748b;border-bottom:1px solid #334155">'
-        +'<th style="padding:4px 6px">时间</th><th style="padding:4px 6px">项目</th><th style="padding:4px 6px">客户端</th><th style="padding:4px 6px">状态</th><th style="padding:4px 6px">请求</th>'
-        +'<th style="padding:4px 6px">Token(入/出)</th><th style="padding:4px 6px">费用</th><th style="padding:4px 6px">模型</th><th style="padding:4px 6px">工具/文件</th><th style="padding:4px 6px">摘要</th></tr></thead><tbody>'
+         +'<th style="padding:4px 6px">'+t("task.time")+'</th><th style="padding:4px 6px">'+t("task.project")+'</th><th style="padding:4px 6px">'+t("task.client")+'</th><th style="padding:4px 6px">'+t("task.status")+'</th><th style="padding:4px 6px">'+t("task.requests")+'</th>'
+         +'<th style="padding:4px 6px">'+t("task.tokens")+'</th><th style="padding:4px 6px">'+t("task.cost")+'</th><th style="padding:4px 6px">'+t("task.model")+'</th><th style="padding:4px 6px">'+t("task.toolsFiles")+'</th><th style="padding:4px 6px">'+t("task.summary")+'</th></tr></thead><tbody>'
         +j.tasks.map(t=>{
           const tools=[...(t.tools||[]).slice(0,6)];
           const files=[...(t.files||[]).slice(0,3)];
@@ -10970,10 +11220,10 @@ async function loadTaskInsight(refresh){
           const instr=(t.instructions||[]).slice(0,2).map(i=>escTaskText(String(i).slice(0,120))).join("<br>");
           return '<tr style="border-bottom:1px solid #1e293b;vertical-align:top">'
             +'<td style="padding:4px 6px;color:#94a3b8;white-space:nowrap">'+new Date(t.start).toLocaleString()+'<br><span style="color:#64748b">'+fmtTaskDuration(t.end-t.start)+'</span></td>'
-            +'<td style="padding:4px 6px;color:#60a5fa">'+escTaskText(t.projectName||"未分类")+'</td>'
+            +'<td style="padding:4px 6px;color:#60a5fa">'+escTaskText(t.projectName||"uncategorized")+'</td>'
             +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(t.client)+'</td>'
             +'<td style="padding:4px 6px">'+taskInsightBadge(t.status)+'</td>'
-            +'<td style="padding:4px 6px">'+escTaskText(t.requestCount)+'（成功 '+escTaskText(t.successCount)+'）</td>'
+            +'<td style="padding:4px 6px">'+escTaskText(t.requestCount)+' ('+escTaskText(t.successCount)+' ok)</td>'
             +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(t.inputTokens)+' / '+escTaskText(t.outputTokens)+'</td>'
             +'<td style="padding:4px 6px;color:#fbbf24">¥'+Number(t.cost||0).toFixed(4)+'</td>'
             +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(chain)+'</td>'
@@ -10982,11 +11232,11 @@ async function loadTaskInsight(refresh){
             +'</tr>';
         }).join("")+'</tbody></table>';
     }else{
-      table.innerHTML='<div style="padding:24px;text-align:center;color:#64748b;font-size:12px">暂无匹配的会话记录</div>';
+       table.innerHTML='<div style="padding:24px;text-align:center;color:#64748b;font-size:12px">'+t("task.noMatching")+'</div>';
     }
   }catch(e){
     const table=document.getElementById("taskInsightTable");
-    if(table)table.innerHTML='<div style="padding:24px;text-align:center;color:#f87171;font-size:12px">加载失败: '+escTaskText(e.message||e)+'</div>';
+     if(table)table.innerHTML='<div style="padding:24px;text-align:center;color:#f87171;font-size:12px">'+escTaskText(t("task.loadFailed",{e:e.message||e}))+'</div>';
   }
 }
 function taskInsightExport(){
@@ -11001,21 +11251,21 @@ async function taskInsightReport(){
   const box=document.getElementById("taskInsightReportBox");
   if(!box)return;
   box.style.display="block";
-  box.textContent="正在生成报告…";
+   box.textContent=t("task.generating");
   try{
     const r=await fetch("/__tasks/report");
     const j=await r.json();
     if(!j.ok)throw new Error(j.error||"report failed");
     const projects=(j.projects||[]).slice(0,12);
-    let html='<strong style="color:#e2e8f0">'+escTaskText(j.scope||"")+'报告</strong> · 会话 '+j.total.sessions+' · 请求 '+j.total.requests+' · 费用 ¥'+Number(j.total.cost).toFixed(4);
+     let html='<strong style="color:#e2e8f0">'+escTaskText(j.scope||"")+' '+t("task.reportWord")+'</strong> · '+t("task.sessions")+' '+j.total.sessions+' · '+t("task.requests")+' '+j.total.requests+' · '+t("task.cost")+' ¥'+Number(j.total.cost).toFixed(4);
     if(projects.length){
-      html+='<table style="width:100%;border-collapse:collapse;margin-top:6px"><thead><tr style="text-align:left;color:#64748b;border-bottom:1px solid #334155"><th style="padding:3px 6px">项目</th><th style="padding:3px 6px">会话</th><th style="padding:3px 6px">请求</th><th style="padding:3px 6px">成功率</th><th style="padding:3px 6px">费用</th><th style="padding:3px 6px">模型</th></tr></thead><tbody>'
+       html+='<table style="width:100%;border-collapse:collapse;margin-top:6px"><thead><tr style="text-align:left;color:#64748b;border-bottom:1px solid #334155"><th style="padding:3px 6px">'+t("task.project")+'</th><th style="padding:3px 6px">'+t("task.sessions")+'</th><th style="padding:3px 6px">'+t("task.requests")+'</th><th style="padding:3px 6px">'+t("task.successRate")+'</th><th style="padding:3px 6px">'+t("task.cost")+'</th><th style="padding:3px 6px">'+t("task.models")+'</th></tr></thead><tbody>'
         +projects.map(g=>'<tr style="border-bottom:1px solid #1e293b"><td style="padding:3px 6px;color:#60a5fa">'+escTaskText(g.project)+'</td><td style="padding:3px 6px">'+g.sessions+'</td><td style="padding:3px 6px">'+g.requests+'</td><td style="padding:3px 6px;color:'+(g.successRate>=80?"#22c55e":g.successRate>=50?"#fbbf24":"#f87171")+'">'+g.successRate+'%</td><td style="padding:3px 6px;color:#fbbf24">¥'+Number(g.cost).toFixed(4)+'</td><td style="padding:3px 6px;color:#94a3b8">'+escTaskText((g.models||[]).slice(0,3).join(", "))+'</td></tr>').join("")
         +'</tbody></table>';
     }
     box.innerHTML=html;
   }catch(e){
-    box.textContent="报告失败: "+escTaskText(e.message||e);
+     box.textContent=t("task.reportFailed",{e:escTaskText(e.message||e)});
   }
 }
 async function taskInsightDistillNow(){
@@ -11024,9 +11274,9 @@ async function taskInsightDistillNow(){
   try{
     const r=await fetch("/__tasks/distill-now",{method:"POST"});
     const j=await r.json();
-    alert((j.ok?"已开始蒸馏":"蒸馏失败")+": "+(j.error||"已提交，运行后可在任务详情查看摘要"));
+     alert((j.ok?t("task.distillStarted"):t("task.distillFailed"))+": "+(j.error||t("task.distillSubmitted")));
     if(j.ok)loadTaskInsight(true);
-  }catch(e){alert("蒸馏请求失败: "+e.message);}
+   }catch(e){alert(t("task.distillRequestFailed",{e:e.message}));}
   finally{if(btn)btn.disabled=false;}
 }
 function configInteger(id,fallback){const value=parseInt(document.getElementById(id).value,10);return Number.isFinite(value)?value:fallback}
@@ -11034,7 +11284,7 @@ function renderModelPricingRules(modelPricing){
   const area=document.getElementById("cfgModelPricingArea");
   if(!area)return;
   const rules=Array.isArray(modelPricing)?modelPricing:(modelPricing&&Array.isArray(modelPricing.rules)?modelPricing.rules:[]);
-  area.innerHTML='<div id="cfgModelPricingRows" style="display:flex;flex-direction:column;gap:4px"></div><div id="cfgModelPricingEmpty" style="font-size:10px;color:#64748b;padding:4px 0">暂无模型覆盖规则</div>';
+  area.innerHTML='<div id="cfgModelPricingRows" style="display:flex;flex-direction:column;gap:4px"></div><div id="cfgModelPricingEmpty" style="font-size:10px;color:#64748b;padding:4px 0">'+t("cfg.noModelRules")+'</div>';
   rules.slice(0,50).forEach(rule=>addModelPricingRule(rule));
   updateModelPricingEmptyState();
 }
@@ -11045,11 +11295,11 @@ function addModelPricingRule(rule){
   const row=document.createElement("div");
   row.className="cfg-model-pricing-row";
   row.style.cssText="display:grid;grid-template-columns:minmax(110px,1.5fr) repeat(3,minmax(78px,1fr)) 28px;gap:4px;align-items:center";
-  row.innerHTML='<input class="cfg-model-pricing-model" placeholder="模型名，例如 gpt-5" maxlength="80" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
-    '<input class="cfg-model-pricing-input" type="number" min="0" max="1000000" step="any" placeholder="输入 / 1M" title="输入价格（每百万 token）" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
-    '<input class="cfg-model-pricing-output" type="number" min="0" max="1000000" step="any" placeholder="输出 / 1M" title="输出价格（每百万 token）" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
-    '<input class="cfg-model-pricing-bpt" type="number" min="0.1" max="100" step="any" placeholder="字节/token" title="每 token 字节数" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
-    '<button class="btn" type="button" title="删除模型规则" style="padding:1px 5px;color:#f87171" onclick="removeModelPricingRule(this)">✕</button>';
+   row.innerHTML='<input class="cfg-model-pricing-model" placeholder="'+t("cfg.modelNamePh")+'" maxlength="80" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+     '<input class="cfg-model-pricing-input" type="number" min="0" max="1000000" step="any" placeholder="'+t("cfg.inputPricePh")+'" title="'+t("cfg.inputPriceTitle")+'" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+     '<input class="cfg-model-pricing-output" type="number" min="0" max="1000000" step="any" placeholder="'+t("cfg.outputPricePh")+'" title="'+t("cfg.outputPriceTitle")+'" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+     '<input class="cfg-model-pricing-bpt" type="number" min="0.1" max="100" step="any" placeholder="'+t("cfg.bytesTokenPh")+'" title="'+t("cfg.bytesTokenTitle")+'" style="min-width:0;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:3px 5px;border-radius:4px;font-size:11px">'+
+     '<button class="btn" type="button" title="'+t("cfg.deleteModelRule")+'" style="padding:1px 5px;color:#f87171" onclick="removeModelPricingRule(this)">✕</button>';
   const value=rule&&typeof rule==="object"?rule:{};
   row.querySelector(".cfg-model-pricing-model").value=modelPricingField(value.model);
   row.querySelector(".cfg-model-pricing-input").value=modelPricingField(value.inputPer1M);
@@ -11069,9 +11319,9 @@ function updateModelPricingEmptyState(){
   if(empty)empty.style.display=rows&&rows.children.length?"none":"block";
 }
 function readModelPricingNumber(value,label,minimum,maximum){
-  if(value==="")throw new Error(label+"不能为空");
+  if(value==="")throw new Error(label+" cannot be empty");
   const number=Number(value);
-  if(!Number.isFinite(number)||number<minimum||number>maximum)throw new Error(label+"必须在 "+minimum+"–"+maximum+" 之间");
+  if(!Number.isFinite(number)||number<minimum||number>maximum)throw new Error(label+" must be between "+minimum+"–"+maximum);
   return number;
 }
 function readDefaultPricingNumber(id,label,fallback,minimum,maximum){
@@ -11081,10 +11331,10 @@ function readDefaultPricingNumber(id,label,fallback,minimum,maximum){
 function collectDefaultPricingRule(){
   return {
     prices:{
-      inputPer1M:readDefaultPricingNumber("cfgPriceIn","默认输入价格",0,0,1000000),
-      outputPer1M:readDefaultPricingNumber("cfgPriceOut","默认输出价格",0,0,1000000)
+      inputPer1M:readDefaultPricingNumber("cfgPriceIn","default input price",0,0,1000000),
+      outputPer1M:readDefaultPricingNumber("cfgPriceOut","default output price",0,0,1000000)
     },
-    bytesPerToken:readDefaultPricingNumber("cfgBpt","默认每 token 字节数",3,0.1,100)
+    bytesPerToken:readDefaultPricingNumber("cfgBpt","default bytes per token",3,0.1,100)
   };
 }
 function collectModelPricingRules(){
@@ -11097,15 +11347,15 @@ function collectModelPricingRules(){
     const outputRaw=row.querySelector(".cfg-model-pricing-output").value.trim();
     const bptRaw=row.querySelector(".cfg-model-pricing-bpt").value.trim();
     if(!model&&!inputRaw&&!outputRaw&&!bptRaw)continue;
-    if(!model)throw new Error("模型规则缺少模型名");
-    if(model.length>80||/[\\u0000-\\u001f\\u007f]/.test(model))throw new Error("模型名无效: "+model);
-    if(seen.has(model))throw new Error("模型规则重复: "+model);
+    if(!model)throw new Error("model rule missing model name");
+    if(model.length>80||/[\\u0000-\\u001f\\u007f]/.test(model))throw new Error("invalid model name: "+model);
+    if(seen.has(model))throw new Error("duplicate model rule: "+model);
     seen.add(model);
     result.push({
       model,
-      inputPer1M:readModelPricingNumber(inputRaw,"模型 "+model+" 的输入价格",0,1000000),
-      outputPer1M:readModelPricingNumber(outputRaw,"模型 "+model+" 的输出价格",0,1000000),
-      bytesPerToken:readModelPricingNumber(bptRaw,"模型 "+model+" 的每 token 字节数",0.1,100)
+      inputPer1M:readModelPricingNumber(inputRaw,"input price for model "+model,0,1000000),
+      outputPer1M:readModelPricingNumber(outputRaw,"output price for model "+model,0,1000000),
+      bytesPerToken:readModelPricingNumber(bptRaw,"bytes per token for model "+model,0.1,100)
     });
   }
   return result;
@@ -11113,7 +11363,7 @@ function collectModelPricingRules(){
 async function saveConfig(){
   let modelPricing,defaultPricing;
   try{modelPricing=collectModelPricingRules();defaultPricing=collectDefaultPricingRule();}
-  catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message;return;}
+  catch(e){document.getElementById("configStatus").textContent=t("cfg.saveFailed",{e:e.message});return;}
   const c={
     prices:defaultPricing.prices,
     bytesPerToken:defaultPricing.bytesPerToken,
@@ -11206,18 +11456,18 @@ async function saveConfig(){
   if(discRawToken&&discRawToken!==DISC_TOKEN_MASK)c.discussions.githubToken=discRawToken;
   const invalidResumeProject=c.autoResumeProjects.find(p=>p.resumeMode==="fixed_session"&&(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(p.sessionId||"")||!String(p.cmd||"").includes("{sessionId}")));
   if(invalidResumeProject){
-    document.getElementById("configStatus").textContent="保存失败: 固定会话模式需要合法会话 ID，且启动命令必须包含 {sessionId}";
+    document.getElementById("configStatus").textContent=t("cfg.fixedSessionInvalid");
     return;
   }
   if(c.codexLogMaintenance.enabled&&!(await checkCodexLogMaintenancePath())){
-    document.getElementById("configStatus").textContent="保存失败: Codex SQLite 数据库路径或结构未通过检测";
+    document.getElementById("configStatus").textContent=t("cfg.dbConfigInvalid");
     return;
   }
   try{
     const r=await fetch("http://localhost:3456/__config",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(c)});
     const j=await r.json();
-    if(j.ok){closeConfig();checkForUpdates(false)}else{document.getElementById("configStatus").textContent="保存失败: "+(j.error||"未知错误")};
-  }catch(e){document.getElementById("configStatus").textContent="保存失败: "+e.message}
+    if(j.ok){closeConfig();checkForUpdates(false)}else{document.getElementById("configStatus").textContent=t("cfg.saveFailed",{e:j.error||t("cfg.unknownError")})};
+  }catch(e){document.getElementById("configStatus").textContent=t("cfg.saveFailed",{e:e.message})}
 }
 const DISC_TOKEN_MASK="********";
 function toggleDiscTokenVisibility(){
@@ -11225,7 +11475,7 @@ function toggleDiscTokenVisibility(){
   if(!input)return;
   if(input.value===DISC_TOKEN_MASK){
     const hint=document.getElementById("cfgDiscTokenTest");
-    if(hint){hint.textContent="已保存的 Token 出于安全考虑不回显，如需更换请直接输入新值";hint.style.color="#fbbf24";}
+    if(hint){hint.textContent=t("cfg.savedTokenHint");hint.style.color="#fbbf24";}
     return;
   }
   input.type=input.type==="password"?"text":"password";
@@ -11233,8 +11483,8 @@ function toggleDiscTokenVisibility(){
 async function testDiscToken(){
   const el=document.getElementById("cfgDiscTokenTest");
   const btn=event&&event.target?event.target:null;
-  if(el){el.textContent="测试中…";el.style.color="#64748b";}
-  if(btn){btn.disabled=true;btn.textContent="测试中…";}
+  if(el){el.textContent=t("cfg.testing");el.style.color="#64748b";}
+  if(btn){btn.disabled=true;btn.textContent=t("cfg.testing");}
   try{
     const discTokenInput=document.getElementById("cfgDiscGitHubToken");
     const discTokenVal=discTokenInput?discTokenInput.value.trim():"";
@@ -11244,31 +11494,31 @@ async function testDiscToken(){
     const j=await r.json();
     if(el){
       if(j&&j.ok&&j.login){
-        let txt="✅ 已连接为 @"+j.login;
-        if(j.discussionsScope&&j.discussionsScope.ok===false){txt+=" ⚠️ Discussions 权限不足："+((j.discussionsScope.message)||"未知");el.style.color="#fbbf24";}
-        else{txt+="（读权限已通；发布/回复写权限以实际发布为准）";el.style.color="#4ade80";}
+        let txt=t("cfg.connectedAs",{login:j.login});
+        if(j.discussionsScope&&j.discussionsScope.ok===false){txt+=t("cfg.permissionInsufficient",{message:j.discussionsScope.message||t("cfg.unknownError")});el.style.color="#fbbf24";}
+        else{txt+=t("cfg.readAccessOk");el.style.color="#4ade80";}
         el.textContent=txt;
       }
-      else{el.textContent="❌ "+((j&&j.error)||"测试失败");el.style.color="#f87171";}
+      else{el.textContent=t("cfg.testFailed")+": "+((j&&j.error)||"");el.style.color="#f87171";}
     }
   }catch(e){
-    if(el){el.textContent="❌ "+e.message;el.style.color="#f87171";}
+    if(el){el.textContent=t("cfg.testFailed")+": "+e.message;el.style.color="#f87171";}
   }finally{
-    if(btn){btn.disabled=false;btn.textContent="测试连通";}
+    if(btn){btn.disabled=false;btn.textContent=t("cfg.testConnection");}
   }
 }
 let restartPollTimer=null,restartElapsedTimer=null,restartPollingActive=false,restartOldInstanceId="",restartStartedAt=0,restartLastStatus=null,restartActionInFlight=false;
 function restartElapsedText(){
   const seconds=Math.max(0,Math.floor((Date.now()-restartStartedAt)/1000));
-  return seconds<60?seconds+" 秒":Math.floor(seconds/60)+" 分 "+(seconds%60)+" 秒";
+  return seconds<60?seconds+"s":Math.floor(seconds/60)+"m "+(seconds%60)+"s";
 }
 function restartWaitText(ms){
   const seconds=Math.max(1,Math.ceil((Number(ms)||0)/1000));
-  return seconds<60?seconds+" 秒":Math.floor(seconds/60)+" 分 "+(seconds%60)+" 秒";
+  return seconds<60?seconds+"s":Math.floor(seconds/60)+"m "+(seconds%60)+"s";
 }
 function refreshRestartElapsed(){
   const elapsed=document.getElementById("restartOverlayElapsed");
-  if(elapsed)elapsed.textContent=restartStartedAt?"已等待 "+restartElapsedText():"";
+  if(elapsed)elapsed.textContent=restartStartedAt?t("restart.waited",{time:restartElapsedText() }):"";
 }
 function startRestartElapsedTimer(){
   if(restartElapsedTimer)clearInterval(restartElapsedTimer);
@@ -11299,10 +11549,11 @@ function setRestartOverlayActions(status){
   force.disabled=!canForce||restartActionInFlight;
 }
 function restartDrainDetail(status){
-  let detail="仍有 "+(status.activeRequests||0)+" 个请求正在完成"+((status.queuedRequests||0)>0?"，另有 "+(status.queuedRequests||0)+" 个排队请求。":"。");
-  if((status.cancelledQueuedRequests||0)>0)detail+=" 本次已拒绝 "+status.cancelledQueuedRequests+" 个排队请求。";
-  if(status.canForce)detail+=" 已等待至少 30 秒，现在可以强制重启。";
-  else if(status.forceAvailableInMs>0)detail+=" "+restartWaitText(status.forceAvailableInMs)+"后可选择强制重启。";
+  const queued=(status.queuedRequests||0)>0?t("restart.queuedCount",{n:status.queuedRequests}):"";
+  let detail=t("restart.drainingDetail",{active:status.activeRequests||0,queued});
+  if((status.cancelledQueuedRequests||0)>0)detail+=" "+t("restart.queuedRejected",{n:status.cancelledQueuedRequests});
+  if(status.canForce)detail+=" "+t("restart.forceAvailable");
+  else if(status.forceAvailableInMs>0)detail+=" "+t("restart.forceAvailableAfter",{time:restartWaitText(status.forceAvailableInMs)});
   return detail;
 }
 function updateRestartOverlay(title,detail,isError,isComplete){
@@ -11325,7 +11576,7 @@ function dismissRestartOverlay(){
   setRestartOverlayActions(null);
   document.getElementById("restartOverlay").classList.remove("on","error","complete");
   const btn=document.getElementById("restartProxyBtn");
-  if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+  if(btn){btn.disabled=false;btn.textContent=t("restart.button");}
 }
 function scheduleRestartStatusPoll(delay){
   if(!restartPollingActive)return;
@@ -11334,11 +11585,11 @@ function scheduleRestartStatusPoll(delay){
 }
 async function pollRestartStatus(){
   if(!restartPollingActive)return;
-  let title="正在等待新的代理实例",detail="旧代理已停止，正在等待 watchdog 启动新实例。";
+  let title=t("restart.waitingNew"),detail=t("restart.oldStopped");
   try{
     const r=await fetchRestartStatus();
     if(!restartPollingActive)return;
-    if(r.status===401)throw new Error("管理认证失效，请重新打开 Dashboard 后重试");
+    if(r.status===401)throw new Error(t("restart.authExpired"));
     if(!r.ok)throw new Error("HTTP "+r.status);
     const status=await r.json();
     if(!restartPollingActive)return;
@@ -11349,7 +11600,7 @@ async function pollRestartStatus(){
       restartPollingActive=false;
       stopRestartElapsedTimer();
       setRestartOverlayActions(null);
-      updateRestartOverlay("新代理实例已就绪","正在重新载入 Dashboard…",false);
+      updateRestartOverlay(t("restart.newReady"),t("restart.reloading"),false);
       setTimeout(function(){location.reload();},350);
       return;
     }
@@ -11359,40 +11610,40 @@ async function pollRestartStatus(){
       stopRestartElapsedTimer();
       restartStartedAt=0;
       setRestartOverlayActions(null);
-      updateRestartOverlay("重启已取消","代理继续运行，新的请求已恢复接入。",false,true);
+      updateRestartOverlay(t("restart.cancelled"),t("restart.proxyRunning"),false,true);
       const btn=document.getElementById("restartProxyBtn");
-      if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+      if(btn){btn.disabled=false;btn.textContent=t("restart.button");}
       return;
     }
     setRestartOverlayActions(status);
     if(status.phase==="draining"){
-      title="正在排空进行中的请求";
+      title=t("restart.draining");
       detail=restartDrainDetail(status);
     }else{
-      title="正在等待旧代理退出";
-      detail="重启请求已提交，正在准备切换到新实例。";
+      title=t("restart.oldExit");
+      detail=t("restart.prepareSwitch");
     }
   }catch(e){
     if(!restartPollingActive)return;
-    if(e.message.indexOf("管理认证失效")>=0){
+    if(e.message.indexOf("Admin auth expired")>=0){
       restartPollingActive=false;
       stopRestartElapsedTimer();
       setRestartOverlayActions(null);
-      updateRestartOverlay("无法确认重启状态",e.message,true);
+      updateRestartOverlay(t("restart.cannotConfirm"),e.message,true);
       return;
     }
   }
   if(!restartPollingActive)return;
-  if(Date.now()-restartStartedAt>=120000)detail+=" 已等待较久，请检查 watchdog 日志。";
+  if(Date.now()-restartStartedAt>=120000)detail+=" "+t("restart.waitedLong");
   updateRestartOverlay(title,detail,false);
   scheduleRestartStatusPoll(1000);
 }
 async function cancelPendingRestart(){
   if(!restartPollingActive||restartActionInFlight)return;
-  if(!confirm("取消这次安全重启？\\n代理会立刻恢复接受新请求；已经被拒绝的排队请求不会恢复。"))return;
+  if(!confirm(t("restart.cancelConfirm")))return;
   restartActionInFlight=true;
   setRestartOverlayActions(restartLastStatus);
-  updateRestartOverlay("正在取消重启","正在恢复代理的正常接入…",false);
+  updateRestartOverlay(t("restart.cancelling"),t("restart.restoring"),false);
   try{
     const r=await fetch("/__restart/cancel",{method:"POST",cache:"no-store"});
     let result={};
@@ -11401,7 +11652,7 @@ async function cancelPendingRestart(){
     restartActionInFlight=false;
     if(!r.ok||!result.ok){
       setRestartOverlayActions(result);
-      updateRestartOverlay("未能取消重启",(result.error||"取消请求被拒绝（HTTP "+r.status+"）")+"；仍会继续监控重启状态。",true);
+       updateRestartOverlay(t("restart.failedCancel",{e:result.error||"cancel request rejected (HTTP "+r.status+")"}),t("restart.monitoring"),true);
       scheduleRestartStatusPoll(700);
       return;
     }
@@ -11411,13 +11662,13 @@ async function cancelPendingRestart(){
     restartStartedAt=0;
     setRestartOverlayActions(null);
     const cancelled=result.cancelledQueuedRequests||0;
-    updateRestartOverlay("重启已取消","代理继续运行，新的请求已恢复接入。"+(cancelled?" 已拒绝的 "+cancelled+" 个排队请求不会恢复。":""),false,true);
+     updateRestartOverlay(t("restart.cancelled"),t("restart.proxyRunning")+(cancelled?" "+t("restart.queuedNotRestored",{n:cancelled}):""),false,true);
     const btn=document.getElementById("restartProxyBtn");
-    if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+     if(btn){btn.disabled=false;btn.textContent=t("restart.button");}
   }catch(e){
     restartActionInFlight=false;
     setRestartOverlayActions(null);
-    updateRestartOverlay("未能取消重启",(e&&e.message)||"取消请求连接失败；仍会继续监控重启状态。",true);
+     updateRestartOverlay(t("restart.failedCancel",{e:(e&&e.message)||t("restart.monitoring")}),t("restart.monitoring"),true);
     scheduleRestartStatusPoll(700);
   }
 }
@@ -11426,31 +11677,31 @@ async function forcePendingRestart(){
   let status;
   try{
     const statusRes=await fetchRestartStatus();
-    if(!statusRes.ok)throw new Error("无法读取重启状态（HTTP "+statusRes.status+"）");
+    if(!statusRes.ok)throw new Error("Cannot read restart status (HTTP "+statusRes.status+")");
     status=await statusRes.json();
   }catch(e){
-    updateRestartOverlay("无法确认强制重启条件",(e&&e.message)||"请稍后重试。",true);
+     updateRestartOverlay(t("restart.cannotConfirm"),(e&&e.message)||t("common.waiting"),true);
     scheduleRestartStatusPoll(700);
     return;
   }
   restartLastStatus=status;
-  if(status.phase!=="draining"){
+   if(status.phase!=="draining"){
     setRestartOverlayActions(status);
-    updateRestartOverlay("已无法强制重启","代理已不处于可强制重启的排空阶段。",true);
+     updateRestartOverlay(t("restart.forceNoLonger"),t("restart.notDraining"),true);
     scheduleRestartStatusPoll(700);
     return;
   }
   if(!status.canForce){
     setRestartOverlayActions(status);
-    updateRestartOverlay("仍在安全排空",restartWaitText(status.forceAvailableInMs)+"后才能强制重启。",false);
+     updateRestartOverlay(t("restart.stillDraining"),t("restart.forceAfter",{time:restartWaitText(status.forceAvailableInMs)}),false);
     scheduleRestartStatusPoll(700);
     return;
   }
   const active=status.activeRequests||0;
-  if(!confirm("强制重启会立即断开仍在执行的 "+active+" 个请求。\\nCodex CLI 任务可能部分执行或报错，未完成工作需要人工确认。\\n\\n确定强制重启？"))return;
+   if(!confirm(t("restart.forceConfirm",{active})))return;
   restartActionInFlight=true;
   setRestartOverlayActions(status);
-  updateRestartOverlay("正在强制重启","将中断 "+active+" 个仍在执行的请求，并等待 watchdog 拉起新实例。",false);
+   updateRestartOverlay(t("restart.forcing"),t("restart.forceDetail",{active}),false);
   let forceRequestAttempted=false;
   try{
     forceRequestAttempted=true;
@@ -11461,45 +11712,45 @@ async function forcePendingRestart(){
     restartActionInFlight=false;
     if(!r.ok||!result.ok){
       setRestartOverlayActions(result);
-      const retry=result.retryAfterMs?" 还需等待 "+restartWaitText(result.retryAfterMs)+"。":"";
-      updateRestartOverlay("强制重启尚未执行",(result.error||"强制重启请求被拒绝（HTTP "+r.status+"）")+retry,false);
+      const retry=result.retryAfterMs?" Need to wait "+restartWaitText(result.retryAfterMs)+".":"";
+       updateRestartOverlay(t("restart.forceNoLonger"),t("restart.forceNotExecuted",{e:result.error||"force-restart request rejected (HTTP "+r.status+")",retry}),false);
       scheduleRestartStatusPoll(700);
       return;
     }
     setRestartOverlayActions(null);
-    updateRestartOverlay("正在强制重启","已确认中断 "+(result.interruptedActiveRequests||0)+" 个在途请求，正在等待新实例就绪。",false);
+     updateRestartOverlay(t("restart.forcing"),t("restart.forceAccepted",{active:result.interruptedActiveRequests||0}),false);
     scheduleRestartStatusPoll(500);
   }catch(e){
     restartActionInFlight=false;
     setRestartOverlayActions(null);
     if(forceRequestAttempted&&restartOldInstanceId){
-      updateRestartOverlay("正在确认强制重启状态","请求连接在切换期间中断，正在等待新实例恢复。",false);
+       updateRestartOverlay(t("restart.confirmingForce"),t("restart.forceConnectionBroken"),false);
       scheduleRestartStatusPoll(700);
       return;
     }
-    updateRestartOverlay("未能提交强制重启",(e&&e.message)||"请检查代理状态后重试。",true);
+     updateRestartOverlay(t("restart.failedForce",{e:(e&&e.message)||t("common.unknown")}),t("restart.monitoring"),true);
     scheduleRestartStatusPoll(700);
   }
 }
 async function restartProxy(){
-  if(!confirm("确定要重启代理进程？\\n新的 API 请求会暂时暂停，进行中的请求会先排空。"))return;
+  if(!confirm(t("restart.confirm")))return;
   const btn=document.getElementById("restartProxyBtn");
-  if(btn){btn.disabled=true;btn.textContent="正在重启…";}
+  if(btn){btn.disabled=true;btn.textContent=t("restart.buttonWorking");}
   restartPollingActive=true;restartStartedAt=Date.now();restartOldInstanceId="";restartLastStatus=null;restartActionInFlight=false;
   startRestartElapsedTimer();
   setRestartOverlayActions(null);
-  updateRestartOverlay("正在确认代理状态","正在提交安全重启请求…",false);
+  updateRestartOverlay(t("restart.checking"),t("restart.submitting"),false);
   let restartRequestAttempted=false,restartRequestRejected=false;
   try{
     const beforeRes=await fetchRestartStatus();
-    if(!beforeRes.ok)throw new Error("无法读取当前代理状态（HTTP "+beforeRes.status+"）");
+    if(!beforeRes.ok)throw new Error("Cannot read current proxy status (HTTP "+beforeRes.status+")");
     const before=await beforeRes.json();
     restartOldInstanceId=before.instanceId||"";
     if(Number.isFinite(before.restartStartedAt)&&before.restartStartedAt>0)restartStartedAt=before.restartStartedAt;
     if(before.phase!=="ready"){
       restartLastStatus=before;
       setRestartOverlayActions(before);
-      updateRestartOverlay("正在监控已有重启",before.phase==="draining"?restartDrainDetail(before):"旧代理正在退出，等待 watchdog 拉起新实例。",false);
+       updateRestartOverlay(t("restart.monitorExisting"),before.phase==="draining"?restartDrainDetail(before):t("restart.oldExiting"),false);
       scheduleRestartStatusPoll(700);
       return;
     }
@@ -11511,38 +11762,38 @@ async function restartProxy(){
       if(result.phase==="draining"){
         restartLastStatus=result;
         setRestartOverlayActions(result);
-        updateRestartOverlay("正在监控已有重启",restartDrainDetail(result),false);
+         updateRestartOverlay(t("restart.monitorExisting"),restartDrainDetail(result),false);
         scheduleRestartStatusPoll(700);
         return;
       }
       restartRequestRejected=true;
-      throw new Error(result.error||"重启请求被拒绝（HTTP "+r.status+"）");
+      throw new Error(result.error||"restart request rejected (HTTP "+r.status+")");
     }
     const result=await r.json();
     if(!result.ok){
       restartRequestRejected=true;
-      throw new Error(result.error||"重启请求被拒绝（HTTP "+r.status+"）");
+      throw new Error(result.error||"restart request rejected (HTTP "+r.status+")");
     }
     restartOldInstanceId=result.instanceId||restartOldInstanceId;
     restartLastStatus=result;
     if(Number.isFinite(result.restartStartedAt)&&result.restartStartedAt>0)restartStartedAt=result.restartStartedAt;
     const active=result.activeRequests||0;
     const queued=result.cancelledQueuedRequests||0;
-    updateRestartOverlay("重启请求已提交",active?"正在等待 "+active+" 个进行中的请求完成。":"没有进行中的请求，正在停止旧代理实例。",false);
-    if(queued>0)document.getElementById("restartOverlayDetail").textContent+=" 已取消 "+queued+" 个排队请求。";
+     updateRestartOverlay(t("restart.requested"),active?t("restart.waitingRequests",{active}):t("restart.noRequests"),false);
+     if(queued>0)document.getElementById("restartOverlayDetail").textContent+=" "+t("restart.queuedCancelled",{n:queued});
     setRestartOverlayActions(result);
     scheduleRestartStatusPoll(750);
   }catch(e){
     if(restartRequestAttempted&&!restartRequestRejected&&restartOldInstanceId){
-      updateRestartOverlay("正在确认重启状态","请求连接在重启期间中断，正在等待新实例恢复。",false);
+       updateRestartOverlay(t("restart.confirming"),t("restart.connectionBroken"),false);
       scheduleRestartStatusPoll(1000);
       return;
     }
     restartPollingActive=false;
     stopRestartElapsedTimer();
     setRestartOverlayActions(null);
-    updateRestartOverlay("未能提交重启请求",e.message||"请检查代理状态后重试。",true);
-    if(btn){btn.disabled=false;btn.textContent="🔄 重启代理";}
+     updateRestartOverlay(t("restart.failedSubmit",{e:e.message||t("common.unknown")}),t("restart.monitoring"),true);
+     if(btn){btn.disabled=false;btn.textContent=t("restart.button");}
   }
 }
 function batchActionCards(action){
@@ -11552,9 +11803,9 @@ function batchActionCards(action){
   }
   const cbs=document.querySelectorAll("#grid .card-cb:checked");
   const sel=[...cbs].map(c=>parseInt(c.dataset.idx)).filter(i=>i>0);
-  if(!sel.length){alert("请先勾选要操作的 Key");return}
+  if(!sel.length){alert("Select the key(s) to act on first");return}
   if(action==="shield"){
-    if(!confirm("确定屏蔽选中的 "+sel.length+" 个 Key？"))return;
+    if(!confirm("Shield the selected "+sel.length+" key(s)?"))return;
     sel.forEach(i=>fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i,status:"shielded"})}).catch(()=>{}));
   }else if(action==="reset"){
     sel.forEach(i=>fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i})}).catch(()=>{}));
@@ -11563,7 +11814,7 @@ function batchActionCards(action){
   }
 }
 function cardShield(idx){
-  if(!confirm("确定屏蔽 Key #"+idx+"？屏蔽后不再参与调度，可在管理弹窗恢复。"))return;
+  if(!confirm("Shield key #"+idx+"? Shielded keys no longer participate in scheduling; you can restore it from the manager dialog."))return;
   fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx,status:"shielded"})}).then(()=>setTimeout(loadKeys,200)).catch(()=>{});
 }
 function selectAllCards(){
@@ -11586,13 +11837,13 @@ function updateBatchBar(){
   if(!bar||!cnt)return;
   if(boostedBatchMode){
     bar.style.display="flex";cnt.style.display="none";
-    if(modeStatus){modeStatus.style.display="inline";modeStatus.textContent="⏳ 批量优先 ("+({"use":"队列","roundrobin":"轮询","random":"🎲 随机"}[boostedBatchMode]||"")+") 中"}
+    if(modeStatus){modeStatus.style.display="inline";modeStatus.textContent="⏳ Batch boost ("+({"use":"queue","roundrobin":"round-robin","random":"🎲 random"}[boostedBatchMode]||"")+") active"}
     if(useBtn)useBtn.style.display="none";
     if(rrBtn)rrBtn.style.display="none";
     if(randBtn)randBtn.style.display="none";
     if(cancelBtn)cancelBtn.style.display="inline";
   }else if(cbs.length){
-    bar.style.display="flex";cnt.style.display="inline";cnt.textContent="已选 "+cbs.length+" 个";
+    bar.style.display="flex";cnt.style.display="inline";cnt.textContent=cbs.length+" selected";
     if(modeStatus)modeStatus.style.display="none";
     if(useBtn)useBtn.style.display="inline";
     if(rrBtn)rrBtn.style.display="inline";

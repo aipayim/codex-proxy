@@ -13,6 +13,8 @@ const RELEASE_CONTENT_FILES = [
   "package.json",
   "package-lock.json",
   "README.md",
+  "README_EN.md",
+  "README_CN.md",
   "dashboard.html",
   "install.sh",
   "start-proxy.sh",
