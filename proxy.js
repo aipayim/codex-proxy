@@ -7256,7 +7256,15 @@ Object.assign(I18N_LANGS.zh, {
   "card.wrongGroupTitle": "此 Key 属于分组 {g}，不属于当前端口轮询分组",
   "cfg.dbOk": "✓ OK：主数据库 {main}，WAL {wal}", "cfg.dbOkNow": "✓ OK：主数据库 {main}，WAL {wal}，当前 {now}",
   "cfg.dbBelowTrigger": "（低于 {n} MiB 触发阈值）", "cfg.dbFileShrink": "（文件 {before} → {after}）",
-  "task.ok": "成功"
+  "task.ok": "成功",
+  "upd.safetyFull": "一键升级已禁用，避免覆盖本地代码、配置或运行状态。",
+  "upd.safetyGuideTitle": "安全升级步骤：",
+  "upd.safetyStep1": "备份当前代理目录及 keys.json、config.json、state.json",
+  "upd.safetyStep2": "在 GitHub 查看并审核 Release 说明与变更",
+  "upd.safetyStep3": "下载 Release 后，手动合并你需要的代码与配置变更",
+  "upd.safetyStep4": "执行 node -c proxy.js 检查语法",
+  "upd.safetyStep5": "在维护窗口重启代理（升级期间正在运行的请求可能被中断）",
+  "upd.safetyUnverified": "本地版本来源未知，无法可靠判断是否需要升级；仍可查看 Release 自行比对。"
 });
 Object.assign(I18N_LANGS.en, {
   "restart.queuedCount": ", and {n} queued",
@@ -7277,7 +7285,15 @@ Object.assign(I18N_LANGS.en, {
   "card.wrongGroupTitle": "This key belongs to group {g}, not part of the current port round-robin",
   "cfg.dbOk": "✓ OK: main DB {main}, WAL {wal}", "cfg.dbOkNow": "✓ OK: main DB {main}, WAL {wal}, now {now}",
   "cfg.dbBelowTrigger": " (below the {n} MiB trigger)", "cfg.dbFileShrink": " (file {before} → {after})",
-  "task.ok": "ok"
+  "task.ok": "ok",
+  "upd.safetyFull": "One-click upgrade stays disabled to avoid overwriting local code, config, or runtime state.",
+  "upd.safetyGuideTitle": "Safe upgrade steps:",
+  "upd.safetyStep1": "Back up the current proxy directory plus keys.json, config.json and state.json",
+  "upd.safetyStep2": "Review the Release notes and changes on GitHub",
+  "upd.safetyStep3": "Download the release, then manually merge the code and config changes you need",
+  "upd.safetyStep4": "Run node -c proxy.js to verify syntax",
+  "upd.safetyStep5": "Restart the proxy in a maintenance window (in-flight requests may be interrupted during the upgrade)",
+  "upd.safetyUnverified": "Local build provenance unknown; cannot reliably tell if an upgrade is needed. You can still review the Release and compare manually."
 });
 
 // --- Dashboard HTML ---
@@ -7501,7 +7517,12 @@ h1{font-size:clamp(16px,3vw,20px);margin-bottom:4px;color:#f1f5f9}
 .disc-link{color:#60a5fa;text-decoration:none;font-size:11px;cursor:pointer}
 .disc-link:hover{color:#93c5fd}
 @media(max-width:600px){.disc-meta{gap:6px}.disc-badges a{font-size:10px}.disc-title{font-size:12px}}
-.update-notes{margin-top:10px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#0f172a;border:1px solid #334155;border-radius:4px;padding:10px;color:#cbd5e1;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+.update-notes{margin-top:10px;max-height:280px;overflow:auto;word-break:break-word;background:#0f172a;border:1px solid #334155;border-radius:4px;padding:10px;color:#cbd5e1;font-size:12px;line-height:1.55}
+.update-notes h1,.update-notes h2,.update-notes h3{margin:8px 0 4px;color:#e2e8f0;font-weight:600}
+.update-notes h1{font-size:15px}.update-notes h2{font-size:14px}.update-notes h3{font-size:13px}
+.update-notes p{margin:4px 0}.update-notes ul{margin:4px 0;padding-left:20px}.update-notes li{margin:2px 0}
+.update-notes code{background:#1e293b;border:1px solid #334155;border-radius:3px;padding:0 3px;color:#f1f5f9;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
+.update-notes a{color:#60a5fa}
 @media(max-width:600px){
   .controls{flex-direction:column;align-items:stretch}
   .controls select,.controls input{width:100%}
@@ -7958,7 +7979,7 @@ Example: <code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-a
   <span id="updateVersionGap" style="color:#94a3b8"></span>
 </div>
 <div id="updateSummary" style="font-size:13px;color:#cbd5e1;line-height:1.6" data-i18n="update.loadingSummary">正在读取 GitHub Release 信息…</div>
-<pre class="update-notes" id="updateReleaseNotes" data-i18n="update.loadingNotes">正在读取更新说明…</pre>
+<div class="update-notes" id="updateReleaseNotes" data-i18n="update.loadingNotes">正在读取更新说明…</div>
 <div id="updateSafety" style="margin-top:10px;padding:9px 10px;background:#3b2f1e;border:1px solid #a16207;border-radius:4px;color:#fde68a;font-size:12px;line-height:1.6"></div>
 <div class="mfoot">
   <a class="btn" id="updateReleaseLink" href="https://github.com/aipayim/codex-proxy/releases" target="_blank" rel="noopener noreferrer" data-i18n="update.viewRelease">在 GitHub 查看 Release ↗</a>
@@ -8304,6 +8325,48 @@ function renderUpdateInfo(){
   }
   renderUpdateModal();
 }
+function renderReleaseNotesInline(s){
+  let r=esc(s).replace(/\\x60([^\\x60]+)\\x60/g,"<code>$1</code>");
+  r=r.replace(/\\[([^\\]]*)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g,function(m,label,url){
+    return '<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+label+'</a>';
+  });
+  r=r.replace(/(^|[\\s(])(https?:\\/\\/[^\\s<>\\)]+)/g,function(m,pre,url){
+    return pre+'<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+url+'</a>';
+  });
+  return r;
+}
+function renderReleaseNotes(md){
+  if(typeof md!=="string"||!md)return "";
+  const lines=md.replace(/\\r\\n/g,"\\n").split("\\n");
+  const out=[];
+  let listOpen=false;
+  const closeList=function(){if(listOpen){out.push("</ul>");listOpen=false;}};
+  for(let i=0;i<lines.length;i++){
+    const trimmed=lines[i].trim();
+    if(!trimmed){closeList();continue;}
+    const h=trimmed.match(/^(#{1,3})\\s+(.+)$/);
+    if(h){closeList();out.push("<h"+h[1].length+">"+renderReleaseNotesInline(h[2])+"</h"+h[1].length+">");continue;}
+    const li=trimmed.match(/^[-*+]\\s+(.+)$/);
+    if(li){if(!listOpen){out.push("<ul>");listOpen=true;}out.push("<li>"+renderReleaseNotesInline(li[1])+"</li>");continue;}
+    closeList();
+    out.push("<p>"+renderReleaseNotesInline(trimmed)+"</p>");
+  }
+  closeList();
+  return out.join("");
+}
+function updateSafetyGuideHtml(unverified){
+  return t("upd.safetyFull")
+    +(unverified?'<div style="margin-top:4px">'+t("upd.safetyUnverified")+'</div>':"")
+    +'<div style="margin-top:6px;font-weight:600">'+t("upd.safetyGuideTitle")+'</div>'
+    +'<ol style="margin:4px 0 0 20px;padding:0;line-height:1.7">'
+    +'<li>'+t("upd.safetyStep1")+'</li>'
+    +'<li>'+t("upd.safetyStep2")+'</li>'
+    +'<li>'+t("upd.safetyStep3")+'</li>'
+    +'<li>'+t("upd.safetyStep4")+'</li>'
+    +'<li>'+t("upd.safetyStep5")+'</li>'
+    +'</ol>'
+    +'<div style="margin-top:6px"><a href="https://github.com/aipayim/codex-proxy" target="_blank" rel="noopener noreferrer" style="color:#60a5fa" title="'+esc(t("cfg.upgradeGuideTitle"))+'">'+t("cfg.upgradeGuide")+'</a></div>';
+}
 function renderUpdateModal(){
   const modal=document.getElementById("updateModal");
   if(!modal||!modal.classList.contains("on"))return;
@@ -8342,14 +8405,18 @@ function renderUpdateModal(){
       : updateInfo.updateAvailable
         ? t("upd.summaryNew",{tag:latest.tag,cur:current,m:releaseMeta})
         : t("upd.summaryCurrent",{tag:latest.tag,cur:current,m:releaseMeta});
-    notes.textContent=latest.notes||t("upd.noNotes");
+    notes.innerHTML=renderReleaseNotes(latest.notes)||t("upd.noNotes");
     link.href=latest.url||"https://github.com/aipayim/codex-proxy/releases";
   }else{
     summary.textContent=t("upd.summaryUnavailable");
     notes.textContent=updateInfo.lastError||t("upd.notesUnavailable");
     link.href="https://github.com/aipayim/codex-proxy/releases";
   }
-  safety.textContent=t("upd.safetyFull");
+  if(updateInfo.updateAvailable){
+    safety.innerHTML=updateSafetyGuideHtml(!currentComparable);
+  }else{
+    safety.textContent=t("upd.safetyFull");
+  }
 }
 async function checkForUpdates(force){
   const refresh=document.getElementById("updateRefreshBtn");
@@ -8750,7 +8817,7 @@ function renderPortGroups(groups, groupEnabled, groupKeyInfo){
   html+='<div style="display:flex;gap:6px;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155">'+
      '<input id="newGroupName" placeholder="'+t("cfg.groupNamePh")+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-transform:uppercase">'+
      '<input id="newGroupPort" type="number" placeholder="'+t("cfg.portPh")+'" min="1024" max="65535" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
-      '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">'+t("cfg.add")+'</button>'+
+     '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">'+t("cfg.add")+'</button>'+
     '</div></div>';
   area.style.paddingLeft="12px";
   area.innerHTML=html;
@@ -8870,7 +8937,7 @@ function addResumeProject(){
    div.innerHTML='<input placeholder="'+t("cfg.projectNamePh")+'" class="rp-name" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
      '<input placeholder="'+t("cfg.projectPathPh")+'" class="rp-path" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
      '<input placeholder="'+t("cfg.projectCmdPh")+'" class="rp-cmd" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-      '<select class="rp-mode" title="'+t("cfg.fixedSessionTitle")+'" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command">'+t("cfg.commandMode")+'</option><option value="fixed_session">'+t("cfg.fixedSessionMode")+'</option></select>'+
+     '<select class="rp-mode" title="'+t("cfg.fixedSessionTitle")+'" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command">'+t("cfg.commandMode")+'</option><option value="fixed_session">'+t("cfg.fixedSessionMode")+'</option></select>'+
      '<input placeholder="'+t("cfg.sessionIdPh")+'" class="rp-session" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="'+t("cfg.fixedSessionTitle")+'">'+
     '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button>';
   container.querySelector("div").appendChild(div);

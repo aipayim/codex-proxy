@@ -106,7 +106,12 @@ Point an OpenAI-compatible client at `http://localhost:3456/v1`. Add groups such
 
 ## Evolution
 
-This timeline records every tagged release from `v2.26.0` through `v2.55.2`. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+This timeline records every tagged release from `v2.26.0` through `v2.56.0`. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+
+### v2.56.0 🛡️ Safer update dialog and Release notes
+- 🇬🇧 **English:** Added conditional safe-upgrade guidance, explicit sensitive-file backup warnings, and escaped restricted Markdown rendering for GitHub Release notes in the Dashboard.
+- 🇨🇳 **中文：** 新增按版本状态显示的安全升级指引、敏感文件备份警告，并为 Dashboard GitHub Release 说明加入 HTML 转义的受限 Markdown 渲染。
+- 🔗 [Full changelog](README_CN.md#更新日志)
 
 ### v2.55.2 🌐 Dashboard localization fix
 - 🇬🇧 **English:** Restored localized Dashboard labels for batch Key actions, durations, task insight, database maintenance, group controls, and resume-project controls in both Chinese and English.

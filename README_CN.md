@@ -56,7 +56,7 @@ codex-proxy/
 ├── start-proxy.sh        # 一键启动 watchdog + 代理（替代 systemctl start）
 ├── resume-codex.sh       # autoResume 辅助脚本：通过 cmd.exe 创建 Windows 可见终端运行 wsl 命令
 ├── proxy.pid             # 自动生成，记录代理进程 PID（watchdog 依赖此文件检测存活）
-└── README_CN.md          # 本文件（完整中文文档）
+└── README.md             # 本文件
 ```
 
 ## 新机器部署清单
@@ -809,7 +809,7 @@ npm run build:release -- --tag v1.2.3 --out ./dist
 
 发布器会将输出资产的 `package.json` 版本同步为 Release Tag，并移除仅在源码仓库可用的 `scripts`（包括 `npm test` 和 `npm run build:release`），但不会修改开发源码。它不会复制 `build-release.js`、任何 `test-*.js`、`config.json`、Key、状态、日志、PID 或本机路径。应将该目录归档后作为 GitHub Release 资产提供给普通用户。安装后的用户配置不在清单内；但代理代码或受保护脚本被修改时，清单校验会失败并自动退回“来源未知”，避免误报更新。
 
-清单用于本地完整性和版本来源判定，不执行远端代码，也不启用覆盖式升级。无论来源状态如何，“一键升级”都保持禁用，避免覆盖本地代码、配置或运行状态。安全升级流程是：备份当前代理目录及配置/状态，审核 Release，手动合并需要的改动，执行 `node -c proxy.js`，再在维护窗口重启代理。
+清单用于本地完整性和版本来源判定，不执行远端代码，也不启用覆盖式升级。无论来源状态如何，“一键升级”都保持禁用，避免覆盖本地代码、配置或运行状态。安全升级流程是：备份当前代理目录（含 `keys.json`、`config.json`、`state.json`），审核 Release，手动合并需要的改动，执行 `node -c proxy.js`，再在维护窗口重启代理。仅在 GitHub 发现新版本时，版本更新弹窗完整展示上述安全升级步骤（含升级期间可能中断正在运行的请求的提醒），并在弹窗内提供「GitHub 升级说明」入口；本机已是最新或无法比较时，弹窗只显示“一键升级已禁用”单句提示。Release 更新说明以受限 Markdown 渲染展示（标题、无序列表、代码标记与 `https://` 链接；渲染前先 HTML 转义、仅放行 http/https 链接，不执行原始 HTML），超长内容保留滚动查看。
 
 ## config.json 系统配置
 
@@ -1527,7 +1527,11 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
-- **2026-08-12 Dashboard 国际化文案修复**：恢复批量 Key 操作、时长显示、任务洞察、数据库维护状态、分组控制、恢复项目控制及折叠按钮等 Dashboard 文案的中英文国际化绑定，避免切换语言后部分界面固定显示英文或缺少翻译。仅涉及兼容性范围内的界面文案与显示逻辑修复。
+- **2026-08-12 更新弹窗安全提示展示时机与备份清单微调**：安全升级步骤改为仅在 GitHub 存在新版本时展示；本机已是最新或来源未知时，弹窗只显示“一键升级已禁用，避免覆盖本地代码、配置或运行状态。”单句提示。备份步骤明确列出 `keys.json`（可能含 API Key 与上游地址等敏感信息，禁止上传到 GitHub/Release 或公开），与 `config.json`、`state.json` 一并备份。中英文翻译键同步更新。
+
+- **2026-08-12 更新弹窗安全步骤展示条件与 Release 说明渲染修正**：修正上一版“仅在发现更新或本地来源未知时才显示完整安全升级步骤”的判断——现在只要成功获取 Release 信息（无论已是最新还是有更新），版本更新弹窗都完整展示五步安全升级流程与「GitHub 升级说明」入口；仅当 Release 获取失败时才退回单句禁用提示。另将 Release 更新说明由 `<pre>` 纯文本改为受限 Markdown 渲染（支持标题、无序列表、代码标记与 `https://` 链接），渲染前先 HTML 转义、仅放行 http/https 链接，杜绝 Release 内容注入 HTML/脚本；超长内容仍保留滚动查看。同步更新 README 对应说明。
+
+- **2026-08-12 版本更新弹窗恢复完整安全升级步骤**：此前弹窗安全区域被压缩为一句“一键升级已禁用”，完整的“备份 → 审核 Release → 手动合并 → `node -c proxy.js` → 维护窗口重启”安全升级方案只在 README 中保留。现弹窗在 GitHub 存在新版本时，以列表形式完整展示上述安全升级步骤，并在弹窗内新增「GitHub 升级说明」入口链接；本机已是最新或无法比较时只显示单句禁用提示。备份步骤明确列出 `keys.json`（可能含 API Key，禁止上传/公开）。中英文翻译键一并补齐（`upd.safetyGuideTitle`、`upd.safetyStep1`–`upd.safetyStep5`、`upd.safetyUnverified`），并更新 `upd.safetyFull` 文案。仅修改 Dashboard 前端展示，更新检查后端逻辑不变。
 
 - **2026-08-12 README 发布状态与 Release 链接修正**：修正 v2.55.0 发布说明中的 Markdown 换行问题，并将公开首页和 Release 文档中的 v2.55.0 状态统一为已发布；修复普通用户 Release 资产不包含 `build-release.js` 但文档仍指向该文件的问题，改为指向源码仓库的发布构建说明。
 

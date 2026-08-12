@@ -1434,6 +1434,12 @@ This section collects reviewed public contributions, issue reports, and design s
 
 ## Changelog
 
+- **2026-08-12 Update-dialog security and backup guidance**: show the full safe-upgrade steps only when GitHub has a newer Release; when the local version is current or provenance is unknown, show only the single disabled-upgrade warning. The backup step explicitly includes `keys.json`, which may contain API Keys and upstream URLs and must never be uploaded to GitHub, Release assets, or any public location. Synchronized the Chinese and English translation keys.
+
+- **2026-08-12 Update-dialog safety conditions and Release-note rendering**: corrected the previous condition that showed the full five-step safety guide only for detected updates or unknown provenance. After Release information is fetched successfully, the dialog now shows the complete five-step manual upgrade process and the GitHub upgrade-guide link whether the local version is current or behind; only a failed Release lookup falls back to the one-line warning. Release notes now use restricted Markdown rendering with HTML escaping and only `http`/`https` links allowed, supporting headings, unordered lists, and inline code without allowing Release content to inject HTML or scripts. Long notes remain scrollable.
+
+- **2026-08-12 Full update-dialog safety guide**: when GitHub has a newer Release, the dialog now lists backup, Release review, manual merge, `node -c proxy.js`, and maintenance-window restart steps, with a GitHub upgrade-guide link. Current or incomparable local versions retain the one-line disabled-upgrade warning. Added the matching `upd.safetyGuideTitle`, `upd.safetyStep1`–`upd.safetyStep5`, and `upd.safetyUnverified` translations. This changes Dashboard presentation only; update-check backend behavior is unchanged.
+
 - **2026-08-12 Dashboard localization copy fix**: restored localized Chinese/English bindings for batch Key actions, duration displays, Task Insight, database-maintenance status, group controls, resume-project controls, and collapse actions. This is a compatibility-preserving UI copy and display-logic fix; it prevents portions of the Dashboard from staying in English or losing translations after switching languages.
 
 - **2026-08-12 README release status and Release-link fix**: corrected the Markdown line breaks in the v2.55.0 release description, marked v2.55.0 as released throughout the public documentation, and replaced the broken `build-release.js` link because that source-only file is not shipped in regular-user Release assets.
