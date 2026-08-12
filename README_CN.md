@@ -1527,6 +1527,8 @@ A: 未修改的官方 Release 资产会自动识别版本；源码安装（克�
 
 ## 更新日志
 
+- **2026-08-12 README 发布状态与 Release 链接修正**：修正 v2.55.0 发布说明中的 Markdown 换行问题，并将公开首页和 Release 文档中的 v2.55.0 状态统一为已发布；修复普通用户 Release 资产不包含 `build-release.js` 但文档仍指向该文件的问题，改为指向源码仓库的发布构建说明。
+
 - **2026-08-11 Dashboard 中英文界面与语言切换**：Dashboard 新增中文/English 双语界面，支持通过右上角语言按钮切换，并使用当前浏览器的 `localStorage` 记住选择。默认仍为中文；切换只影响当前浏览器，不需要重启代理。修改 Dashboard 或 i18n 源码后需重启运行中的 Node.js 进程并刷新页面。
 
 - **2026-08-10 终止原因跟踪与费用趋势修复**：新增 `stopReason`（协议层终止原因）全链路跟踪——Chat 上游 `finish_reason: length` 与 Responses 上游 `status: incomplete`（`incomplete_details.reason = max_output_tokens`）统一识别为 `max_tokens`，表示响应被模型输出上限截断。日志请求条目与 `stream_terminal` 事件记录该字段，日志表格在模型名旁显示琥珀色「截断」徽标、详情视图显示「终止原因」、CSV 新增 `stopReason` 列、全文检索覆盖该字段。此前 responses→messages 转换把截断一律当作 `end_turn`，信息丢失，现已区分。另修复「💰 费用」趋势图无柱状图问题：`vals` 计算误取不存在的 `cost` 字段（实际字段为 `totalCost`），导致全 `undefined`、`max` 恒为 1，整个趋势容器被 `display:none` 隐藏；且 `Math.max(...vals, 1)` 的 `$1` 下限使小时费用（通常远小于 1 美元）的柱子被压成 2px 细线。费用模式现取真实 `totalCost`、以实际最大值为基准（全零才兜底），柱状图恢复正常比例显示。

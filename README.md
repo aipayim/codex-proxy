@@ -106,7 +106,12 @@ Point an OpenAI-compatible client at `http://localhost:3456/v1`. Add groups such
 
 ## Evolution
 
-This timeline records every tagged release from `v2.26.0` onward, plus the current unreleased `v2.55.0` change. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+This timeline records every tagged release from `v2.26.0` through `v2.55.1`. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+
+### v2.55.1 📝 README release-status and link fix
+- 🇬🇧 **English:** Corrected the published-release wording and replaced the broken Release-asset link to `build-release.js` with a source-repository documentation link.
+- 🇨🇳 **中文：** 修正已发布版本状态说明，并将 Release 资产中不存在的 `build-release.js` 链接改为源码仓库文档链接。
+- 🔗 [Full changelog](README_CN.md#更新日志)
 
 ### v2.55.0 🌐 Dashboard bilingual interface
 - 🇬🇧 **English:** Added Chinese/English Dashboard resources, a top-right language switch, and browser-local persistence of the selected language. Chinese remains the default and changing the language does not require a proxy restart.
@@ -282,7 +287,7 @@ This timeline records every tagged release from `v2.26.0` onward, plus the curre
 
 - 📘 [Full English README](README_EN.md)
 - 📙 [完整中文 README](README_CN.md)
-- 🧪 [Release and test documentation](build-release.js)
+- 🧪 [Source repository and release build guide](https://github.com/aipayim/codex-proxy/blob/main/README_EN.md#source-repository-and-release-assets)
 - 🌐 [Official site](https://openapi.im)
 - 🐛 [Issues and discussions](https://github.com/aipayim/codex-proxy/issues)
 - 🐦 [Author: @C_2049s](https://twitter.com/C_2049s)
