@@ -1434,6 +1434,8 @@ This section collects reviewed public contributions, issue reports, and design s
 
 ## Changelog
 
+- **2026-08-12 Dashboard localization copy fix**: restored localized Chinese/English bindings for batch Key actions, duration displays, Task Insight, database-maintenance status, group controls, resume-project controls, and collapse actions. This is a compatibility-preserving UI copy and display-logic fix; it prevents portions of the Dashboard from staying in English or losing translations after switching languages.
+
 - **2026-08-12 README release status and Release-link fix**: corrected the Markdown line breaks in the v2.55.0 release description, marked v2.55.0 as released throughout the public documentation, and replaced the broken `build-release.js` link because that source-only file is not shipped in regular-user Release assets.
 
 - **2026-08-11 Dashboard bilingual interface and language switching**: added Chinese/English Dashboard resources and a top-right language control. The current browser stores the choice in `localStorage`; Chinese remains the default, switching affects only that browser and does not require a proxy restart. After changing Dashboard or i18n source code, restart the running Node.js process and refresh the page.

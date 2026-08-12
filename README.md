@@ -106,7 +106,12 @@ Point an OpenAI-compatible client at `http://localhost:3456/v1`. Add groups such
 
 ## Evolution
 
-This timeline records every tagged release from `v2.26.0` through `v2.55.1`. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+This timeline records every tagged release from `v2.26.0` through `v2.55.2`. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+
+### v2.55.2 🌐 Dashboard localization fix
+- 🇬🇧 **English:** Restored localized Dashboard labels for batch Key actions, durations, task insight, database maintenance, group controls, and resume-project controls in both Chinese and English.
+- 🇨🇳 **中文：** 恢复批量 Key 操作、时长、任务洞察、数据库维护、分组控制和恢复项目控制等 Dashboard 文案的中英文国际化显示。
+- 🔗 [Full changelog](README_CN.md#更新日志)
 
 ### v2.55.1 📝 README release-status and link fix
 - 🇬🇧 **English:** Corrected the published-release wording and replaced the broken Release-asset link to `build-release.js` with a source-repository documentation link.

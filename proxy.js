@@ -7249,7 +7249,14 @@ Object.assign(I18N_LANGS.zh, {
   "log.popupTitle": "Key #- 统计", "log.historyHint": "历史 · {files} · 游标分页", "log.loadedTailHint": "已加载保存日志尾部（{files}）· 实时", "log.savedCheckedHint": "已检查保存日志（{files}），没有可读记录 · 实时",
   "log.errorDistCount": "⚠ 错误分布（{n}）", "log.error4xx": "4xx", "log.error5xx": "5xx", "log.errorTimeout": "超时", "log.errorStream": "流中断", "log.noErrors": "无错误",
   "log.models": "模型：", "log.unknown": "（未知）", "log.noIncidents": "当前没有运行事件", "log.recovered": "已恢复", "log.logEvent": "日志事件", "log.open": "打开", "log.failed": "失败", "log.acknowledge": "确认", "log.snooze": "静默", "log.pauseGroup": "暂停分组", "log.resume": "恢复", "log.groupPaused": "分组 {group} 已暂停 {time}", "log.refreshingEvents": "正在刷新事件...", "log.refreshedAt": "已刷新 {time}", "log.refreshFailed": "刷新失败", "log.pauseConfirm": "暂停该分组会立即拒绝新的代理请求。继续吗？", "log.actionFailed": "日志事件操作失败：{e}", "log.summaryRebuildFailedAlert": "日志汇总重建失败：{e}", "log.event": "事件", "log.convert": "转换", "log.autoRecover": "自动恢复", "log.autoLock": "自动锁死", "log.discarded": "已废弃", "log.streamCompleted": "流已完成", "log.clientDisconnected": "客户端已断开", "log.streamFailed": "流失败", "log.downstreamFailed": "下游失败", "log.truncated": "模型输出达到限制，响应被截断", "log.protocolConversion": "协议转换", "log.streamTerminalFailure": "流终止失败：{reason}",
-  "log.detailEvent": "事件", "log.detailMessage": "消息", "log.detailUrl": "地址", "log.detailStreamId": "流 ID", "log.detailOutcome": "结果", "log.detailReason": "原因", "log.detailStopReason": "停止原因", "log.detailGotDone": "收到 [DONE]", "log.detailErrorMessage": "错误消息", "log.detailSource": "来源", "log.detailTime": "时间", "log.detailKey": "Key #", "log.detailGroup": "分组", "log.detailClient": "客户端", "log.detailMethod": "方法", "log.detailPath": "路径", "log.detailUpstreamUrl": "上游地址", "log.detailModel": "模型", "log.detailOverrideModel": "覆盖模型", "log.detailStatus": "状态", "log.detailUp": "上行", "log.detailDown": "下行", "log.detailDuration": "耗时", "log.detailTtfb": "首字节", "log.detailStreamOutcome": "流结果", "log.detailStreamReason": "流终止原因", "log.detailUpstreamError": "上游错误类别", "log.yes": "是", "log.no": "否", "log.none": "无"
+  "log.detailEvent": "事件", "log.detailMessage": "消息", "log.detailUrl": "地址", "log.detailStreamId": "流 ID", "log.detailOutcome": "结果", "log.detailReason": "原因", "log.detailStopReason": "停止原因", "log.detailGotDone": "收到 [DONE]", "log.detailErrorMessage": "错误消息", "log.detailSource": "来源", "log.detailTime": "时间", "log.detailKey": "Key #", "log.detailGroup": "分组", "log.detailClient": "客户端", "log.detailMethod": "方法", "log.detailPath": "路径", "log.detailUpstreamUrl": "上游地址", "log.detailModel": "模型", "log.detailOverrideModel": "覆盖模型", "log.detailStatus": "状态", "log.detailUp": "上行", "log.detailDown": "下行", "log.detailDuration": "耗时", "log.detailTtfb": "首字节", "log.detailStreamOutcome": "流结果", "log.detailStreamReason": "流终止原因",   "log.detailUpstreamError": "上游错误类别", "log.yes": "是", "log.no": "否", "log.none": "无",
+  "batch.status": "⏳ 批量优先（{mode}）已启用", "batch.modeUse": "优先队列", "batch.modeRR": "轮询", "batch.modeRandom": "🎲 随机",
+  "batch.selectFirst": "请先选择要操作的 Key", "batch.shieldConfirm": "屏蔽选中的 {n} 个 Key？",
+  "card.shieldConfirm": "屏蔽 Key #{idx}？屏蔽后不再参与调度；可在管理弹窗中恢复。",
+  "card.wrongGroupTitle": "此 Key 属于分组 {g}，不属于当前端口轮询分组",
+  "cfg.dbOk": "✓ OK：主数据库 {main}，WAL {wal}", "cfg.dbOkNow": "✓ OK：主数据库 {main}，WAL {wal}，当前 {now}",
+  "cfg.dbBelowTrigger": "（低于 {n} MiB 触发阈值）", "cfg.dbFileShrink": "（文件 {before} → {after}）",
+  "task.ok": "成功"
 });
 Object.assign(I18N_LANGS.en, {
   "restart.queuedCount": ", and {n} queued",
@@ -7263,7 +7270,14 @@ Object.assign(I18N_LANGS.en, {
   "log.historyHint": "History · {files} · cursor pagination", "log.loadedTailHint": "Loaded tail of saved logs ({files}) · live", "log.savedCheckedHint": "Saved logs checked ({files}), no readable records · live",
   "log.errorDistCount": "⚠ Error distribution ({n})", "log.error4xx": "4xx", "log.error5xx": "5xx", "log.errorTimeout": "Timeout", "log.errorStream": "Stream breaks", "log.noErrors": "No errors",
   "log.models": "Models:", "log.unknown": "(unknown)", "log.noIncidents": "No runtime incidents right now", "log.recovered": "Recovered", "log.logEvent": "log event", "log.open": "open", "log.failed": "failed", "log.acknowledge": "Acknowledge", "log.snooze": "Snooze", "log.pauseGroup": "Pause group", "log.resume": "Resume", "log.groupPaused": "Group {group} paused {time}", "log.refreshingEvents": "Refreshing events...", "log.refreshedAt": "Refreshed {time}", "log.refreshFailed": "Refresh failed", "log.pauseConfirm": "Pausing this group immediately rejects new proxy requests. Continue?", "log.actionFailed": "Log incident action failed: {e}", "log.summaryRebuildFailedAlert": "Log summary rebuild failed: {e}", "log.event": "event", "log.convert": "Convert", "log.autoRecover": "Auto recover", "log.autoLock": "Auto lock", "log.discarded": "Discarded", "log.streamCompleted": "Stream completed", "log.clientDisconnected": "Client disconnected", "log.streamFailed": "Stream failed", "log.downstreamFailed": "Downstream failed", "log.truncated": "Response cut off by the model output limit", "log.protocolConversion": "Protocol conversion", "log.streamTerminalFailure": "Stream terminal failure: {reason}",
-  "log.detailEvent": "Event", "log.detailMessage": "Message", "log.detailUrl": "URL", "log.detailStreamId": "Stream ID", "log.detailOutcome": "Outcome", "log.detailReason": "Reason", "log.detailStopReason": "Stop reason", "log.detailGotDone": "Got [DONE]", "log.detailErrorMessage": "Error message", "log.detailSource": "Source", "log.detailTime": "Time", "log.detailKey": "Key #", "log.detailGroup": "Group", "log.detailClient": "Client", "log.detailMethod": "Method", "log.detailPath": "Path", "log.detailUpstreamUrl": "Upstream URL", "log.detailModel": "Model", "log.detailOverrideModel": "Override model", "log.detailStatus": "Status", "log.detailUp": "Up", "log.detailDown": "Down", "log.detailDuration": "Duration", "log.detailTtfb": "TTFB", "log.detailStreamOutcome": "Stream outcome", "log.detailStreamReason": "Stream terminal reason", "log.detailUpstreamError": "Upstream error category", "log.yes": "yes", "log.no": "no", "log.none": "none"
+  "log.detailEvent": "Event", "log.detailMessage": "Message", "log.detailUrl": "URL", "log.detailStreamId": "Stream ID", "log.detailOutcome": "Outcome", "log.detailReason": "Reason", "log.detailStopReason": "Stop reason", "log.detailGotDone": "Got [DONE]", "log.detailErrorMessage": "Error message", "log.detailSource": "Source", "log.detailTime": "Time", "log.detailKey": "Key #", "log.detailGroup": "Group", "log.detailClient": "Client", "log.detailMethod": "Method", "log.detailPath": "Path", "log.detailUpstreamUrl": "Upstream URL", "log.detailModel": "Model", "log.detailOverrideModel": "Override model", "log.detailStatus": "Status", "log.detailUp": "Up", "log.detailDown": "Down", "log.detailDuration": "Duration", "log.detailTtfb": "TTFB", "log.detailStreamOutcome": "Stream outcome", "log.detailStreamReason": "Stream terminal reason",   "log.detailUpstreamError": "Upstream error category", "log.yes": "yes", "log.no": "no", "log.none": "none",
+  "batch.status": "⏳ Batch boost ({mode}) active", "batch.modeUse": "queue", "batch.modeRR": "round-robin", "batch.modeRandom": "🎲 random",
+  "batch.selectFirst": "Select the key(s) to act on first", "batch.shieldConfirm": "Shield the selected {n} key(s)?",
+  "card.shieldConfirm": "Shield key #{idx}? Shielded keys no longer participate in scheduling; you can restore it from the manager dialog.",
+  "card.wrongGroupTitle": "This key belongs to group {g}, not part of the current port round-robin",
+  "cfg.dbOk": "✓ OK: main DB {main}, WAL {wal}", "cfg.dbOkNow": "✓ OK: main DB {main}, WAL {wal}, now {now}",
+  "cfg.dbBelowTrigger": " (below the {n} MiB trigger)", "cfg.dbFileShrink": " (file {before} → {after})",
+  "task.ok": "ok"
 });
 
 // --- Dashboard HTML ---
@@ -7661,17 +7675,17 @@ Example: <code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-a
 <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;min-width:360px;max-width:90vw">
 <div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px" data-i18n="mgr.exportTitle">导出 CSV（选择字段）</div>
 <div id="exportMgrFields" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:#cbd5e1;margin-bottom:12px">
-<label><input type="checkbox" checked disabled> Key</label>
-<label><input type="checkbox" checked disabled> URL</label>
-<label><input type="checkbox" class="exp-f" value="reset" data-i18n="mgr.csvReset"> 重置类型</label>
-<label><input type="checkbox" class="exp-f" value="priority" data-i18n="mgr.csvPriority"> 优先级</label>
-<label><input type="checkbox" class="exp-f" value="group" data-i18n="mgr.csvGroup"> 分组</label>
-<label><input type="checkbox" class="exp-f" value="remark" data-i18n="mgr.csvRemark"> 备注</label>
-<label><input type="checkbox" class="exp-f" value="models" data-i18n="mgr.csvModels"> 指定模型</label>
-<label><input type="checkbox" class="exp-f" value="model" data-i18n="mgr.csvOverride"> 覆盖模型</label>
-<label><input type="checkbox" class="exp-f" value="resetDay" data-i18n="mgr.csvResetDay"> 重置日</label>
-<label><input type="checkbox" class="exp-f" value="tz" data-i18n="mgr.csvTz"> 时区</label>
-<label><input type="checkbox" class="exp-f" value="timeWindow" data-i18n="mgr.csvTimeWindow"> 时段</label>
+<label><input type="checkbox" checked disabled><span data-i18n="mgr.csvKey">Key</span></label>
+<label><input type="checkbox" checked disabled><span data-i18n="mgr.csvUrl">地址</span></label>
+<label><input type="checkbox" class="exp-f" value="reset"><span data-i18n="mgr.csvReset"> 重置类型</span></label>
+<label><input type="checkbox" class="exp-f" value="priority"><span data-i18n="mgr.csvPriority"> 优先级</span></label>
+<label><input type="checkbox" class="exp-f" value="group"><span data-i18n="mgr.csvGroup"> 分组</span></label>
+<label><input type="checkbox" class="exp-f" value="remark"><span data-i18n="mgr.csvRemark"> 备注</span></label>
+<label><input type="checkbox" class="exp-f" value="models"><span data-i18n="mgr.csvModels"> 指定模型</span></label>
+<label><input type="checkbox" class="exp-f" value="model"><span data-i18n="mgr.csvOverride"> 覆盖模型</span></label>
+<label><input type="checkbox" class="exp-f" value="resetDay"><span data-i18n="mgr.csvResetDay"> 重置日</span></label>
+<label><input type="checkbox" class="exp-f" value="tz"><span data-i18n="mgr.csvTz"> 时区</span></label>
+<label><input type="checkbox" class="exp-f" value="timeWindow"><span data-i18n="mgr.csvTimeWindow"> 时段</span></label>
 </div>
 <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
 <button class="btn" onclick="closeExportMgr()" data-i18n="mgr.cancel">取消</button>
@@ -7686,8 +7700,8 @@ Example: <code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-a
 <div style="font-size:11px;color:#94a3b8;margin-bottom:8px" data-i18n="exp.allVisible">导出当前页面可见的所有 Key</div>
 <div id="exportCoverFields" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:#cbd5e1;margin-bottom:12px">
 <div style="grid-column:1/-1;font-size:11px;color:#64748b;margin-bottom:2px" data-i18n="exp.cfgSection">── 配置字段 ──</div>
-<label><input type="checkbox" checked disabled> Key</label>
-<label><input type="checkbox" checked disabled> URL</label>
+<label><input type="checkbox" checked disabled><span data-i18n="mgr.csvKey">Key</span></label>
+<label><input type="checkbox" checked disabled><span data-i18n="mgr.csvUrl">URL</span></label>
 <label><input type="checkbox" class="exp-cfg" value="reset"><span data-i18n="mgr.csvReset"> 重置类型</span></label>
 <label><input type="checkbox" class="exp-cfg" value="remark"><span data-i18n="mgr.csvRemark"> 备注</span></label>
 <label><input type="checkbox" class="exp-cfg" value="group"><span data-i18n="mgr.csvGroup"> 分组</span></label>
@@ -8223,10 +8237,10 @@ function formatIdle(ms){
   const m=Math.floor((totalSec%3600)/60);
   const s=totalSec%60;
   let parts=[];
-  if(d>0)parts.push(d+"d");
-  if(h>0)parts.push(h+"h");
-  if(m>0||d>0||h>0)parts.push(m+"m");
-  parts.push(s.toFixed(2)+"s");
+  if(d>0)parts.push(d+t("time.d"));
+  if(h>0)parts.push(h+t("time.h"));
+  if(m>0||d>0||h>0)parts.push(m+t("time.m"));
+  parts.push(s.toFixed(2)+t("time.s"));
   return parts.join(" ");
 }
 function describeBuildReason(reason){
@@ -8597,7 +8611,7 @@ function renderTaskInsightDistillStatus(runtime){
   const enabled=!!document.getElementById("cfgTaskInsightDistillEnabled")?.checked;
   const state=runtime&&typeof runtime==="object"?runtime:{};
   if(!enabled){el.textContent=t("cfg.distillDisabled");el.style.color="#64748b";return;}
-  let text="Distill: ";
+  let text="";
   let color="#94a3b8";
   if(state.running){text=t("cfg.distillRunning");color="#fbbf24";}
   else if(state.lastError){text=t("cfg.distillLastFailed",{e:String(state.lastError).slice(0,120)});color="#f87171";}
@@ -8616,7 +8630,7 @@ function renderCodexLogMaintenanceRuntime(runtime){
   if(!enabled){el.textContent=t("cfg.dbDisabled");el.style.color="#64748b";return;}
   const state=runtime&&typeof runtime==="object"?runtime:{};
   const total=codexLogMaintenanceBytes(state.totalBytes||0);
-  let text="🗄 Codex SQLite log maintenance: ";
+  let text="";
   let color="#94a3b8";
   if(state.inFlight||state.phase==="checking"){text=t("cfg.dbChecking");color="#fbbf24";}
   else if(state.phase==="error"){text=t("cfg.dbCheckFailed",{e:state.lastError||t("cfg.unknownError")});color="#f87171";}
@@ -8651,7 +8665,7 @@ async function checkCodexLogMaintenancePath(){
     const j=await r.json();
      if(!r.ok||!j.ok){setCodexLogMaintenanceCheck("✕ "+(j.error||t("cfg.dbInvalid")),"#f87171");return false;}
     const check=j.check||{};
-    setCodexLogMaintenanceCheck("✓ OK: main DB "+codexLogMaintenanceBytes(check.databaseBytes)+", WAL "+codexLogMaintenanceBytes(check.walBytes),"#4ade80");
+    setCodexLogMaintenanceCheck(t("cfg.dbOk",{main:codexLogMaintenanceBytes(check.databaseBytes),wal:codexLogMaintenanceBytes(check.walBytes)}),"#4ade80");
     return true;
    }catch(e){setCodexLogMaintenanceCheck("✕ "+t("cfg.dbCheckError",{e:e.message}),"#f87171");return false;}
   finally{if(button)button.disabled=false;}
@@ -8669,7 +8683,7 @@ async function runCodexLogMaintenanceNow(){
     const check=j.result||{};
     const threshold=Number(document.getElementById("cfgCodexLogMaintenanceThreshold").value||0);
     const total=codexLogMaintenanceBytes(check.totalBytes||0);
-    setCodexLogMaintenanceCheck("✓ OK: main DB "+codexLogMaintenanceBytes(check.databaseBytes)+", WAL "+codexLogMaintenanceBytes(check.walBytes)+", now "+total+(threshold>0&&(check.totalBytes||0)<threshold*1024*1024?" (below the "+threshold+" MiB trigger)":""),"#4ade80");
+    setCodexLogMaintenanceCheck(t("cfg.dbOkNow",{main:codexLogMaintenanceBytes(check.databaseBytes),wal:codexLogMaintenanceBytes(check.walBytes),now:total})+(threshold>0&&(check.totalBytes||0)<threshold*1024*1024?t("cfg.dbBelowTrigger",{n:threshold}):""),"#4ade80");
    }catch(e){setCodexLogMaintenanceCheck("✕ "+t("cfg.dbCheckError",{e:e.message}),"#f87171");}
   finally{toggleCodexLogMaintenanceControls();}
 }
@@ -8696,7 +8710,7 @@ async function runCodexLogMaintenanceCleanNow(){
      else if(result.result==="retention_satisfied")setCodexLogMaintenanceCheck(t("cfg.dbNothingToClean"),"#94a3b8");
     else{
        let text=t("cfg.dbDeletedNow",{n:result.deletedRows||0});
-       if(result.vacuumed)text+=t("cfg.dbVacuumFreed",{space:codexLogMaintenanceBytes((result.vacuumBytesBefore||0)-(result.vacuumBytesAfter||0))+" (file "+codexLogMaintenanceBytes(result.physicalBytesBefore||0)+" → "+codexLogMaintenanceBytes(result.physicalBytesAfter||0)+")"});
+       if(result.vacuumed)text+=t("cfg.dbVacuumFreed",{space:codexLogMaintenanceBytes((result.vacuumBytesBefore||0)-(result.vacuumBytesAfter||0))+t("cfg.dbFileShrink",{before:codexLogMaintenanceBytes(result.physicalBytesBefore||0),after:codexLogMaintenanceBytes(result.physicalBytesAfter||0)})});
        else text+=t("cfg.dbNow",{size:codexLogMaintenanceBytes(result.totalBytes||0)});
       setCodexLogMaintenanceCheck(text,"#4ade80");
     }
@@ -8736,7 +8750,7 @@ function renderPortGroups(groups, groupEnabled, groupKeyInfo){
   html+='<div style="display:flex;gap:6px;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155">'+
      '<input id="newGroupName" placeholder="'+t("cfg.groupNamePh")+'" style="width:40px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;text-transform:uppercase">'+
      '<input id="newGroupPort" type="number" placeholder="'+t("cfg.portPh")+'" min="1024" max="65535" style="width:70px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px">'+
-       '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">'+t("cfg.add")+'</button>'+
+      '<button class="btn" style="font-size:10px;padding:1px 6px;color:#4ade80" onclick="addPortGroup()">'+t("cfg.add")+'</button>'+
     '</div></div>';
   area.style.paddingLeft="12px";
   area.innerHTML=html;
@@ -8838,7 +8852,7 @@ function renderResumeProjects(projects){
        '<input placeholder="'+t("cfg.projectNamePh")+'" class="rp-name" value="'+esc(p.name||'')+'" style="width:80px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
        '<input placeholder="'+t("cfg.projectPathPh")+'" class="rp-path" value="'+esc(p.path||'')+'" style="flex:1;min-width:120px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
        '<input placeholder="'+t("cfg.projectCmdPh")+'" class="rp-cmd" value="'+esc(p.cmd||'')+'" style="flex:1;min-width:100px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px">'+
-        '<select class="rp-mode" title="'+t("cfg.fixedSessionTitle")+'" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command"'+(mode==="command"?" selected":"")+'>'+t("cfg.commandMode")+'</option><option value="fixed_session"'+(mode==="fixed_session"?" selected":"")+'>'+t("cfg.fixedSessionMode")+'</option></select>'+
+       '<select class="rp-mode" title="'+t("cfg.fixedSessionTitle")+'" style="width:74px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 3px;border-radius:4px;font-size:10px"><option value="command"'+(mode==="command"?" selected":"")+'>'+t("cfg.commandMode")+'</option><option value="fixed_session"'+(mode==="fixed_session"?" selected":"")+'>'+t("cfg.fixedSessionMode")+'</option></select>'+
        '<input placeholder="'+t("cfg.sessionIdPh")+'" class="rp-session" value="'+esc(p.sessionId||'')+'" style="width:130px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:2px 4px;border-radius:4px;font-size:11px" title="'+t("cfg.fixedSessionTitle")+'">'+
       '<button class="btn" style="font-size:10px;color:#ef4444;padding:0 4px" onclick="removeResumeProject(this)">✕</button></div>';
   }
@@ -9283,7 +9297,7 @@ function render(){
       document.querySelectorAll("#ticker .ticker-item").forEach(el=>{
         const since=+el.dataset.since;if(!since)return;
         const sec=Math.max(0,Math.round((Date.now()-since)/1000));
-        const dur=sec>=60?Math.floor(sec/60)+"m"+(sec%60)+"s":sec+"s";
+        const dur=sec>=60?Math.floor(sec/60)+t("time.m")+(sec%60)+t("time.s"):sec+t("time.s");
         const d=el.querySelector(".t-dur");if(d)d.textContent=dur;
       });
     },1000);
@@ -9327,7 +9341,7 @@ function render(){
       const tk=k.idx+"#"+r.since;
       if(tickerEl.querySelector('[data-key="'+tk+'"]'))return;
       const sec=Math.max(0,Math.round((Date.now()-r.since)/1000));
-      const dur=sec>=60?Math.floor(sec/60)+"m"+(sec%60)+"s":sec+"s";
+      const dur=sec>=60?Math.floor(sec/60)+t("time.m")+(sec%60)+t("time.s"):sec+t("time.s");
       const el=document.createElement("span");
       el.className="ticker-item";
       el.dataset.key=tk;
@@ -9421,9 +9435,9 @@ function render(){
       (isActive?' <span class="badge bd-active">'+t("card.concurrentN",{n:a.activeRequests})+'</span>':'')+
       (isDiscard?' <span class="badge" style="background:#3b1f1e;color:#f87171;border:1px solid #ef4444">'+t("card.discardedBadge")+'</span>':'')+
       (isBoosted?' <span class="badge" style="background:#1a3a2e;color:#4ade80;border:1px solid #22c55e">'+t("card.boosted")+'</span>':'')+
-      (boostedBatch.includes(a.idx)?((a.group||"A")!=="A"?' <span class="badge" style="background:#1a3a2e;color:#ef4444;border:1px solid #ef4444;text-decoration:line-through" title="This key belongs to group '+esc(a.group||"A")+', not part of the current port round-robin">⚡ '+({use:t("card.boostQueue"),roundrobin:t("card.boostRR"),random:t("card.boostRand")}[boostedBatchMode]||t("card.boostRR"))+'</span>':' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+({use:t("card.boostQueue"),roundrobin:t("card.boostRR"),random:t("card.boostRand")}[boostedBatchMode]||t("card.boostRR"))+'</span>'):'')+
+      (boostedBatch.includes(a.idx)?((a.group||"A")!=="A"?' <span class="badge" style="background:#1a3a2e;color:#ef4444;border:1px solid #ef4444;text-decoration:line-through" title="'+t("card.wrongGroupTitle",{g:esc(a.group||"A")})+'">⚡ '+({use:t("card.boostQueue"),roundrobin:t("card.boostRR"),random:t("card.boostRand")}[boostedBatchMode]||t("card.boostRR"))+'</span>':' <span class="badge" style="background:#1a3a2e;color:#facc15;border:1px solid #eab308">⚡ '+({use:t("card.boostQueue"),roundrobin:t("card.boostRR"),random:t("card.boostRand")}[boostedBatchMode]||t("card.boostRR"))+'</span>'):'')+
       ' <span class="badge bd-score">'+t("card.score",{n:score})+'</span>'+
-      '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="collapse">▼</span></span></div>'+
+      '<span class="btn" style="padding:0 4px;font-size:9px" onclick="toggleCollapse('+a.idx+')" title="'+t("card.collapse")+'">▼</span></span></div>'+
       '<div class="meter"><div class="meter-fill" style="width:'+score+'%;background:'+meterColor+'"></div></div>'+
       '<div class="cbody" id="body-'+a.idx+'">'+
       '<div class="row"><span class="label">'+t("card.key")+'</span><span class="val"><span class="key-mask" data-idx="'+a.idx+'" onclick="var i=this.dataset.idx,f=fullKeys[i];if(!f){loadKeys();var t=this;setTimeout(function(){f=fullKeys[i];if(f)t.textContent=t.textContent===maskKey(f)?f:maskKey(f)},300)}else this.textContent=this.textContent===maskKey(f)?f:maskKey(f)">'+a.key+'</span></span></div>'+
@@ -9487,7 +9501,7 @@ function todayStr(){return new Date().toISOString().slice(0,10)}
 function fmtBytes(n){if(!n)return"0B";if(n>=1048576)return(n/1048576).toFixed(1)+"MB";if(n>=1024)return(n/1024).toFixed(1)+"KB";return n+"B"}
 function fmtDur(ms){if(ms>=1000)return(ms/1000).toFixed(2)+"s";return ms+"ms"}
 function fmtDate(ts){const d=new Date(ts);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
-function fmtDuration(ms){if(ms<=0)return t("time.just");const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+'d '+(h%24)+'h':h>0?h+'h '+(m%60)+'m':m>0?m+'m '+(s%60)+'s':s+'s'}
+function fmtDuration(ms){if(ms<=0)return t("time.just");const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d>0?d+t("time.d")+' '+(h%24)+t("time.h"):h>0?h+t("time.h")+' '+(m%60)+t("time.m"):m>0?m+t("time.m")+' '+(s%60)+t("time.s"):s+t("time.s")}
 function fmtTimeAgo(ms){if(ms<=0)return t("time.just");const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);const u=(n,lab)=>n+lab;return(d>0?u(d,t("time.d"))+u(h%24,t("time.h"))+u(m%60,t("time.m"))+u(s%60,t("time.s")):h>0?u(h,t("time.h"))+u(m%60,t("time.m"))+u(s%60,t("time.s")):m>0?u(m,t("time.m"))+u(s%60,t("time.s")):u(s,t("time.s")))+t("time.ago")}
 function maskKey(k){return k&&k.length>12?k.slice(0,6)+'...'+k.slice(-4):(k||'')}
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
@@ -11150,9 +11164,9 @@ function escTaskText(v){
 }
 function fmtTaskDuration(ms){
   const s=Math.max(0,Math.round((ms||0)/1000));
-  if(s<60)return s+"s";
-  if(s<3600)return Math.floor(s/60)+"m"+(s%60?(" "+s%60+"s"):"");
-  return Math.floor(s/3600)+"h"+(Math.floor(s%3600/60)?(" "+Math.floor(s%3600/60)+"m"):"");
+  if(s<60)return s+t("time.s");
+  if(s<3600)return Math.floor(s/60)+t("time.m")+(s%60?(" "+s%60+t("time.s")):"");
+  return Math.floor(s/3600)+t("time.h")+(Math.floor(s%3600/60)?(" "+Math.floor(s%3600/60)+t("time.m")):"");
 }
 function taskInsightBadge(status){
   const map={completed:[t("task.completed"),"#22c55e"],failed:[t("task.failed"),"#f87171"],partial:[t("task.partial"),"#fbbf24"]};
@@ -11220,10 +11234,10 @@ async function loadTaskInsight(refresh){
           const instr=(t.instructions||[]).slice(0,2).map(i=>escTaskText(String(i).slice(0,120))).join("<br>");
           return '<tr style="border-bottom:1px solid #1e293b;vertical-align:top">'
             +'<td style="padding:4px 6px;color:#94a3b8;white-space:nowrap">'+new Date(t.start).toLocaleString()+'<br><span style="color:#64748b">'+fmtTaskDuration(t.end-t.start)+'</span></td>'
-            +'<td style="padding:4px 6px;color:#60a5fa">'+escTaskText(t.projectName||"uncategorized")+'</td>'
+            +'<td style="padding:4px 6px;color:#60a5fa">'+escTaskText(t.projectName||t("task.unclassified"))+'</td>'
             +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(t.client)+'</td>'
             +'<td style="padding:4px 6px">'+taskInsightBadge(t.status)+'</td>'
-            +'<td style="padding:4px 6px">'+escTaskText(t.requestCount)+' ('+escTaskText(t.successCount)+' ok)</td>'
+            +'<td style="padding:4px 6px">'+escTaskText(t.requestCount)+' ('+escTaskText(t.successCount)+' '+t("task.ok")+')</td>'
             +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(t.inputTokens)+' / '+escTaskText(t.outputTokens)+'</td>'
             +'<td style="padding:4px 6px;color:#fbbf24">¥'+Number(t.cost||0).toFixed(4)+'</td>'
             +'<td style="padding:4px 6px;color:#94a3b8">'+escTaskText(chain)+'</td>'
@@ -11803,9 +11817,9 @@ function batchActionCards(action){
   }
   const cbs=document.querySelectorAll("#grid .card-cb:checked");
   const sel=[...cbs].map(c=>parseInt(c.dataset.idx)).filter(i=>i>0);
-  if(!sel.length){alert("Select the key(s) to act on first");return}
+  if(!sel.length){alert(t("batch.selectFirst"));return}
   if(action==="shield"){
-    if(!confirm("Shield the selected "+sel.length+" key(s)?"))return;
+    if(!confirm(t("batch.shieldConfirm",{n:sel.length})))return;
     sel.forEach(i=>fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i,status:"shielded"})}).catch(()=>{}));
   }else if(action==="reset"){
     sel.forEach(i=>fetch("http://localhost:3456/__reset-key",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx:i})}).catch(()=>{}));
@@ -11814,7 +11828,7 @@ function batchActionCards(action){
   }
 }
 function cardShield(idx){
-  if(!confirm("Shield key #"+idx+"? Shielded keys no longer participate in scheduling; you can restore it from the manager dialog."))return;
+  if(!confirm(t("card.shieldConfirm",{idx})))return;
   fetch("http://localhost:3456/__patch-key-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idx,status:"shielded"})}).then(()=>setTimeout(loadKeys,200)).catch(()=>{});
 }
 function selectAllCards(){
@@ -11837,13 +11851,13 @@ function updateBatchBar(){
   if(!bar||!cnt)return;
   if(boostedBatchMode){
     bar.style.display="flex";cnt.style.display="none";
-    if(modeStatus){modeStatus.style.display="inline";modeStatus.textContent="⏳ Batch boost ("+({"use":"queue","roundrobin":"round-robin","random":"🎲 random"}[boostedBatchMode]||"")+") active"}
+    if(modeStatus){modeStatus.style.display="inline";modeStatus.textContent=t("batch.status",{mode:({use:t("batch.modeUse"),roundrobin:t("batch.modeRR"),random:t("batch.modeRandom")}[boostedBatchMode]||"")})}
     if(useBtn)useBtn.style.display="none";
     if(rrBtn)rrBtn.style.display="none";
     if(randBtn)randBtn.style.display="none";
     if(cancelBtn)cancelBtn.style.display="inline";
   }else if(cbs.length){
-    bar.style.display="flex";cnt.style.display="inline";cnt.textContent=cbs.length+" selected";
+    bar.style.display="flex";cnt.style.display="inline";cnt.textContent=t("batch.count",{n:cbs.length});
     if(modeStatus)modeStatus.style.display="none";
     if(useBtn)useBtn.style.display="inline";
     if(rrBtn)rrBtn.style.display="inline";
