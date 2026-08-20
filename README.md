@@ -106,7 +106,12 @@ Point an OpenAI-compatible client at `http://localhost:3456/v1`. Add groups such
 
 ## Evolution
 
-This timeline records every tagged release from `v2.26.0` through `v2.56.0`. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+This timeline records every tagged release from `v2.26.0` through `v2.57.0`. Each entry intentionally keeps an English and Chinese explanation together so the public landing page remains English-first without losing release context for Chinese readers.
+
+### v2.57.0 🌐 LAN access mode
+- 🇬🇧 **English:** Added network mode setting (localhost / LAN) and LAN API key protection, allowing other devices on the same LAN to use this proxy for AI requests. Dashboard settings panel includes mode selection and key input; saving automatically restarts all port groups to apply the new bind address. LAN clients authenticate via Bearer token constant-time comparison. Local requests always bypass the LAN key.
+- 🇨🇳 **中文：** 新增网络模式设置（仅本机 / 局域网可用）与 LAN 连接密码保护，允许同一局域网内其他设备通过本机代理访问 AI 模型。Dashboard 设置面板提供网络模式切换和密码输入，保存后自动重启所有端口组以切换监听地址（localhost → 0.0.0.0）。局域网客户端通过 Bearer token 恒时比较进行认证，本机请求不受密码限制。
+- 🔗 [Full changelog](README_CN.md#更新日志)
 
 ### v2.56.0 🛡️ Safer update dialog and Release notes
 - 🇬🇧 **English:** Added conditional safe-upgrade guidance, explicit sensitive-file backup warnings, and escaped restricted Markdown rendering for GitHub Release notes in the Dashboard.

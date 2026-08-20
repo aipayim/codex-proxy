@@ -312,7 +312,7 @@ const discussionsState = {
   ownUpdatedAt: new Map(),
 };
 let localBuildProvenance = null;
-  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeRunnerStallMinutes: AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT, autoResumeRunnerMaxStallRestarts: AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, discussions: { ...DISCUSSIONS_DEFAULT_CONFIG }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS, responsesNoProgressTimeout: RESPONSES_NO_PROGRESS_DEFAULT_MS };
+  let config = { webhookUrl: "", prices: { inputPer1M: 0, outputPer1M: 0 }, bytesPerToken: 3, modelPricing: [], notifications: { sound: true, desktop: true }, roundRobin: false, rateLimit: true, maxRequestsPerMin: 10, maxTokensPerMin: 0, defaultResetHours: 5, autoResume: false, autoResumeIdleMinutes: 10, autoResumeDebounceMinutes: 3, autoResumeRunnerStallMinutes: AUTO_RESUME_RUNNER_STALL_MINUTES_DEFAULT, autoResumeRunnerMaxStallRestarts: AUTO_RESUME_RUNNER_MAX_STALL_RESTARTS_DEFAULT, autoResumeProjects: [], cmdPath: "/mnt/c/Windows/System32/cmd.exe", logMaxMiB: DEFAULT_LOG_MAX_MIB, logSegmentMaxMiB: DEFAULT_LOG_SEGMENT_MAX_MIB, stateHourlyRetentionDays: DEFAULT_STATE_HOURLY_RETENTION_DAYS, stateDailyRetentionDays: DEFAULT_STATE_DAILY_RETENTION_DAYS, stateMaxMiB: DEFAULT_STATE_MAX_MIB, proxyLogMaxMiB: DEFAULT_PROXY_LOG_MAX_MIB, proxyLogKeepFiles: DEFAULT_PROXY_LOG_KEEP_FILES, updateBaselineTag: "", logIncidents: {}, codexLogMaintenance: { ...DEFAULT_CODEX_LOG_MAINTENANCE }, discussions: { ...DISCUSSIONS_DEFAULT_CONFIG }, capacityBackoffSeconds: 60, capacityMaxWaitSeconds: 300, responsesStreamLifetime: 0, responsesIdleTimeout: RESPONSES_IDLE_TIMEOUT_DEFAULT_MS, responsesNoProgressTimeout: RESPONSES_NO_PROGRESS_DEFAULT_MS, networkMode: "localhost", lanApiKey: "" };
 let wss = null;
 const wsClients = new Set();
 let lastBroadcast = "{}";
@@ -1450,6 +1450,8 @@ function loadConfig() {
     RESPONSES_NO_PROGRESS_TIMEOUT = c.responsesNoProgressTimeout;
     config.responsesNoProgressTimeout = RESPONSES_NO_PROGRESS_TIMEOUT;
     config.adminToken = c.adminToken || "";
+    config.networkMode = c.networkMode === "lan" ? "lan" : "localhost";
+    config.lanApiKey = c.lanApiKey || "";
     config.updateBaselineTag = normalizeUpdateBaselineTag(c.updateBaselineTag);
     config.rateLimit = c.rateLimit !== false;
     config.maxRequestsPerMin = Math.max(1, parseInt(c.maxRequestsPerMin) || 10);
@@ -7125,7 +7127,7 @@ const I18N_LANGS = {
     "cfg.incidentCenter": "日志事件中心（仅告警和人工处置，不会自动暂停分组、重启代理或修改 Key）", "cfg.enableIncident": "启用日志事件", "cfg.incidentRules": " 触发失败/流失败规则　", "cfg.sendNotify": " 发送通知", "cfg.obsWindow": "观察窗口 / 最低请求", "cfg.incidentReqs": " 次", "cfg.failCount": "失败次数 / 失败率", "cfg.incidentFailures": " 次 / ", "cfg.incidentPct": " %", "cfg.streamFailCount": "流失败次数 / 默认静默", "cfg.resolve": "恢复判定", "cfg.resolveSuffix": " 分钟无异常后自动恢复", "cfg.latencyAlert": "延迟告警", "cfg.enableP95": " 启用 P95　请求 ", "cfg.msUnit": " ms",
     "cfg.lockThreshold": "🔒 连续失败锁死阈值", "cfg.lockThresholdTitle": "连续 N 次失败后自动锁死该 Key", "cfg.lockThresholdCount": " 次", "cfg.lockCodes": "🎯 锁死监控错误码", "cfg.lockCodesPh": "401,403", "cfg.lockCodesTitle": "只有这些错误码会计入连续失败计数", "cfg.enableAutoLock": "🔒 启用自动锁死", "cfg.enableAutoLockCheck": " 开启后连续失败达到阈值将自动锁死 Key",
     "cfg.minRate": "⏱ 分钟级限速", "cfg.maxReqPerMin": "每分钟请求上限", "cfg.maxTokPerMin": "每分钟 Token 上限 (0=不限)", "cfg.streamTimeout": "⏱ 流超时", "cfg.otherStreamLifetime": "其他协议流最大时长 (ms)", "cfg.otherStreamLifetimeTitle": "非 Responses / Messages 编码协议流的绝对超时，防止僵尸连接。默认30分钟", "cfg.responsesStreamLifetime": "Responses / Messages 编码流最大总时长 (ms)", "cfg.responsesStreamLifetimeTitle": "0=不设置总时长硬切断；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认0", "cfg.responsesIdleTimeout": "Responses / Messages 上游空闲超时 (ms)", "cfg.responsesIdleTimeoutTitle": "0=关闭；适用于 Codex Responses 与 Claude Messages。非零最少60秒，最多24小时。默认90分钟，只在上游完全无数据时触发",
-    "cfg.adminAuth": "🔐 管理认证", "cfg.adminToken": "管理 Token（空=不校验）", "cfg.adminTokenPh": "留空=无认证", "cfg.adminTokenTitle": "设置后所有管理接口需 Bearer token 认证", "cfg.portGroups": "🔌 端口分组管理",
+    "cfg.adminAuth": "🔐 管理认证", "cfg.adminToken": "管理 Token（空=不校验）", "cfg.adminTokenPh": "留空=无认证", "cfg.adminTokenTitle": "设置后所有管理接口需 Bearer token 认证", "cfg.networkMode": "🌐 网络模式", "cfg.networkLocalhost": "仅本机", "cfg.networkLan": "局域网可用", "cfg.lanApiKey": "LAN 连接密码", "cfg.lanApiKeyPh": "局域网客户端需此密码连接", "cfg.lanApiKeyTitle": "设置后非本机请求必须携带此密码才能使用代理", "cfg.portGroups": "🔌 端口分组管理",
     "cfg.discussions": "💬 GitHub 互动（会话流）", "cfg.enableDiscussions": "启用会话流", "cfg.enableDiscussionsCheck": " 在 Dashboard 显示会话流面板", "cfg.discMaxItems": "显示条数", "cfg.discToken": "GitHub Token（可选）", "cfg.discTokenPh": "未配置，仅可查看留言", "cfg.toggleToken": "显示/隐藏 Token", "cfg.testToken": "测试连通", "cfg.testTokenTitle": "用已保存的 Token 测试连通性", "cfg.discHelp": "配置后可在面板内留言、回复与发起新会话（内容将公开发布到 GitHub Discussions）。Token 仅存本地、掩码展示；需 fine-grained PAT 并授予仓库 Discussions 读/写权限。「测试连通」仅验证 Token 有效与读取权限，写权限以实际发布结果为准（若发布提示 Resource not accessible，请到 GitHub 将 Discussions 权限改为 Read and write）。若将本管理端口暴露到局域网/公网，请务必同时设置「管理 Token」。",
     "cfg.taskInsight": "🔎 任务洞察（代理流水解析/提炼）", "cfg.enableTaskInsight": "启用任务洞察", "cfg.enableTaskInsightCheck": " 记录代理流水任务（默认不落盘原文，仅结构化信号）", "cfg.signalCollect": "采集信号", "cfg.insInstructions": " 截断指令（前 200 字）", "cfg.insInstructionsTitle": "记录截断指令前 200 字", "cfg.insTools": " 工具/文件路径", "cfg.insToolsTitle": "仅工具名与文件路径，不存参数全文", "cfg.insUsage": " 用量与费用", "cfg.insUsageTitle": "输入输出 token 与估算费用", "cfg.insCorrelate": " 关联会话（45 分钟活跃窗口）", "cfg.insCorrelateTitle": "使用 autoResume 活跃窗口合并同一任务的连续会话", "cfg.insRetention": "保留天数",
     "cfg.insDistill": "🤖 LLM 蒸馏摘要（可选，发送时仅含结构化快照，绝不含 Key）", "cfg.enableDistill": "启用蒸馏", "cfg.enableDistillCheck": " 定期为已完成任务生成结构化摘要", "cfg.distillEngine": "蒸馏引擎", "cfg.engineOllama": "ollama（本机）", "cfg.engineProxy": "proxy（走代理）", "cfg.engineExternal": "external（外部 API）", "cfg.modelUrl": "模型 / 地址", "cfg.distillModelPh": "qwen3:4b / gpt-5", "cfg.distillUrlPh": "http://127.0.0.1:11434/v1（仅 ollama 需要）", "cfg.distillUrlTitle": "ollama 与 external 引擎使用此地址；proxy 引擎忽略（走代理本身）", "cfg.distillBudget": "每日预算 / 报告", "cfg.yuanUnlimited": " 元（0=不限）　", "cfg.dailyReport": "日报", "cfg.weeklyReport": "周报", "cfg.distillStatus": "蒸馏: --",
@@ -7212,7 +7214,7 @@ const I18N_LANGS = {
     "cfg.incidentCenter": "Log incident center (alerts & manual actions only; never auto-pauses groups, restarts the proxy, or modifies keys)", "cfg.enableIncident": "Enable log incidents", "cfg.incidentRules": " trigger-fail / stream-fail rules", "cfg.sendNotify": " send notifications", "cfg.obsWindow": "Observation window / min requests", "cfg.incidentReqs": " requests", "cfg.failCount": "Fail count / fail rate", "cfg.incidentFailures": " failures / ", "cfg.incidentPct": " %", "cfg.streamFailCount": "Stream fails / default snooze", "cfg.resolve": "Recovery determination", "cfg.resolveSuffix": " min without issues to auto-recover", "cfg.latencyAlert": "Latency alert", "cfg.enableP95": " Enable P95  requests ", "cfg.msUnit": " ms",
     "cfg.lockThreshold": "🔒 Consecutive-failure lock threshold", "cfg.lockThresholdTitle": "Auto-locks the key after N consecutive failures", "cfg.lockThresholdCount": " failures", "cfg.lockCodes": "🎯 Lock-monitored error codes", "cfg.lockCodesPh": "401,403", "cfg.lockCodesTitle": "Only these codes count toward consecutive failures", "cfg.enableAutoLock": "🔒 Enable auto-lock", "cfg.enableAutoLockCheck": " When enabled, keys auto-lock after reaching the consecutive-failure threshold",
     "cfg.minRate": "⏱ Per-minute rate limit", "cfg.maxReqPerMin": "Max requests per minute", "cfg.maxTokPerMin": "Max tokens per minute (0=unlimited)", "cfg.streamTimeout": "⏱ Stream timeout", "cfg.otherStreamLifetime": "Max duration for other protocol streams (ms)", "cfg.otherStreamLifetimeTitle": "Hard timeout for non-Responses/Messages protocol streams to prevent zombie connections. Default 30min.", "cfg.responsesStreamLifetime": "Responses/Messages streams max total duration (ms)", "cfg.responsesStreamLifetimeTitle": "0=no hard total cutoff; applies to Codex Responses & Claude Messages. Nonzero: min 60s, max 24h. Default 0.", "cfg.responsesIdleTimeout": "Responses/Messages upstream idle timeout (ms)", "cfg.responsesIdleTimeoutTitle": "0=off; applies to Codex Responses & Claude Messages. Nonzero: min 60s, max 24h. Default 90min; triggers only when the upstream sends no data.",
-    "cfg.adminAuth": "🔐 Admin auth", "cfg.adminToken": "Admin token (empty=no check)", "cfg.adminTokenPh": "empty=no auth", "cfg.adminTokenTitle": "When set, all admin endpoints require a Bearer token", "cfg.portGroups": "🔌 Port group management",
+    "cfg.adminAuth": "🔐 Admin auth", "cfg.adminToken": "Admin token (empty=no check)", "cfg.adminTokenPh": "empty=no auth", "cfg.adminTokenTitle": "When set, all admin endpoints require a Bearer token", "cfg.networkMode": "🌐 Network mode", "cfg.networkLocalhost": "Localhost only", "cfg.networkLan": "LAN accessible", "cfg.lanApiKey": "LAN API key", "cfg.lanApiKeyPh": "LAN clients need this key to connect", "cfg.lanApiKeyTitle": "When set, non-localhost requests must include this key to use the proxy", "cfg.portGroups": "🔌 Port group management",
     "cfg.discussions": "💬 GitHub interactions (discussions)", "cfg.enableDiscussions": "Enable discussion feed", "cfg.enableDiscussionsCheck": " Show the discussion feed on the Dashboard", "cfg.discMaxItems": "Items shown", "cfg.discToken": "GitHub token (optional)", "cfg.discTokenPh": "not set; view-only", "cfg.toggleToken": "show/hide token", "cfg.testToken": "Test", "cfg.testTokenTitle": "Test connectivity with the saved token", "cfg.discHelp": "After configuring, you can comment, reply, and start new discussions (content is published publicly to GitHub Discussions). The token is stored locally and masked; needs a fine-grained PAT with repo Discussions read/write. \"Test\" only verifies validity & read access; write access is confirmed by an actual publish (if \"Resource not accessible\", switch Discussions permission to Read and write on GitHub). If exposing this admin port to LAN/internet, be sure to also set an \"Admin token\".",
     "cfg.taskInsight": "🔎 Task insight (agent workflow parsing)", "cfg.enableTaskInsight": "Enable task insight", "cfg.enableTaskInsightCheck": " Record agent workflow tasks (raw text not persisted by default; only structured signals)", "cfg.signalCollect": "Signal collection", "cfg.insInstructions": " truncated instructions (first 200 chars)", "cfg.insInstructionsTitle": "Record first 200 chars of truncated instructions", "cfg.insTools": " tools / file paths", "cfg.insToolsTitle": "Tool names and file paths only, no full args", "cfg.insUsage": " usage & cost", "cfg.insUsageTitle": "Input/output tokens and estimated cost", "cfg.insCorrelate": " correlate sessions (45-min active window)", "cfg.insCorrelateTitle": "Merge consecutive sessions of the same task using the autoResume active window", "cfg.insRetention": "Retention days",
     "cfg.insDistill": "🤖 LLM distillation summaries (optional; sends only a structured snapshot, never keys)", "cfg.enableDistill": "Enable distillation", "cfg.enableDistillCheck": " Periodically generate structured summaries of completed tasks", "cfg.distillEngine": "Distillation engine", "cfg.engineOllama": "ollama (local)", "cfg.engineProxy": "proxy (via proxy)", "cfg.engineExternal": "external (external API)", "cfg.modelUrl": "Model / URL", "cfg.distillModelPh": "qwen3:4b / gpt-5", "cfg.distillUrlPh": "http://127.0.0.1:11434/v1 (ollama only)", "cfg.distillUrlTitle": "Used by ollama and external engines; ignored by proxy engine (goes via the proxy itself)", "cfg.distillBudget": "Daily budget / report", "cfg.yuanUnlimited": " ¥ (0=unlimited)", "cfg.dailyReport": "daily", "cfg.weeklyReport": "weekly", "cfg.distillStatus": "Distill: --",
@@ -7894,6 +7896,11 @@ Example: <code style="background:#0f172a;padding:1px 4px;border-radius:3px">sk-a
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.adminAuth">🔐 管理认证</div>
   <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.adminToken">管理 Token（空=不校验）</div>
   <div><input id="cfgAdminToken" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="留空=无认证" data-i18n-ph="cfg.adminTokenPh" data-i18n-title="cfg.adminTokenTitle"></div>
+  <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.networkMode">🌐 网络模式</div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.networkMode">监听范围 <span title="仅本机：代理只监听127.0.0.1，只有本机可访问&#10;&#10;局域网可用：代理监听0.0.0.0，同一局域网内其他电脑可通过 http://本机IP:端口 访问。切换后代理自动重启。&#10;&#10;局域网客户端配置：&#10;Base URL: http://本机IP:3456&#10;API Key: 填写下方设置的LAN连接密码" style="cursor:help;color:#64748b;border-bottom:1px dashed #64748b">?</span></div>
+  <div><label><input type="radio" name="cfgNetworkMode" value="localhost" checked> <span data-i18n="cfg.networkLocalhost">仅本机</span></label> &nbsp; <label><input type="radio" name="cfgNetworkMode" value="lan"> <span data-i18n="cfg.networkLan">局域网可用</span></label></div>
+  <div style="color:#94a3b8;padding:4px 0" data-i18n="cfg.lanApiKey">LAN 连接密码 <span title="局域网模式下，非本机请求必须携带此密码才能使用代理。&#10;&#10;客户端配置方式：&#10;API Key 栏填入此密码（Bearer token）&#10;&#10;本机请求不受此密码限制，始终可正常使用。&#10;&#10;示例（curl）：&#10;curl http://192.168.1.19:3456/v1/models -H 'Authorization: Bearer 此密码'" style="cursor:help;color:#64748b;border-bottom:1px dashed #64748b">?</span></div>
+  <div><input id="cfgLanApiKey" style="width:200px;background:#0f172a;border:1px solid #475569;color:#e2e8f0;padding:4px 6px;border-radius:4px" value="" placeholder="局域网客户端需此密码连接" data-i18n-ph="cfg.lanApiKeyPh" data-i18n-title="cfg.lanApiKeyTitle"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.portGroups">🔌 端口分组管理</div>
   <div style="grid-column:1/-1" id="portGroupsArea"></div>
   <div style="color:#94a3b8;padding:4px 0;border-bottom:1px solid #334155;margin-bottom:4px;grid-column:1/-1" data-i18n="cfg.discussions">💬 GitHub 互动（会话流）</div>
@@ -8562,6 +8569,9 @@ async function loadConfigUI(){
     document.getElementById("cfgResponsesStreamLifetime").value=c.responsesStreamLifetime??0;
     document.getElementById("cfgResponsesIdleTimeout").value=c.responsesIdleTimeout??5400000;
     document.getElementById("cfgAdminToken").value=c.adminToken||"";
+    const nm=c.networkMode||"localhost";
+    document.querySelectorAll('input[name="cfgNetworkMode"]').forEach(r=>{r.checked=r.value===nm;});
+    document.getElementById("cfgLanApiKey").value=c.lanApiKey||"";
     document.getElementById("cfgUpdateBaselineTag").value=c.updateBaselineTag||"";
     try{
       const sr=await fetch("/__status");
@@ -11472,6 +11482,8 @@ async function saveConfig(){
     responsesStreamLifetime:configInteger("cfgResponsesStreamLifetime",0),
     responsesIdleTimeout:configInteger("cfgResponsesIdleTimeout",5400000),
     adminToken:document.getElementById("cfgAdminToken").value.trim(),
+    networkMode:document.querySelector('input[name="cfgNetworkMode"]:checked')?.value||"localhost",
+    lanApiKey:document.getElementById("cfgLanApiKey").value.trim(),
     updateBaselineTag:document.getElementById("cfgUpdateBaselineTag").value.trim(),
     lockAfterFailCount:parseInt(document.getElementById("cfgLockCount").value)||3,
     lockFailCodes:(document.getElementById("cfgLockCodes").value||"").split(",").map(s=>s.trim()).filter(s=>s),
@@ -14742,6 +14754,7 @@ function createGroupServer(groupName, port) {
             }
             const cur = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
             const oldGroups = (cur.groups && typeof cur.groups === 'object') ? JSON.parse(JSON.stringify(cur.groups)) : {A: 3456};
+            const oldNetworkMode = cur.networkMode || "localhost";
             const priorDiscussions = cur.discussions && typeof cur.discussions === "object" ? { ...cur.discussions } : null;
             Object.assign(cur, c);
             normalizeRuntimeStorageConfig(cur);
@@ -14846,6 +14859,15 @@ function createGroupServer(groupName, port) {
               if (oldGroups[name] && oldGroups[name] !== port && name !== "A") {
                 stopGroup(name);
                 startGroup(name, port).catch(e => console.error(`[proxy] Failed to restart group ${name}: ${e.message}`));
+              }
+            }
+            // Restart all groups if networkMode changed (bind address needs update)
+            const newNetworkMode = config.networkMode || "localhost";
+            if (oldNetworkMode !== newNetworkMode) {
+              console.log(`[proxy] Network mode changed: ${oldNetworkMode} → ${newNetworkMode}, restarting all groups`);
+              for (const [name, port] of Object.entries(newGroups)) {
+                stopGroup(name);
+                startGroup(name, port).catch(e => console.error(`[proxy] Failed to restart group ${name} for networkMode: ${e.message}`));
               }
             }
             if (config.autoRecover && savedNextTime > Date.now() && savedInterval === config.autoRecoverInterval) {
@@ -15818,6 +15840,24 @@ function createGroupServer(groupName, port) {
       res.end(JSON.stringify({ error: "Missing Authorization header" }));
       return;
     }
+    if (config.networkMode === "lan" && config.lanApiKey) {
+      const remote = req.socket.remoteAddress || "";
+      const isLocalhost = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+      if (!isLocalhost) {
+        const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+        let match = false;
+        if (token.length === config.lanApiKey.length && token.length > 0) {
+          let diff = 0;
+          for (let i = 0; i < token.length; i++) diff |= token.charCodeAt(i) ^ config.lanApiKey.charCodeAt(i);
+          match = diff === 0;
+        }
+        if (!match) {
+          res.writeHead(401, cors);
+          res.end(JSON.stringify({ error: "Invalid API key for LAN access" }));
+          return;
+        }
+      }
+    }
     console.log(`[proxy] ${req.method} ${pathname} (group ${groupName})`);
     let nativeResponsesProbe = null;
     if (pathname === "/responses" && req.method === "POST" && body) {
@@ -15848,8 +15888,9 @@ function startGroup(name, port) {
       delete servers[name];
       reject(e);
     });
-    srv.listen(port, "localhost", () => {
-      console.log(`[proxy] Group ${name} listening on http://localhost:${port}`);
+    const bindAddr = config.networkMode === "lan" ? "0.0.0.0" : "localhost";
+    srv.listen(port, bindAddr, () => {
+      console.log(`[proxy] Group ${name} listening on http://${bindAddr}:${port}`);
       if (name === "A") {
         fs.writeFileSync(PID_FILE, String(process.pid));
         setupWebSocket(srv);
