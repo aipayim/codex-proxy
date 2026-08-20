@@ -11622,10 +11622,13 @@ function stopRestartElapsedTimer(){
   if(restartElapsedTimer){clearInterval(restartElapsedTimer);restartElapsedTimer=null;}
 }
 async function fetchRestartStatus(){
-  if(typeof AbortController==="undefined")return fetch("/__restart-status",{cache:"no-store"});
+  const h={"cache":"no-store"};
+  const t=__adminTokenState.get();
+  if(t)h.headers={"Authorization":"Bearer "+t};
+  if(typeof AbortController==="undefined")return fetch("/__restart-status",h);
   const controller=new AbortController();
   const timeout=setTimeout(function(){controller.abort();},3500);
-  try{return await fetch("/__restart-status",{cache:"no-store",signal:controller.signal});}
+  try{return await fetch("/__restart-status",{...h,signal:controller.signal});}
   finally{clearTimeout(timeout);}
 }
 function setRestartOverlayActions(status){
