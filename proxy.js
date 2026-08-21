@@ -15723,6 +15723,27 @@ function createGroupServer(groupName, port) {
     return;
   }
 
+  // --- LAN Auth (before all routes) ---
+  if (config.networkMode === "lan" && config.lanApiKey) {
+    const remote = req.socket.remoteAddress || "";
+    const isLocalhost = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    if (!isLocalhost) {
+      const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      let match = false;
+      if (token.length === config.lanApiKey.length && token.length > 0) {
+        let diff = 0;
+        for (let i = 0; i < token.length; i++) diff |= token.charCodeAt(i) ^ config.lanApiKey.charCodeAt(i);
+        match = diff === 0;
+      }
+      if (!match) {
+        res.writeHead(401, cors);
+        res.end(JSON.stringify({ error: "Invalid API key for LAN access" }));
+        return;
+      }
+    }
+  }
+  // --- End LAN Auth ---
+
   // --- Protocol conversion routes ---
   if (pathname === "/v1/responses" && req.method === "POST") {
     const chunks = [];
